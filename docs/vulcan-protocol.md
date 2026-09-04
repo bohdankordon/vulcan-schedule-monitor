@@ -32,7 +32,9 @@ Observed as discovery of journals and classes available to the authenticated acc
 
 `IdDziennik` must be discovered for the current account context and must never be hard-coded.
 
-**Implemented now:** recursive tree traversal handles objects, dictionary-like children, and arrays. Only nodes explicitly reporting an existing journal are mapped into the protocol-independent class model.
+The observed response is the tree object itself, with `children` at its direct root; this endpoint is not treated as a generic `success`/`data` envelope. Its `zadanaData` request parameter contains the current local date and time rather than local midnight.
+
+**Implemented now:** recursive traversal starts at that direct root and handles objects, dictionary-like children, and arrays. Only nodes explicitly reporting an existing journal are mapped into the protocol-independent class model. The cache-buster and Warsaw-local `zadanaData` timestamp come from the same injected clock.
 
 ### `PlanLekcji.mvc/GetContext`
 
@@ -54,7 +56,7 @@ Observed responses distinguish a base schedule from an effective schedule that i
 
 - `CzyZmiana`, indicating change-related presentation or state;
 - `IdPozycjiPlanu`, which can correlate an effective entry with a base-plan entry within the response;
-- `ChangeAnnotation`, carrying human-readable change context;
+- `ChangeAnnotation`, an array containing zero or more human-readable annotation strings;
 - `Bolded`, a presentation cue; and
 - `Striked`, a presentation cue for replaced or inactive information.
 
@@ -62,7 +64,9 @@ Substitution annotations may describe that one teacher or lesson replaces anothe
 
 External identifiers are protocol-level values. No internal VULCAN identifier should be assumed to be a stable business identifier across weeks without additional evidence and an explicit design decision.
 
-**Implemented now:** base `Id` and effective `IdPozycjiPlanu` values are used only inside the adapter for correlation within one response. Multiple effective rows are retained. A recognized synthetic `zastępstwo: [TEACHER_CODE], subject_code` annotation becomes a teacher-substitution change; unknown annotations and marker-only changes become explicit unknown changes rather than being discarded.
+**Implemented now:** base `Id` and effective `IdPozycjiPlanu` values are used only inside the adapter for correlation within one response. Multiple effective rows are retained. Empty, single-entry, and multiple-entry `ChangeAnnotation` arrays are supported, and every non-empty annotation is considered. A recognized synthetic `zastępstwo: [TEACHER_CODE], subject_code` annotation becomes a teacher-substitution change; unknown annotations and marker-only changes become explicit unknown changes rather than being discarded.
+
+Each extracted change retains protocol-independent planned and effective lesson occurrences when available. This context distinguishes group or subject occurrences that share a date and lesson period without exposing the response's correlation row IDs. Unparsed annotations are retained transiently for investigation through an explicit accessor, but their raw content is redacted from diagnostics and must not automatically be logged or persisted.
 
 ## Intended integration posture
 

@@ -22,8 +22,8 @@ The read-only VULCAN boundary currently provides:
 - bootstrap parsing for the current school year and opaque lesson-period identifiers;
 - recursive journal discovery from the irregular tree response;
 - Monday-to-Sunday schedule retrieval using the lightweight schedule endpoint;
-- response-local base/effective row correlation and protocol-independent lesson occurrences;
-- known teacher-substitution extraction plus explicit preservation of unknown changes; and
+- response-local base/effective row correlation represented as semantic planned/effective lesson context, without exposing VULCAN row IDs;
+- known teacher-substitution extraction plus explicit, transient preservation of unknown annotations with redacted diagnostics; and
 - JUnit 6 unit tests and WireMock protocol integration tests using synthetic fixtures.
 
 The current session input is temporary development plumbing. It does not log in, renew an expired session, poll continuously, or persist schedule state.
