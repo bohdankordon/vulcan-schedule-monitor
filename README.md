@@ -10,7 +10,7 @@ An unofficial Java service for monitoring school schedule changes available thro
 
 ## Status
 
-The project is in early development. Its read-only integration slice can use an already authenticated browser session to discover journals and retrieve a synthetic-tested weekly schedule. Successful weekly snapshots establish a PostgreSQL-backed baseline and reconcile current schedule changes as `NEW`, `UPDATED`, or `RESOLVED`. Application users can hold minimized Telegram routing identities and enable journal subscriptions. Active subscriptions provide distinct monitoring targets and recipient-specific durable notification intents. A disabled-by-default monitoring foundation can plan and safely execute current- and next-week refreshes when application code supplies an authorized weekly source. Automated authentication, Telegram commands and delivery, APIs, and outbox dispatch scheduling are not implemented yet.
+The project is in early development. Its read-only integration slice can use an already authenticated browser session to discover journals and retrieve a synthetic-tested weekly schedule. Successful weekly snapshots establish a PostgreSQL-backed baseline and reconcile current schedule changes as `NEW`, `UPDATED`, or `RESOLVED`. Application users can hold minimized Telegram routing identities and enable journal subscriptions. A disabled-by-default TelegramBots long-polling adapter supports safe private-chat commands and scheduled, recipient-specific outbox delivery. Automated VULCAN authentication, secure account connection, class-selection UX, APIs, and production deployment are not implemented yet.
 
 ## Purpose and planned capabilities
 
@@ -27,12 +27,13 @@ The project aims to provide a privacy-conscious service that can:
 
 Vulcan Schedule Monitor is a modular monolith with feature-oriented packages. Its VULCAN adapter translates browser-observed payloads into small internal schedule and change models. Tracking and notification logic use protocol-independent ports; JPA entities remain internal to PostgreSQL adapters.
 
-See [Architecture](docs/architecture.md), [Subscriptions](docs/subscriptions.md), [Monitoring orchestration](docs/monitoring.md), [Persistent change tracking](docs/change-tracking.md), [Notification outbox](docs/notification-outbox.md), [Unofficial VULCAN protocol notes](docs/vulcan-protocol.md), and [Manual session setup](docs/manual-session.md).
+See [Architecture](docs/architecture.md), [Telegram adapter](docs/telegram.md), [Subscriptions](docs/subscriptions.md), [Monitoring orchestration](docs/monitoring.md), [Persistent change tracking](docs/change-tracking.md), [Notification outbox](docs/notification-outbox.md), [Unofficial VULCAN protocol notes](docs/vulcan-protocol.md), and [Manual session setup](docs/manual-session.md).
 
 ## Technology
 
 - Java 21
 - Spring Boot 4.1.1
+- TelegramBots 10.2.1 core long-polling and client modules
 - Spring RestClient backed by Java 21 HttpClient
 - PostgreSQL with Spring Data JPA / Hibernate
 - Flyway-owned database migrations
@@ -55,11 +56,14 @@ Set these environment variables when running the application:
 SPRING_DATASOURCE_URL=jdbc:postgresql://<host>:<port>/<database>
 SPRING_DATASOURCE_USERNAME=<username>
 SPRING_DATASOURCE_PASSWORD=<password>
+TELEGRAM_BOT_TOKEN=<bot-token>
 ```
 
-No database credentials or environment-specific URLs are stored in the repository. Docker is required only to run the PostgreSQL integration tests locally.
+No database credentials, bot tokens, or environment-specific URLs are stored in the repository. `TELEGRAM_BOT_TOKEN` is required only when `telegram.bot.enabled=true`. Docker is required only to run the PostgreSQL integration tests locally.
 
-Monitoring is off unless `vulcan.monitoring.enabled=true` is set. The production `MonitoringTargetProvider` reads active subscriptions, but enabling monitoring still requires an application-provided `WeeklyScheduleSource` backed by an authorized VULCAN session. The default polling interval is `PT5M`. Monitoring does not require a delivery gateway: recipient-specific notification intents safely accumulate as `PENDING` until a future integration invokes the dispatcher.
+Monitoring is off unless `vulcan.monitoring.enabled=true` is set. The production `MonitoringTargetProvider` reads active subscriptions, but enabling monitoring still requires an application-provided `WeeklyScheduleSource` backed by an authorized VULCAN session. The default polling interval is `PT5M`.
+
+Telegram is off unless `telegram.bot.enabled=true` is set. Disabled startup creates no Telegram runtime, client, delivery gateway, or dispatch scheduler and requires no token. When enabled, the adapter uses long polling and dispatches at most one durable intent per two-second scheduler tick. Supported private-chat commands are `/start`, `/help`, `/status`, `/subscriptions`, and informational `/connect`. Never send VULCAN credentials through Telegram.
 
 ## Build and test
 

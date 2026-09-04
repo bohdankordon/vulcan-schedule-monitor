@@ -8,7 +8,7 @@
 
 Telegram registration is atomic. An unknown Telegram user creates one application user and identity. A known Telegram user reuses the same application user and updates a changed private chat ID. Registering a known inactive user explicitly reactivates that user rather than silently creating a duplicate. Persisted timestamps come from the application `Clock`.
 
-The immutable `TelegramRecipientReference` returned by `TelegramRecipientDirectory` keeps JPA entities behind the persistence boundary. This phase performs no Telegram network work.
+The immutable `TelegramRecipientReference` returned by `TelegramRecipientDirectory` keeps JPA entities behind the persistence boundary. The Telegram delivery gateway uses it to translate the internal outbox recipient into the stored private chat only at the adapter edge.
 
 ## Subscription lifecycle
 
@@ -24,6 +24,8 @@ A subscription added after baseline establishment receives only future reconcili
 
 Disabling a subscription affects future fan-out only. Existing recipient-specific outbox rows remain durable because they represented delivery intents created while the subscription was enabled. Explicit pending-notification cancellation, if desired, is a separate future product feature.
 
-## Deferred Telegram work
+## Telegram interaction
 
-TelegramBots, update/command routing, keyboards, notification formatting, message sending, the delivery gateway, and a scheduled outbox trigger remain planned for the next phase. VULCAN login/session recovery, Playwright, class-selection UX from discovered journals, and deployment also remain outside this foundation.
+Supported private-chat commands register or refresh the exact sender-user/private-chat pair before invoking an application-facing handler. `/status` and `/subscriptions` read active journal IDs through `MonitoringSubscriptionService`. Until a persisted class catalog exists, responses deliberately call these opaque IDs “schedule references,” not class names.
+
+Raw `/subscribe <journalId>` and `/unsubscribe <journalId>` commands do not exist. Future subscription changes will use classes dynamically discovered from the user's authorized VULCAN account. VULCAN login/session recovery, Playwright, secure web connection, class-selection keyboards, human-readable class labels, and deployment remain planned.
