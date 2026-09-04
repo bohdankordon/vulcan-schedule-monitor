@@ -1,38 +1,52 @@
 # Monitoring orchestration
 
-## Scope selection and ordering
+## Account-aware scope selection
 
-Each `MonitoringTarget` contains one opaque journal identifier. The production `MonitoringTargetProvider` queries subscriptions and returns one distinct, deterministically ordered target for every journal having at least one enabled subscription owned by an active application user. Multiple subscribers to one journal therefore produce one VULCAN monitoring target. Disabled subscriptions and inactive users produce none. Tracking rows are never inferred as subscriptions.
+VULCAN protocol identifiers are local to a connected account. A `journalId`, `classId`, or lesson-period ID must never be treated as globally unique. Each production `MonitoringTarget` therefore carries three identities:
 
-At the start of each cycle, targets are deduplicated and sorted by journal identifier. The planner uses the injected clock in `Europe/Warsaw`, independent of the machine timezone. It produces exactly two separate Monday-to-Sunday scopes per target: the Polish current week followed by the next week. The two weeks remain two requests because multi-week VULCAN ranges have not been established as supported.
+- `vulcanAccountId` selects the encrypted session and recovery context;
+- `catalogClassId` is the durable internal class/subscription identity; and
+- `journalId` is sent only to the VULCAN schedule endpoint.
 
-Scopes run sequentially. No delay occurs before the first request or after the last. A configurable minimum delay, 500 milliseconds by default, separates independent scope requests to avoid bursts. Retry delays are separate from ordinary request pacing.
+The subscription-backed target query requires an enabled subscription, active application user, active catalog class, matching user/account ownership, and a `CONNECTED` account. It returns one distinct target per catalog row in account/catalog/journal order. Two accounts containing journal 77 remain two targets.
 
-## Failure and retry policy
+The planner uses the injected clock in `Europe/Warsaw` and emits exactly two Monday-to-Sunday scopes per target: current week, then next week. The account and catalog identities are preserved in each `TrackingScope`; `ScheduleSnapshot` remains free of application account, user, and Telegram data. The coordinator checks only that the returned protocol journal/week matches the request before reconciling with the original account-aware scope.
 
-The resilient weekly source makes at most three total attempts. Transport and server failures use bounded exponential delays of one second and two seconds. Other client errors and protocol/schema failures do not retry. Authentication failures, redirects, and unexpected successful HTML responses do not retry and stop the remainder of the cycle because all targets share the same account/session source.
+Scopes run sequentially with configurable inter-request pacing. There is no delay before the first eligible request or after the last.
 
-For `429`, the transport parses both delta-seconds and HTTP-date `Retry-After` values. Missing or malformed values use a conservative 30-second fallback. A delay of at most ten seconds may be honored inline while attempts remain. Longer delays are not slept inline: an in-memory source/account gate stores the latest `notBefore` instant and returns a deferred outcome. Calls before that instant perform no outbound HTTP work, and a rate-limit deferral stops the remaining cycle.
+## Persisted session source and recovery
 
-The gate is process-local. Restarting the process loses this transient state. Durable account-level rate limiting can be revisited when account and session persistence exist. A `503` retry hint is also honored when it exceeds the normal exponential delay. Interrupted retry or pacing waits restore the thread interrupt flag and abort cleanly. Tests inject recording delays and do not sleep.
+The production `PersistedAccountWeeklyScheduleSource` loads the encrypted session selected by `TrackingScope.vulcanAccountId`, constructs an isolated `VulcanClient`, requests the scope's journal/week, validates the response, and persists `session.snapshotMaterial()` after every successful request. This captures ordinary `Set-Cookie` rotation. If encrypted-session loading or rotation persistence fails, the source throws and the fetched snapshot never reaches tracking.
 
-Permanent or protocol failure for one scope is recorded and later scopes continue. Exhausted transient failures may also leave independent scopes runnable. Outcomes contain only the scope, category, safe counts, and an optional defer-until timestamp—never snapshots, annotations, response bodies, headers, or session data.
+Authentication-required HTTP responses, session redirects, and unexpected HTML trigger at most one recovery attempt for that source call. Recovery is serialized per account and reuses the existing Playwright authenticator only when encrypted remembered credentials exist. A successful recovery authenticates, verifies `getCache`/`getTree`, persists the verified session, reloads it, retries the weekly request once, and persists post-fetch cookie rotation. A second authentication failure is not recovered again.
+
+Without remembered credentials, or after invalid credentials, CAPTCHA, MFA, an unsupported flow, or a protocol authentication failure, the account becomes `RECONNECT_REQUIRED`. `/status`, `/classes`, and `/connect` expose the path back to a working connection; the scheduler does not send an unreliable direct reconnect alert. A transient recovery failure leaves account state intact so a future cycle can retry.
+
+## Failure and rate-limit isolation
+
+The resilient source makes at most three total attempts for transport and server failures, using bounded exponential backoff. Permanent client and protocol failures do not retry. A VULCAN `Retry-After` value is honored; long delays are stored in a process-local gate keyed by VULCAN account.
+
+Authentication or long rate-limit failure blocks only the remaining scopes for that account in the current cycle. Healthy accounts continue. Calls made for a gated account before expiry perform zero VULCAN HTTP work, while another account—even one using the same journal ID—remains eligible. After the injected clock passes the gate, that account resumes without sleeps in tests. The gate is intentionally process-local and is lost on restart.
+
+Permanent, protocol, and exhausted transient failures remain scope-isolated. An interrupted delay restores the interrupt flag and stops the cycle globally because shutdown/cancellation is process-level.
 
 ## Reconciliation safety
 
-Only a complete successful `ScheduleSnapshot` whose journal and week match the requested `TrackingScope` can pass through `ScheduleRefreshCoordinator` to `ScheduleChangeTracker.reconcileSuccessfulSnapshot(...)`. Every failure and deferral exits before that call. Existing active state therefore remains unchanged and cannot generate a false `RESOLVED` transition. This is covered at both application-service and PostgreSQL/Testcontainers boundaries.
+Only a complete successful snapshot matching the requested journal/week can reach `ScheduleChangeTracker`. Tracking locks and persistence lookup use `catalog_class_id + week_start`, not journal/week. Existing V1–V4 journal-only tracking scopes remain with a null catalog ID as historical state and are never selected by production monitoring.
+
+Every fetch, decryption, recovery, rate-limit, or session-persistence failure exits before reconciliation. Existing active state is therefore unchanged and cannot create a false `RESOLVED`. A new account/catalog/week always establishes its own no-spam baseline, even if ambiguous legacy history has the same journal and week.
 
 ## Scheduler configuration
 
-The Spring trigger uses fixed-delay semantics with a five-minute default cadence and a local atomic overlap guard. It is disabled by default:
+Monitoring is disabled by default:
 
 ```yaml
 vulcan:
+  connection:
+    enabled: false
   monitoring:
     enabled: false
     poll-interval: PT5M
 ```
 
-When enabled, the first execution waits one configured interval. The subscription-backed `MonitoringTargetProvider` is always available, while a `WeeklyScheduleSource` must still be supplied explicitly; a missing source fails application-context creation rather than simulating active monitoring. The application does not read browser-session environment values or make VULCAN calls during normal default startup.
-
-The current deployment assumption is one application instance. There is no distributed scheduler lock. Successful reconciliation appends per-recipient durable notification intent to the transactional outbox, but this monitoring scheduler does not dispatch it. Playwright login/re-login, credential persistence, `RefreshSession` keepalive, Telegram commands and delivery, outbox dispatch scheduling, and production deployment are intentionally deferred.
+Enabling monitoring requires the secure VULCAN connection infrastructure. The application then wires the persisted account source automatically; an empty subscription database performs no network work. The fixed-delay scheduler has a local overlap guard. Multi-instance coordination, durable rate-limit state, periodic catalog refresh outside reconnect, and production deployment remain future work.

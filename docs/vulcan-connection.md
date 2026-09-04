@@ -1,8 +1,10 @@
 # Secure VULCAN Connection
 
-## Scope and phase boundary
+## Scope and monitoring boundary
 
-Phase 7 connects one authorized VULCAN account to one internal application user. It persists an encrypted HTTP session and an account-scoped class catalog. It does **not** use that account for scheduled monitoring, change tracking, notification identity, or automatic subscriptions. Journal IDs cannot be assumed globally unique across accounts. Phase 8 must introduce account/catalog-aware identities and Telegram class selection before monitoring is wired to connected accounts.
+The connection flow binds one authorized VULCAN account to one internal application user, persists an encrypted HTTP session, and maintains an account-scoped class catalog. Scheduled monitoring now uses that persisted session through the selected catalog row. Journal IDs remain protocol-local and are never treated as globally unique: the runtime carries account ID for session selection, catalog ID for durable class identity, and journal ID only for VULCAN requests.
+
+This phase does not add multiple accounts per user, account switching/disconnect UX, or speculative login variants. Those semantics remain deliberately outside the current one-account-per-user product.
 
 ## User journey
 
@@ -63,12 +65,16 @@ AES/GCM/NoPadding uses a 256-bit key, a fresh random 12-byte nonce per encryptio
 
 When remember credentials is false, credential nonce and ciphertext remain null. When true, portal URI, login, and password are stored only inside the separate encrypted credential payload. The portal URI and login are not plaintext account columns.
 
-## Catalog and recovery foundation
+## Catalog, session rotation, and automatic recovery
 
 After complete verification, discovered journals are inserted or updated and marked active. Previously known journals absent from that complete tree become inactive rather than being deleted. Failed authentication or discovery cannot deactivate catalog rows because synchronization occurs only in the final transaction after successful verification. Active reads are deterministic and scoped through the internal user/account association, so the same journal ID can exist for different accounts.
 
-`VulcanSessionManager` can load and reconstruct a stored session, persist a cookie-rotation snapshot, and perform an explicit recovery when remembered credentials exist. Connect and explicit recovery both persist the verifier's post-`getCache()`/`getTree()` snapshot rather than the pre-verification browser capture. Without remembered credentials it marks the account reconnect-required. Nothing calls this manager from `MonitoringCycleRunner`, and there are no background Playwright jobs in Phase 7.
+`VulcanSessionManager` loads and reconstructs the session for a specific account and encrypts every successful weekly request's post-response cookie snapshot. A failure to persist this rotation prevents the fetched schedule from reaching reconciliation.
+
+When a weekly request reports authentication required, a session redirect, or unexpected HTML, monitoring requests one account-scoped recovery. Recovery is serialized per account. With remembered credentials it reuses the same Playwright authenticator, verifies `getCache()` and complete `getTree()`, persists the verifier's post-verification session, reloads it, and retries the weekly request exactly once. A successful retry also persists its cookie rotation. There is no recovery loop and Playwright is not started for an ordinary successful request.
+
+Without remembered credentials, or for invalid credentials, MFA, CAPTCHA, unsupported authentication, or protocol authentication failure, the account becomes `RECONNECT_REQUIRED` and is excluded from future target queries. Transient recovery failure does not destructively reset account state, allowing a future cycle to retry. Reconnection state is visible through `/status`, `/classes`, and `/connect`; the scheduler does not bypass the durable notification model with a direct Telegram alert.
 
 ## Manual validation
 
-CI tests the security and orchestration boundaries with synthetic sessions, a fake browser authenticator, MockMvc, AES-GCM tests, and PostgreSQL/Testcontainers. It never performs a VULCAN network request and never requires Chromium. Real tenant login details can vary and must be validated manually with an authorized test account. Do not record or publish credentials, URLs, request headers, cookies, screenshots, traces, class data, or browser state during that validation.
+CI tests the security and orchestration boundaries with synthetic encrypted sessions, a fake browser authenticator, local WireMock VULCAN responses, MockMvc, AES-GCM tests, and PostgreSQL/Testcontainers. It never contacts a real VULCAN tenant and never requires Chromium. Real tenant login details can vary and must be validated manually with an authorized test account. Do not record or publish credentials, URLs, request headers, cookies, screenshots, traces, class data, or browser state during that validation.
