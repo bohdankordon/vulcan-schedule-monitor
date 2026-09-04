@@ -10,7 +10,7 @@ An unofficial Java service for monitoring school schedule changes available thro
 
 ## Status
 
-The project is in early development. This repository currently provides only the tested Spring Boot foundation and development tooling; VULCAN integration, monitoring, persistence, APIs, and notifications are not implemented yet.
+The project is in early development. Its first read-only integration slice can use an already authenticated browser session to discover journals and retrieve a synthetic-tested weekly schedule. Automated authentication, continuous monitoring, persistence, APIs, and notifications are not implemented yet.
 
 ## Purpose and planned capabilities
 
@@ -25,16 +25,18 @@ The project aims to provide a privacy-conscious service that can:
 
 ## Architecture
 
-Vulcan Schedule Monitor is planned as a modular monolith with feature-oriented packages. Application and domain logic will remain isolated from browser-observed VULCAN protocols, persistence, and notification providers through adapters. The bootstrap intentionally contains no placeholder feature packages.
+Vulcan Schedule Monitor is a modular monolith with feature-oriented packages. Its VULCAN adapter translates browser-observed payloads into small internal schedule and change models; future persistence and notification providers will remain behind their own adapters.
 
-See [Architecture](docs/architecture.md) and [Unofficial VULCAN protocol notes](docs/vulcan-protocol.md).
+See [Architecture](docs/architecture.md), [Unofficial VULCAN protocol notes](docs/vulcan-protocol.md), and [Manual session setup](docs/manual-session.md).
 
 ## Technology
 
 - Java 21
 - Spring Boot 4.1.1
+- Spring RestClient backed by Java 21 HttpClient
 - Maven 3.9.16 through Maven Wrapper
 - JUnit 6
+- WireMock 3.13.2 for protocol integration tests
 - Spotless formatting checks
 - GitHub Actions
 
