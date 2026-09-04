@@ -4,6 +4,13 @@
     "currentSchoolYear": 2099,
     "poryLekcji": [
       {
+        "Id": 1427,
+        "Numer": 0,
+        "Nazwa": "0",
+        "Poczatek": "1900-01-01T07:05:00",
+        "Koniec": "1900-01-01T07:50:00"
+      },
+      {
         "Id": 501,
         "Numer": 1,
         "Nazwa": "1",

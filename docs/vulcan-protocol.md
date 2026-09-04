@@ -18,7 +18,7 @@ Observed as a bootstrap/configuration request that supplies lesson-period defini
 
 **Implemented now:** the read-only adapter supplies the observed cache-buster, validates the response envelope, and maps the current school year plus lesson period `Id`, `Numer`, `Poczatek`, and `Koniec` fields. The synthetic legacy date portion of the time values is discarded.
 
-`IdPoraLekcji` is an opaque external identifier. It must be resolved through returned lesson-period data; a lesson number must never be calculated arithmetically from this identifier.
+`Numer` is not required to be positive: `0` is an observed valid lesson number for a pre-first-lesson slot. `IdPoraLekcji` remains an opaque external identifier and must be resolved through returned lesson-period data; `Numer` must never be calculated arithmetically from this identifier.
 
 ### `Dziennik.mvc/GetTree`
 

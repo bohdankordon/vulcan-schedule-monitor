@@ -69,7 +69,7 @@ class VulcanClientWireMockTests {
     SchoolBootstrap bootstrap = client.getCache();
 
     assertThat(bootstrap.currentSchoolYear()).isEqualTo(2099);
-    assertThat(bootstrap.lessonPeriods()).hasSize(2);
+    assertThat(bootstrap.lessonPeriods()).hasSize(3);
     server.verify(
         getRequestedFor(urlPathEqualTo(APPLICATION_PATH + "DziennikCache.mvc/GetCache"))
             .withQueryParam("_dc", equalTo(Long.toString(CLOCK.millis())))
