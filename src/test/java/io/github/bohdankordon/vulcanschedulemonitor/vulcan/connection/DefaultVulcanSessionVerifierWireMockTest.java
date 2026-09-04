@@ -60,8 +60,7 @@ class DefaultVulcanSessionVerifierWireMockTest {
         getRequestedFor(urlPathEqualTo(APPLICATION_PATH + "Dziennik.mvc/GetTree"))
             .withHeader("Cookie", containing("session=rotated")));
     assertThat(verified.classes()).hasSize(1);
-    assertThatThrownBy(verified.classes()::clear)
-        .isInstanceOf(UnsupportedOperationException.class);
+    assertThatThrownBy(verified.classes()::clear).isInstanceOf(UnsupportedOperationException.class);
     assertThat(verified.sessionMaterial().cookieHeader())
         .contains("session=final")
         .doesNotContain("session=old", "session=rotated");
