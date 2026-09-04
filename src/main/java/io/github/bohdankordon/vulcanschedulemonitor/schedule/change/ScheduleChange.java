@@ -4,7 +4,13 @@ import java.time.LocalDate;
 
 public sealed interface ScheduleChange permits TeacherSubstitution, UnknownScheduleChange {
 
-  LocalDate date();
+  LessonChangeContext context();
 
-  long lessonPeriodId();
+  default LocalDate date() {
+    return context().date();
+  }
+
+  default long lessonPeriodId() {
+    return context().lessonPeriodId();
+  }
 }

@@ -3,12 +3,12 @@ package io.github.bohdankordon.vulcanschedulemonitor.vulcan.schedule;
 import static io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanJson.booleanOrFalse;
 import static io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanJson.envelopeData;
 import static io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanJson.nullableLong;
-import static io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanJson.nullableText;
 import static io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanJson.requiredArray;
 import static io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanJson.requiredLong;
 import static io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanJson.requiredText;
 
 import io.github.bohdankordon.vulcanschedulemonitor.schedule.change.ChangeSignal;
+import io.github.bohdankordon.vulcanschedulemonitor.schedule.change.LessonChangeContext;
 import io.github.bohdankordon.vulcanschedulemonitor.schedule.change.ScheduleChange;
 import io.github.bohdankordon.vulcanschedulemonitor.schedule.change.ScheduleChangeParser;
 import io.github.bohdankordon.vulcanschedulemonitor.schedule.change.UnknownScheduleChange;
@@ -90,9 +90,8 @@ public final class VulcanScheduleAdapter {
         correlatedBaseIds.add(base.rowId());
       }
       EnumSet<ChangeSignal> signals = changeSignals(base, effective);
-      changeParser
-          .parse(effective.date(), effective.lessonPeriodId(), effective.annotation(), signals)
-          .ifPresent(changes::add);
+      LessonChangeContext context = changeContext(base, effective);
+      changes.addAll(changeParser.parse(context, effective.annotations(), signals));
     }
 
     if (effectiveRows.isEmpty()) {
@@ -102,7 +101,9 @@ public final class VulcanScheduleAdapter {
       if (base.changeMarked() && !correlatedBaseIds.contains(base.rowId())) {
         changes.add(
             new UnknownScheduleChange(
-                base.date(), base.lessonPeriodId(), Set.of(ChangeSignal.BASE_MARKER)));
+                LessonChangeContext.plannedOnly(base.occurrence()),
+                Set.of(ChangeSignal.BASE_MARKER),
+                List.of()));
       }
     }
 
@@ -138,7 +139,7 @@ public final class VulcanScheduleAdapter {
               nullableLong(row, "IdPrzedmiot", OPERATION),
               nullableLong(row, "IdPracownik", OPERATION),
               nullableLong(row, "IdSala", OPERATION),
-              nullableText(row, "ChangeAnnotation", OPERATION),
+              annotations(row),
               booleanOrFalse(row, "Bolded", OPERATION),
               booleanOrFalse(row, "Striked", OPERATION)));
     }
@@ -164,6 +165,39 @@ public final class VulcanScheduleAdapter {
       signals.add(ChangeSignal.STRIKED);
     }
     return signals;
+  }
+
+  private static LessonChangeContext changeContext(BaseRow base, EffectiveRow effective) {
+    LessonOccurrence effectiveOccurrence = effective.occurrence();
+    if (base == null) {
+      return LessonChangeContext.effectiveOnly(effectiveOccurrence);
+    }
+    if (!base.date().equals(effective.date())
+        || base.lessonPeriodId() != effective.lessonPeriodId()) {
+      throw new VulcanProtocolException(OPERATION);
+    }
+    return LessonChangeContext.matched(base.occurrence(), effectiveOccurrence);
+  }
+
+  private static List<String> annotations(JsonNode row) {
+    JsonNode annotations = row.get("ChangeAnnotation");
+    if (annotations == null || annotations.isNull()) {
+      return List.of();
+    }
+    if (!annotations.isArray()) {
+      throw new VulcanProtocolException(OPERATION);
+    }
+    List<String> values = new ArrayList<>();
+    for (JsonNode annotation : annotations) {
+      if (!annotation.isString()) {
+        throw new VulcanProtocolException(OPERATION);
+      }
+      String value = annotation.stringValue().trim();
+      if (!value.isEmpty()) {
+        values.add(value);
+      }
+    }
+    return List.copyOf(values);
   }
 
   private static String formatDate(LocalDate date) {
@@ -213,7 +247,7 @@ public final class VulcanScheduleAdapter {
       Long subjectId,
       Long teacherId,
       Long roomId,
-      String annotation,
+      List<String> annotations,
       boolean bolded,
       boolean striked) {
 

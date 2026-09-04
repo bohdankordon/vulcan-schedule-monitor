@@ -37,7 +37,7 @@
         "IdPrzedmiot": 9001,
         "IdPracownik": 9101,
         "IdSala": 9201,
-        "ChangeAnnotation": null,
+        "ChangeAnnotation": [],
         "Striked": false,
         "Bolded": false
       },
@@ -51,7 +51,7 @@
         "IdPrzedmiot": 9002,
         "IdPracownik": null,
         "IdSala": null,
-        "ChangeAnnotation": null,
+        "ChangeAnnotation": [],
         "Striked": false,
         "Bolded": false
       }

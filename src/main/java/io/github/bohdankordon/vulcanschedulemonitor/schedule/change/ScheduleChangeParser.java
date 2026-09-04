@@ -1,8 +1,9 @@
 package io.github.bohdankordon.vulcanschedulemonitor.schedule.change;
 
-import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.EnumSet;
-import java.util.Optional;
+import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -19,26 +20,37 @@ public final class ScheduleChangeParser {
               + ")\\s*$",
           Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
 
-  public Optional<ScheduleChange> parse(
-      LocalDate date, long lessonPeriodId, String annotation, Set<ChangeSignal> protocolSignals) {
+  public List<ScheduleChange> parse(
+      LessonChangeContext context, List<String> annotations, Set<ChangeSignal> protocolSignals) {
+    Objects.requireNonNull(context, "context must not be null");
+    Objects.requireNonNull(annotations, "annotations must not be null");
+    Objects.requireNonNull(protocolSignals, "protocolSignals must not be null");
     EnumSet<ChangeSignal> signals =
         protocolSignals.isEmpty()
             ? EnumSet.noneOf(ChangeSignal.class)
             : EnumSet.copyOf(protocolSignals);
+    List<ScheduleChange> changes = new ArrayList<>();
+    List<String> unparsedAnnotations = new ArrayList<>();
 
-    if (annotation != null && !annotation.isBlank()) {
+    for (String annotation : annotations) {
+      if (annotation == null || annotation.isBlank()) {
+        continue;
+      }
       signals.add(ChangeSignal.ANNOTATION);
       Matcher matcher = TEACHER_SUBSTITUTION.matcher(annotation);
       if (matcher.matches()) {
-        return Optional.of(
-            new TeacherSubstitution(
-                date, lessonPeriodId, matcher.group("teacher"), matcher.group("subject")));
+        changes.add(
+            new TeacherSubstitution(context, matcher.group("teacher"), matcher.group("subject")));
+      } else {
+        unparsedAnnotations.add(annotation);
       }
     }
 
-    if (signals.isEmpty()) {
-      return Optional.empty();
+    if (!unparsedAnnotations.isEmpty()) {
+      changes.add(new UnknownScheduleChange(context, signals, unparsedAnnotations));
+    } else if (changes.isEmpty() && !signals.isEmpty()) {
+      changes.add(new UnknownScheduleChange(context, signals, List.of()));
     }
-    return Optional.of(new UnknownScheduleChange(date, lessonPeriodId, signals));
+    return List.copyOf(changes);
   }
 }

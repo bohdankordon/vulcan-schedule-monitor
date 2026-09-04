@@ -17,9 +17,13 @@ class VulcanJournalAdapterTest {
   @Test
   void recursivelyDiscoversOnlyExistingJournalsInIrregularChildren() {
     VulcanJournalAdapter adapter = adapter();
+    tools.jackson.databind.JsonNode directTree = json("get-tree");
 
-    List<SchoolClass> classes = adapter.mapResponse(json("get-tree"));
+    List<SchoolClass> classes = adapter.mapResponse(directTree);
 
+    assertThat(directTree.has("children")).isTrue();
+    assertThat(directTree.has("success")).isFalse();
+    assertThat(directTree.has("data")).isFalse();
     assertThat(classes)
         .containsExactly(
             new SchoolClass(

@@ -26,7 +26,9 @@
         "IdPrzedmiot": 9003,
         "IdPracownik": 9103,
         "IdSala": 9203,
-        "ChangeAnnotation": "zastępstwo: [T1], SUBJ_A",
+        "ChangeAnnotation": [
+          "zastępstwo: [T1], SUBJ_A"
+        ],
         "Striked": false,
         "Bolded": true
       }

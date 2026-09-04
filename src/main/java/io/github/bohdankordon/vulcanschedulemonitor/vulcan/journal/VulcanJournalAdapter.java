@@ -1,7 +1,6 @@
 package io.github.bohdankordon.vulcanschedulemonitor.vulcan.journal;
 
 import static io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanJson.booleanOrFalse;
-import static io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanJson.envelopeData;
 import static io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanJson.requiredInt;
 import static io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanJson.requiredLong;
 import static io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanJson.requiredText;
@@ -12,6 +11,7 @@ import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSession
 import java.net.URI;
 import java.time.Clock;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -37,11 +37,11 @@ public final class VulcanJournalAdapter {
   }
 
   public List<SchoolClass> getTree(int schoolYear) {
-    LocalDate requestedDate = LocalDate.now(clock);
+    LocalDateTime requestedAt = LocalDateTime.now(clock);
     URI uri =
         UriComponentsBuilder.fromUri(session.resolve("Dziennik.mvc/GetTree"))
             .queryParam("_dc", clock.millis())
-            .queryParam("zadanaData", requestedDate.atStartOfDay().format(REQUEST_TIMESTAMP))
+            .queryParam("zadanaData", requestedAt.format(REQUEST_TIMESTAMP))
             .queryParam("rokSzkolny", schoolYear)
             .queryParam("idDziennik", "")
             .queryParam("node", "root")
@@ -53,7 +53,10 @@ public final class VulcanJournalAdapter {
 
   List<SchoolClass> mapResponse(JsonNode response) {
     Map<JournalKey, SchoolClass> discovered = new LinkedHashMap<>();
-    visit(envelopeData(response, OPERATION), discovered);
+    if (response == null || !response.isObject()) {
+      throw new VulcanProtocolException(OPERATION);
+    }
+    visit(response, discovered);
     return List.copyOf(discovered.values());
   }
 

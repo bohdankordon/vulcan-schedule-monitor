@@ -91,7 +91,7 @@ class VulcanClientWireMockTests {
     server.verify(
         getRequestedFor(urlPathEqualTo(APPLICATION_PATH + "Dziennik.mvc/GetTree"))
             .withQueryParam("_dc", equalTo(Long.toString(CLOCK.millis())))
-            .withQueryParam("zadanaData", equalTo("2099-09-09T00:00:00"))
+            .withQueryParam("zadanaData", equalTo("2099-09-09T12:15:30"))
             .withQueryParam("rokSzkolny", equalTo("2099"))
             .withQueryParam("idDziennik", equalTo(""))
             .withQueryParam("node", equalTo("root")));

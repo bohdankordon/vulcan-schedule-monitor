@@ -14,4 +14,21 @@ public record LessonOccurrence(
   public LessonOccurrence {
     Objects.requireNonNull(date, "date must not be null");
   }
+
+  @Override
+  public String toString() {
+    return "LessonOccurrence[date="
+        + date
+        + ", lessonPeriodId="
+        + lessonPeriodId
+        + ", subjectId="
+        + subjectId
+        + ", teacherId="
+        + (teacherId == null ? null : "[redacted]")
+        + ", roomId="
+        + roomId
+        + ", groupId="
+        + groupId
+        + "]";
+  }
 }
