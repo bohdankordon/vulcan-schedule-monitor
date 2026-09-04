@@ -40,11 +40,25 @@ class NotificationOutboxPostgresTests extends PostgresIntegrationTestSupport {
   @Autowired private NotificationOutboxStore store;
 
   private final MutableClock clock = new MutableClock(NOW);
+  private long recipientUserId;
 
   @BeforeEach
   void clearDatabase() {
     jdbc.update("DELETE FROM notification_outbox");
+    jdbc.update("DELETE FROM monitoring_subscription");
+    jdbc.update("DELETE FROM telegram_identity");
+    jdbc.update("DELETE FROM app_user");
     jdbc.update("DELETE FROM tracking_scope");
+    recipientUserId =
+        jdbc.queryForObject(
+            """
+            INSERT INTO app_user (active, created_at, updated_at)
+            VALUES (TRUE, ?, ?)
+            RETURNING id
+            """,
+            Long.class,
+            Timestamp.from(NOW),
+            Timestamp.from(NOW));
     clock.setInstant(NOW);
   }
 
@@ -152,6 +166,7 @@ class NotificationOutboxPostgresTests extends PostgresIntegrationTestSupport {
         .satisfies(
             message -> {
               assertThat(message.id()).isEqualTo(id);
+              assertThat(message.recipientUserId()).isEqualTo(recipientUserId);
               assertThat(message.eventType()).isEqualTo(NotificationEventType.BASELINE_ESTABLISHED);
               assertThat(message.activeChangeCount()).isZero();
               assertThat(message.attemptNumber()).isOne();
@@ -333,6 +348,26 @@ class NotificationOutboxPostgresTests extends PostgresIntegrationTestSupport {
         .isOne();
   }
 
+  @Test
+  void recipientlessTerminalHistoryIsNeverClaimed() {
+    jdbc.update(
+        """
+        INSERT INTO notification_outbox
+          (event_type, journal_id, week_start, week_end, active_change_count, status,
+           attempt_count, next_attempt_at, created_at, last_failure_category)
+        VALUES ('BASELINE_ESTABLISHED', 42, ?, ?, 0, 'DEAD', 0, ?, ?, 'UNROUTABLE')
+        """,
+        WEEK_START,
+        WEEK_END,
+        Timestamp.from(NOW),
+        Timestamp.from(NOW));
+    long actionable = insert("PENDING", 0, NOW, null, null, null);
+
+    assertThat(store.claimDue(NOW, 10, LEASE))
+        .singleElement()
+        .satisfies(claim -> assertThat(claim.message().id()).isEqualTo(actionable));
+  }
+
   private NotificationOutboxDispatcher dispatcher(
       io.github.bohdankordon.vulcanschedulemonitor.notification.delivery.NotificationDeliveryGateway
           gateway) {
@@ -349,14 +384,15 @@ class NotificationOutboxPostgresTests extends PostgresIntegrationTestSupport {
     return jdbc.queryForObject(
         """
         INSERT INTO notification_outbox
-          (event_type, journal_id, week_start, week_end, active_change_count, status,
+          (event_type, journal_id, week_start, week_end, active_change_count, recipient_user_id, status,
            attempt_count, next_attempt_at, lease_until, claim_token, created_at, delivered_at)
-        VALUES ('BASELINE_ESTABLISHED', 42, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
+        VALUES ('BASELINE_ESTABLISHED', 42, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
         RETURNING id
         """,
         Long.class,
         WEEK_START,
         WEEK_END,
+        recipientUserId,
         status,
         attemptCount,
         Timestamp.from(nextAttemptAt),
