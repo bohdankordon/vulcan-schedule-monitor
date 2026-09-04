@@ -5,7 +5,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -15,7 +14,6 @@ import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.Tracking
 import io.github.bohdankordon.vulcanschedulemonitor.schedule.model.ScheduleSnapshot;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanSessionManager;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.secret.SecretDecryptionException;
-import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanFailureCategory;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanHttpException;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSession;
 import java.net.URI;
@@ -60,103 +58,25 @@ class PersistedAccountWeeklyScheduleSourceTest {
   }
 
   @Test
-  void authenticationFailureRecoversAndRetriesExactlyOnce() {
+  void authenticationFailureIsLeftForTheOuterRecoveryLayer() {
     TrackingScope scope = scope(11, 101, 77);
     VulcanSession expired = session("expired", "sid=old");
-    VulcanSession recovered = session("recovered", "sid=new");
-    when(sessions.loadCurrent(11)).thenReturn(expired, recovered);
-    when(sessions.recover(11)).thenReturn(VulcanSessionManager.RecoveryResult.RECOVERED);
-    AtomicInteger calls = new AtomicInteger();
-    SessionWeeklyScheduleFetcher fetcher =
-        (session, journalId, weekStart) -> {
-          if (calls.getAndIncrement() == 0) {
-            assertThat(session).isSameAs(expired);
-            throw VulcanHttpException.responseFailure("weekly", 401);
-          }
-          assertThat(session).isSameAs(recovered);
-          return snapshot(scope);
-        };
-    var source = new PersistedAccountWeeklyScheduleSource(sessions, fetcher);
-
-    assertThat(source.fetchCompleteWeeklySnapshot(scope)).isEqualTo(snapshot(scope));
-
-    assertThat(calls).hasValue(2);
-    verify(sessions).recover(11);
-    verify(sessions, times(2)).loadCurrent(11);
-    verify(sessions).replace(11, recovered);
-    verify(sessions, never()).replace(11, expired);
-  }
-
-  @Test
-  void recoveredRequestFailureDoesNotEnterARecoveryLoop() {
-    TrackingScope scope = scope(11, 101, 77);
-    when(sessions.loadCurrent(11))
-        .thenReturn(session("expired", "sid=old"), session("recovered", "sid=new"));
-    when(sessions.recover(11)).thenReturn(VulcanSessionManager.RecoveryResult.RECOVERED);
     AtomicInteger calls = new AtomicInteger();
     SessionWeeklyScheduleFetcher fetcher =
         (session, journalId, weekStart) -> {
           calls.incrementAndGet();
-          throw VulcanHttpException.unexpectedHtml("weekly");
+          assertThat(session).isSameAs(expired);
+          throw VulcanHttpException.responseFailure("weekly", 401);
         };
+    when(sessions.loadCurrent(11)).thenReturn(expired);
     var source = new PersistedAccountWeeklyScheduleSource(sessions, fetcher);
 
     assertThatThrownBy(() -> source.fetchCompleteWeeklySnapshot(scope))
-        .isInstanceOf(VulcanHttpException.class)
-        .extracting(failure -> ((VulcanHttpException) failure).category())
-        .isEqualTo(VulcanFailureCategory.UNEXPECTED_HTML);
-
-    assertThat(calls).hasValue(2);
-    verify(sessions).recover(11);
-    verify(sessions).markReconnectRequired(11);
-  }
-
-  @Test
-  void noRememberedCredentialsPreservesAuthenticationOutcomeWithoutRetrying() {
-    TrackingScope scope = scope(11, 101, 77);
-    when(sessions.loadCurrent(11)).thenReturn(session("expired", "sid=old"));
-    when(sessions.recover(11)).thenReturn(VulcanSessionManager.RecoveryResult.RECONNECT_REQUIRED);
-    AtomicInteger calls = new AtomicInteger();
-    var source =
-        new PersistedAccountWeeklyScheduleSource(
-            sessions,
-            (session, journalId, weekStart) -> {
-              calls.incrementAndGet();
-              throw VulcanHttpException.responseFailure("weekly", 403);
-            });
-
-    assertThatThrownBy(() -> source.fetchCompleteWeeklySnapshot(scope))
-        .isInstanceOf(VulcanHttpException.class)
-        .extracting(failure -> ((VulcanHttpException) failure).category())
-        .isEqualTo(VulcanFailureCategory.AUTHENTICATION_REQUIRED);
+        .isInstanceOf(VulcanHttpException.class);
 
     assertThat(calls).hasValue(1);
-    verify(sessions).recover(11);
-    verify(sessions, never())
-        .replace(org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.any());
-  }
-
-  @Test
-  void transientRecoveryFailureDoesNotMarkReconnectOrRetryRequest() {
-    TrackingScope scope = scope(11, 101, 77);
-    when(sessions.loadCurrent(11)).thenReturn(session("expired", "sid=old"));
-    when(sessions.recover(11)).thenReturn(VulcanSessionManager.RecoveryResult.TRANSIENT_FAILURE);
-    AtomicInteger calls = new AtomicInteger();
-    var source =
-        new PersistedAccountWeeklyScheduleSource(
-            sessions,
-            (session, journalId, weekStart) -> {
-              calls.incrementAndGet();
-              throw VulcanHttpException.responseFailure("weekly", 401);
-            });
-
-    assertThatThrownBy(() -> source.fetchCompleteWeeklySnapshot(scope))
-        .isInstanceOf(VulcanHttpException.class)
-        .extracting(failure -> ((VulcanHttpException) failure).category())
-        .isEqualTo(VulcanFailureCategory.TRANSPORT_ERROR);
-
-    assertThat(calls).hasValue(1);
-    verify(sessions, never()).markReconnectRequired(11);
+    verify(sessions, never()).recover(11);
+    verify(sessions, never()).replace(11, expired);
   }
 
   @Test

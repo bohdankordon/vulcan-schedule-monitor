@@ -14,6 +14,11 @@ import com.github.tomakehurst.wiremock.core.WireMockConfiguration;
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.orchestration.MonitoringScopePlanner;
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.orchestration.MonitoringTarget;
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.orchestration.MonitoringTargetProvider;
+import io.github.bohdankordon.vulcanschedulemonitor.monitoring.orchestration.RateLimitBackoffGate;
+import io.github.bohdankordon.vulcanschedulemonitor.monitoring.orchestration.RecoveringAccountWeeklyScheduleSource;
+import io.github.bohdankordon.vulcanschedulemonitor.monitoring.orchestration.ResilientWeeklyScheduleSource;
+import io.github.bohdankordon.vulcanschedulemonitor.monitoring.orchestration.ScheduleSourceException;
+import io.github.bohdankordon.vulcanschedulemonitor.monitoring.orchestration.SourceFailureKind;
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.ScheduleChangeTracker;
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.ScheduleRefreshCoordinator;
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.TrackingScope;
@@ -34,13 +39,13 @@ import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanSess
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanSessionVerifier;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.catalog.VulcanClassCatalog;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.secret.VulcanSecretStore;
-import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanHttpException;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.schedule.PersistedAccountWeeklyScheduleSource;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSessionMaterial;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -130,8 +135,7 @@ class AccountAwareMonitoringEndToEndPostgresTests extends PostgresIntegrationTes
     TrackingScope current = planned.getFirst();
     assertThat(current.weekStart()).isEqualTo(WEEK_START);
 
-    var source = new PersistedAccountWeeklyScheduleSource(sessions);
-    var result = new ScheduleRefreshCoordinator(source, tracker).refreshSuccessfulWeek(current);
+    var result = productionCoordinator().refreshSuccessfulWeek(current);
 
     assertThat(result.baselineEstablishedNow()).isTrue();
     assertThat(sessions.loadCurrent(owner.accountId()).snapshotMaterial().cookieHeader())
@@ -176,8 +180,7 @@ class AccountAwareMonitoringEndToEndPostgresTests extends PostgresIntegrationTes
     List<TrackingScope> currentScopes =
         new MonitoringScopePlanner(clock)
             .plan(targets).stream().filter(scope -> scope.weekStart().equals(WEEK_START)).toList();
-    var coordinator =
-        new ScheduleRefreshCoordinator(new PersistedAccountWeeklyScheduleSource(sessions), tracker);
+    var coordinator = productionCoordinator();
     currentScopes.forEach(coordinator::refreshSuccessfulWeek);
 
     assertThat(targets)
@@ -275,9 +278,7 @@ class AccountAwareMonitoringEndToEndPostgresTests extends PostgresIntegrationTes
     TrackingScope scope =
         new MonitoringScopePlanner(clock).plan(targetProvider.activeTargets()).getFirst();
 
-    var result =
-        new ScheduleRefreshCoordinator(new PersistedAccountWeeklyScheduleSource(sessions), tracker)
-            .refreshSuccessfulWeek(scope);
+    var result = productionCoordinator().refreshSuccessfulWeek(scope);
 
     assertThat(result.baselineEstablishedNow()).isTrue();
     assertThat(fakes.authenticationCalls).hasValue(1);
@@ -309,8 +310,7 @@ class AccountAwareMonitoringEndToEndPostgresTests extends PostgresIntegrationTes
                     .withBody(text("schedule-substitution"))));
     TrackingScope scope =
         new MonitoringScopePlanner(clock).plan(targetProvider.activeTargets()).getFirst();
-    var coordinator =
-        new ScheduleRefreshCoordinator(new PersistedAccountWeeklyScheduleSource(sessions), tracker);
+    var coordinator = productionCoordinator();
     coordinator.refreshSuccessfulWeek(scope);
     assertThat(jdbc.queryForObject("SELECT count(*) FROM schedule_change_state", Integer.class))
         .isOne();
@@ -323,7 +323,10 @@ class AccountAwareMonitoringEndToEndPostgresTests extends PostgresIntegrationTes
             .willReturn(aResponse().withStatus(401)));
 
     assertThatThrownBy(() -> coordinator.refreshSuccessfulWeek(scope))
-        .isInstanceOf(VulcanHttpException.class);
+        .isInstanceOfSatisfying(
+            ScheduleSourceException.class,
+            failure ->
+                assertThat(failure.kind()).isEqualTo(SourceFailureKind.AUTHENTICATION_REQUIRED));
 
     assertThat(fakes.authenticationCalls).hasValue(0);
     assertThat(
@@ -350,6 +353,21 @@ class AccountAwareMonitoringEndToEndPostgresTests extends PostgresIntegrationTes
                     .withStatus(200)
                     .withHeader("Content-Type", "application/json")
                     .withBody(text("schedule-normal"))));
+  }
+
+  private ScheduleRefreshCoordinator productionCoordinator() {
+    var persisted = new PersistedAccountWeeklyScheduleSource(sessions);
+    var resilient =
+        new ResilientWeeklyScheduleSource(
+            persisted,
+            ignored -> {},
+            new RateLimitBackoffGate(clock),
+            3,
+            Duration.ofSeconds(1),
+            Duration.ofSeconds(5),
+            Duration.ofSeconds(10));
+    var recovering = new RecoveringAccountWeeklyScheduleSource(resilient, sessions);
+    return new ScheduleRefreshCoordinator(recovering::fetchCompleteWeeklySnapshot, tracker);
   }
 
   private AccountClass createAccountClass(

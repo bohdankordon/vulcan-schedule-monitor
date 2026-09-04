@@ -65,10 +65,16 @@ class MonitoringConfiguration {
   }
 
   @Bean
+  RecoveringAccountWeeklyScheduleSource recoveringAccountWeeklyScheduleSource(
+      ResilientWeeklyScheduleSource source, VulcanSessionManager sessions) {
+    return new RecoveringAccountWeeklyScheduleSource(source, sessions);
+  }
+
+  @Bean
   MonitoringCycleRunner monitoringCycleRunner(
       MonitoringTargetProvider targetProvider,
       MonitoringScopePlanner scopePlanner,
-      ResilientWeeklyScheduleSource source,
+      RecoveringAccountWeeklyScheduleSource source,
       ScheduleChangeTracker tracker,
       DelayStrategy monitoringDelayStrategy,
       MonitoringProperties properties,

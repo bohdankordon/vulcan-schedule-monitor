@@ -5,8 +5,6 @@ import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.WeeklySc
 import io.github.bohdankordon.vulcanschedulemonitor.schedule.model.ScheduleSnapshot;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.VulcanClient;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanSessionManager;
-import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanFailureCategory;
-import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanHttpException;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanProtocolException;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSession;
 import java.util.Objects;
@@ -36,34 +34,7 @@ public final class PersistedAccountWeeklyScheduleSource implements WeeklySchedul
   public ScheduleSnapshot fetchCompleteWeeklySnapshot(TrackingScope scope) {
     Objects.requireNonNull(scope, "scope must not be null");
     VulcanSession session = sessions.loadCurrent(scope.vulcanAccountId());
-    try {
-      return fetchAndPersist(scope, session);
-    } catch (VulcanHttpException failure) {
-      if (!requiresAuthentication(failure.category())) {
-        throw failure;
-      }
-      return recoverAndRetryOnce(scope, failure);
-    }
-  }
-
-  private ScheduleSnapshot recoverAndRetryOnce(TrackingScope scope, VulcanHttpException original) {
-    VulcanSessionManager.RecoveryResult result = sessions.recover(scope.vulcanAccountId());
-    if (result == VulcanSessionManager.RecoveryResult.RECONNECT_REQUIRED) {
-      throw original;
-    }
-    if (result == VulcanSessionManager.RecoveryResult.TRANSIENT_FAILURE) {
-      throw VulcanHttpException.transportFailure(OPERATION);
-    }
-
-    VulcanSession recovered = sessions.loadCurrent(scope.vulcanAccountId());
-    try {
-      return fetchAndPersist(scope, recovered);
-    } catch (VulcanHttpException retryFailure) {
-      if (requiresAuthentication(retryFailure.category())) {
-        sessions.markReconnectRequired(scope.vulcanAccountId());
-      }
-      throw retryFailure;
-    }
+    return fetchAndPersist(scope, session);
   }
 
   private ScheduleSnapshot fetchAndPersist(TrackingScope scope, VulcanSession session) {
@@ -76,11 +47,5 @@ public final class PersistedAccountWeeklyScheduleSource implements WeeklySchedul
     }
     sessions.replace(scope.vulcanAccountId(), session);
     return snapshot;
-  }
-
-  private static boolean requiresAuthentication(VulcanFailureCategory category) {
-    return category == VulcanFailureCategory.AUTHENTICATION_REQUIRED
-        || category == VulcanFailureCategory.SESSION_REDIRECT
-        || category == VulcanFailureCategory.UNEXPECTED_HTML;
   }
 }

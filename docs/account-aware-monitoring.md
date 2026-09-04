@@ -33,11 +33,11 @@ This policy avoids guessed ownership, cross-account changes, false `UPDATED`/`RE
 
 An enabled preference produces a target only when its user and catalog row are active, its account is `CONNECTED`, and all ownership joins agree. The planner emits current and next week for every distinct catalog class. Tracking locks `catalog_class_id + week_start`, so same-journal accounts establish independent baselines and active state.
 
-The persisted weekly source decrypts only the selected account's session, builds a per-call `VulcanClient`, fetches the account-local journal, and encrypts post-response cookie rotation before returning a snapshot. If any of those steps fails, reconciliation is not invoked.
+The persisted weekly source decrypts only the selected account's session, builds a per-call `VulcanClient`, fetches the account-local journal, and encrypts post-response cookie rotation before returning a snapshot. An inner resilience layer handles bounded retries for ordinary weekly transport/server failures and account-scoped rate limits. Authentication recovery is a separate outer layer, so an ordinary HTTP retry can never reset the recovery budget. If any layer fails, reconciliation is not invoked.
 
-Authentication-required responses trigger one recovery attempt. Remembered credentials allow the existing isolated Playwright boundary to re-authenticate and verify a new session before one weekly retry. No remembered credentials or non-transient interactive authentication failures produce `RECONNECT_REQUIRED`; transient recovery leaves the account eligible for a later attempt. No CAPTCHA or MFA bypass exists.
+One logical scope execution has at most one automatic recovery attempt. Remembered credentials allow the existing isolated Playwright boundary to re-authenticate and verify a new session before the weekly operation is tried again through ordinary request resilience. Authentication failure after successful recovery marks the account `RECONNECT_REQUIRED` and cannot recursively enter recovery. No remembered credentials or non-transient interactive authentication failures also produce `RECONNECT_REQUIRED`; transient recovery leaves the account eligible for a later cycle. No CAPTCHA or MFA bypass exists.
 
-The cycle blocks remaining work only for the account that encountered unrecoverable authentication or a long rate limit. Another account continues even when its journal number is identical. Rate gates and recovery locks are account keyed and process local.
+The cycle blocks remaining work only for the account that encountered unrecoverable authentication, transient recovery failure, or a long rate limit. A transient recovery may be attempted once again in a later cycle. Another account continues even when its journal number is identical. Rate gates and recovery locks are account keyed and process local.
 
 ## Telegram boundary
 

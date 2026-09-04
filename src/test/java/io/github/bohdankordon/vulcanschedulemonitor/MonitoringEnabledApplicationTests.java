@@ -3,6 +3,7 @@ package io.github.bohdankordon.vulcanschedulemonitor;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.orchestration.MonitoringScheduler;
+import io.github.bohdankordon.vulcanschedulemonitor.monitoring.orchestration.RecoveringAccountWeeklyScheduleSource;
 import io.github.bohdankordon.vulcanschedulemonitor.testsupport.PostgresIntegrationTestSupport;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -20,9 +21,11 @@ import org.springframework.boot.test.context.SpringBootTest;
 class MonitoringEnabledApplicationTests extends PostgresIntegrationTestSupport {
 
   @Autowired private MonitoringScheduler scheduler;
+  @Autowired private RecoveringAccountWeeklyScheduleSource source;
 
   @Test
   void explicitlyEnabledMonitoringWiresWithSecureSyntheticAdaptersWithoutExternalCalls() {
     assertThat(scheduler).isNotNull();
+    assertThat(source).isNotNull();
   }
 }

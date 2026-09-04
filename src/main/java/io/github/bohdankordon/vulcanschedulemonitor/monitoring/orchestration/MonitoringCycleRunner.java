@@ -125,6 +125,7 @@ public final class MonitoringCycleRunner {
 
   private static boolean blocksAccount(MonitoringOutcomeCategory category) {
     return category == MonitoringOutcomeCategory.AUTHENTICATION_REQUIRED
+        || category == MonitoringOutcomeCategory.TRANSIENT_RECOVERY_FAILURE
         || category == MonitoringOutcomeCategory.DEFERRED_RATE_LIMIT;
   }
 
@@ -141,6 +142,7 @@ public final class MonitoringCycleRunner {
   private static MonitoringOutcomeCategory map(SourceFailureKind kind) {
     return switch (kind) {
       case AUTHENTICATION_REQUIRED -> MonitoringOutcomeCategory.AUTHENTICATION_REQUIRED;
+      case TRANSIENT_RECOVERY_FAILURE -> MonitoringOutcomeCategory.TRANSIENT_RECOVERY_FAILURE;
       case DEFERRED_RATE_LIMIT -> MonitoringOutcomeCategory.DEFERRED_RATE_LIMIT;
       case TRANSIENT_FAILURE_EXHAUSTED -> MonitoringOutcomeCategory.TRANSIENT_FAILURE_EXHAUSTED;
       case INTERRUPTED -> MonitoringOutcomeCategory.INTERRUPTED;
