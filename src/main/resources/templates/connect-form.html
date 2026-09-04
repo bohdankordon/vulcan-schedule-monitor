@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Connect VULCAN</title>
+  <style>body{font:16px system-ui,sans-serif;max-width:36rem;margin:3rem auto;padding:0 1rem;color:#18202a}label{display:block;margin-top:1rem}input{box-sizing:border-box;width:100%;padding:.65rem;margin-top:.3rem}input[type=checkbox]{width:auto}button{margin-top:1.4rem;padding:.7rem 1rem}.error{padding:.8rem;background:#fee;color:#700}</style>
+</head>
+<body>
+<main>
+  <h1>Connect your VULCAN account</h1>
+  <p>Enter credentials only here, never in Telegram.</p>
+  <p class="error" th:if="${errorMessage}" th:text="${errorMessage}"></p>
+  <form method="post" action="/connect">
+    <input type="hidden" th:name="${_csrf.parameterName}" th:value="${_csrf.token}">
+    <label>VULCAN portal URL<input name="portalUrl" type="url" required autocomplete="url"></label>
+    <label>Login / username<input name="login" type="text" required autocomplete="username"></label>
+    <label>Password<input name="password" type="password" required autocomplete="current-password"></label>
+    <label><input name="rememberCredentials" type="checkbox" value="true"> Remember credentials for automatic reconnect</label>
+    <button type="submit">Connect securely</button>
+  </form>
+</main>
+</body>
+</html>

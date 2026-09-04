@@ -10,6 +10,13 @@ vulcan:
   monitoring:
     enabled: false
     poll-interval: PT5M
+  connection:
+    enabled: false
+    public-base-url: ""
+    token-ttl: PT10M
+    max-credential-attempts: 5
+    master-key: ${VULCAN_MASTER_KEY:}
+    playwright-headless: true
 
 telegram:
   bot:

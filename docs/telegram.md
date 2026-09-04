@@ -43,11 +43,11 @@ Supported commands:
 
 - `/start` — welcome and current limitations;
 - `/help` — supported command list;
-- `/status` — Telegram registration and active-monitoring count;
+- `/status` — safe VULCAN connection state, available-class count, and active-monitoring count;
 - `/subscriptions` — temporary schedule references; and
-- `/connect` — information about the future secure HTTPS connection flow.
+- `/connect` — a new short-lived, single-use HTTPS connection link when the feature is enabled, or a safe disabled message otherwise.
 
-Bot-name suffixes such as `/start@somebot`, surrounding whitespace, and case normalization are supported. There are no raw journal-ID subscription mutation commands. Secure VULCAN account connection, class discovery, class-selection keyboards, and human-readable class labels remain planned. Users must never send VULCAN credentials through Telegram.
+Bot-name suffixes such as `/start@somebot`, surrounding whitespace, and case normalization are supported. There are no raw journal-ID subscription mutation commands. `/connect` never parses credential arguments and never logs the generated URL. Credentials are entered only on the self-contained Spring MVC page. Class-selection keyboards and account-aware subscription changes remain Phase 8 work. Users must never send VULCAN credentials through Telegram.
 
 Command replies are direct best-effort plain-text sends and are not durable. A reply failure is sanitized and isolated from long polling.
 
@@ -68,4 +68,4 @@ Structured Telegram API failures are classified as rate-limited, authentication,
 
 The scheduler uses a conservative batch size of one, a two-second default cadence, a local overlap guard, and one dispatch call per tick. It checks the provider gate before any claim, so deferred or suspended ticks consume no attempts and send nothing. Existing two-minute leases, five attempts, and the 15-minute retry cap remain unchanged. Delivery is at least once: provider acceptance followed by a crash before acknowledgement may produce a duplicate.
 
-This adapter is not full product readiness. Secure VULCAN connect pages, Playwright login, encrypted session or credential persistence, automatic re-login, user/account association, a persisted class catalog, class-selection keyboards, subscription changes through discovered classes, richer rendering, deployment, multi-instance coordination, and delivered-outbox retention cleanup remain planned.
+This adapter is not full product readiness. Phase 7 adds connection links and status reporting, but does not automatically subscribe discovered classes or use a connected account for monitoring. Class-selection keyboards, account-aware tracking/subscription identity, richer rendering, deployment, multi-instance coordination, and delivered-outbox retention cleanup remain planned.
