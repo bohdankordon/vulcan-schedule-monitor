@@ -3,14 +3,23 @@ package io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import io.github.bohdankordon.vulcanschedulemonitor.monitoring.orchestration.MonitoringCycleRunner;
+import io.github.bohdankordon.vulcanschedulemonitor.monitoring.orchestration.MonitoringOutcomeCategory;
+import io.github.bohdankordon.vulcanschedulemonitor.monitoring.orchestration.MonitoringScopePlanner;
+import io.github.bohdankordon.vulcanschedulemonitor.monitoring.orchestration.MonitoringTarget;
+import io.github.bohdankordon.vulcanschedulemonitor.monitoring.orchestration.RateLimitBackoffGate;
+import io.github.bohdankordon.vulcanschedulemonitor.monitoring.orchestration.ResilientWeeklyScheduleSource;
+import io.github.bohdankordon.vulcanschedulemonitor.monitoring.orchestration.ScopeMonitoringOutcome;
 import io.github.bohdankordon.vulcanschedulemonitor.schedule.change.LessonChangeContext;
 import io.github.bohdankordon.vulcanschedulemonitor.schedule.change.ScheduleChange;
 import io.github.bohdankordon.vulcanschedulemonitor.schedule.change.TeacherSubstitution;
 import io.github.bohdankordon.vulcanschedulemonitor.schedule.model.LessonOccurrence;
 import io.github.bohdankordon.vulcanschedulemonitor.schedule.model.ScheduleSnapshot;
 import io.github.bohdankordon.vulcanschedulemonitor.testsupport.PostgresIntegrationTestSupport;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanHttpException;
 import java.sql.Timestamp;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -246,6 +255,48 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
         .isInstanceOf(IllegalStateException.class)
         .hasMessage("synthetic fetch failure");
 
+    assertThat(databaseState()).isEqualTo(before);
+    assertThat(jdbc.queryForObject("SELECT count(*) FROM schedule_change_state", Integer.class))
+        .isOne();
+  }
+
+  @Test
+  void exhaustedScheduledRefreshLeavesPostgresStateUnchangedAndEmitsNoResolvedTransition() {
+    ScheduleChange existing = substitution(10L, 20L, 30L, 40L, "T2", "S2");
+    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(snapshot(existing));
+    Map<String, Object> before = databaseState();
+    Clock cycleClock = Clock.fixed(Instant.parse("2026-09-08T10:00:00Z"), ZoneOffset.UTC);
+    WeeklyScheduleSource failingSource =
+        ignored -> {
+          throw VulcanHttpException.transportFailure("schedule");
+        };
+    ResilientWeeklyScheduleSource resilientSource =
+        new ResilientWeeklyScheduleSource(
+            failingSource,
+            ignored -> {},
+            new RateLimitBackoffGate(cycleClock),
+            3,
+            Duration.ofSeconds(1),
+            Duration.ofSeconds(30),
+            Duration.ofSeconds(10));
+    MonitoringCycleRunner runner =
+        new MonitoringCycleRunner(
+            () -> List.of(new MonitoringTarget(JOURNAL_ID)),
+            new MonitoringScopePlanner(cycleClock),
+            new ScheduleRefreshCoordinator(
+                resilientSource::fetchCompleteWeeklySnapshot, trackerAt(SECOND_FETCH)),
+            ignored -> {},
+            Duration.ZERO,
+            cycleClock);
+
+    var summary = runner.runCycle();
+
+    assertThat(summary.outcomes())
+        .extracting(ScopeMonitoringOutcome::category)
+        .containsOnly(MonitoringOutcomeCategory.TRANSIENT_FAILURE_EXHAUSTED);
+    assertThat(summary.outcomes())
+        .extracting(ScopeMonitoringOutcome::transitionCount)
+        .containsOnly(0);
     assertThat(databaseState()).isEqualTo(before);
     assertThat(jdbc.queryForObject("SELECT count(*) FROM schedule_change_state", Integer.class))
         .isOne();
