@@ -31,6 +31,8 @@ Telegram Bot API -> long polling -> TelegramUpdateConsumer -> TelegramUpdateRout
 
 Each registration attempt owns a named scheduled executor and an OkHttp client. A failed partial attempt closes the wrapper; shutdown closes bot sessions/application first, then shuts down the executor, OkHttp dispatcher, connection pool, and optional cache.
 
+TelegramBots uses a 50-second server-side `getUpdates` long poll. The owned long-polling HTTP client therefore has a deliberately larger, finite 65-second read timeout, preventing an idle connection from being mistaken for a transport failure while retaining a bounded network wait.
+
 Registration runs under a thin scheduled supervisor rather than application-context startup. Transient failures keep PostgreSQL, monitoring, and outbox accumulation alive and retry without sleeping after 5 seconds, 15 seconds, 45 seconds, then two minutes capped. Authentication failure suspends Telegram work until process restart. Restart clears all process-local gate and retry state.
 
 ## Accepted updates and commands
