@@ -10,3 +10,11 @@ vulcan:
   monitoring:
     enabled: false
     poll-interval: PT5M
+
+telegram:
+  bot:
+    enabled: false
+    token: ${TELEGRAM_BOT_TOKEN:}
+  dispatch:
+    interval: PT2S
+    initial-delay: PT2S

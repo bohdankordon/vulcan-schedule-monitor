@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-Vulcan Schedule Monitor currently contains its Spring Boot foundation, a read-only VULCAN integration slice, PostgreSQL-backed users and monitoring subscriptions, active schedule-change tracking, a per-recipient transactional notification outbox with a generic durable dispatcher core, and a disabled-by-default scheduled monitoring foundation. This document separates implemented foundations from future architecture without prescribing unimplemented class designs.
+Vulcan Schedule Monitor currently contains its Spring Boot foundation, a read-only VULCAN integration slice, PostgreSQL-backed users and monitoring subscriptions, active schedule-change tracking, a per-recipient transactional notification outbox, a disabled-by-default scheduled monitoring foundation, and a disabled-by-default Telegram long-polling and delivery adapter. This document separates implemented foundations from future architecture without prescribing unimplemented class designs.
 
 ## Architectural style
 
@@ -79,7 +79,22 @@ The notification boundary currently provides:
 - success acknowledgement, bounded exponential retry, provider `retryAfter`, permanent failure, and five-attempt exhaustion handling; and
 - a programmatically callable sequential dispatcher that performs delivery outside database transactions.
 
-Legacy V2 `PENDING` or `IN_FLIGHT` rows have no recipient and migrate to `DEAD/UNROUTABLE`; historical terminal rows may remain recipient-less. New actionable rows must reference an application user. No production delivery gateway or dispatcher scheduler is registered. Normal startup and monitoring therefore remain independent of external notification providers; pending events may accumulate safely.
+Legacy V2 `PENDING` or `IN_FLIGHT` rows have no recipient and migrate to `DEAD/UNROUTABLE`; historical terminal rows may remain recipient-less. New actionable rows must reference an application user. The Telegram delivery gateway resolves the internal recipient only at the adapter edge, and its scheduled dispatcher uses batch size one. Because the whole Telegram module is conditional, default startup remains independent of external notification providers and pending events may accumulate safely.
+
+The Telegram adapter currently provides:
+
+- TelegramBots 10.2.1 core-module integration without its Spring Boot 3-targeted starter;
+- manually owned long-polling executor and OkHttp resources with explicit shutdown;
+- supervised registration with 5-second, 15-second, 45-second, and capped two-minute retries;
+- process-local provider deferral for structured `429 retry_after` and suspension-until-restart for `401`;
+- a thin ordered update consumer, private-chat update router, and isolated command handlers;
+- Telegram identity registration through the existing application service;
+- `/start`, `/help`, `/status`, `/subscriptions`, and informational `/connect` plain-text replies;
+- a minimized plain-text notification formatter and `NotificationDeliveryGateway` implementation;
+- a two-second, overlap-guarded durable dispatch trigger with a provider-specific batch size of one; and
+- no-network lifecycle/context tests plus PostgreSQL-to-fake-Telegram delivery and flood-control regressions.
+
+Direct command replies are best effort and bypass the outbox. Monitoring notifications retain at-least-once semantics. Unsupported group/channel/callback/edited/media updates are ignored, and no command accepts VULCAN credentials or arbitrary journal-ID subscription changes.
 
 ## Planned modules
 
@@ -91,11 +106,11 @@ The planned major module boundaries are:
 - **monitoring** — implemented successful-snapshot reconciliation and conditional, traffic-conscious scheduling foundation;
 - **subscriptions** — implemented internal users, minimized Telegram identity, and monitoring preferences;
 - **notification/outbox** — implemented reliable notification intent, delivery state, and generic dispatcher core;
-- **Telegram adapter** — user interaction and outbound messages;
+- **Telegram adapter** — implemented private-chat interaction, long polling, and outbound delivery, with future class-selection UX;
 - **persistence** — implemented tracking-state storage adapter and transaction boundary, with future feature storage added only as required; and
 - **secure account connection** — careful onboarding without exposing credentials.
 
-The VULCAN integration, initial schedule/change domain, application users, subscriptions, subscription-backed target/recipient routing, persistent active-change tracking, per-recipient transactional notification intent persistence, and generic durable dispatch core are implemented. The remaining items are intended boundaries, not placeholder packages.
+The VULCAN integration, initial schedule/change domain, application users, subscriptions, subscription-backed target/recipient routing, persistent active-change tracking, per-recipient transactional notification intent persistence, generic durable dispatch core, and initial Telegram transport/runtime are implemented. The remaining items are intended boundaries, not placeholder packages.
 
 ## Technology roadmap
 
@@ -105,14 +120,16 @@ The following capabilities are planned but **not implemented yet**:
 
 - production session adapter;
 - automatic session recovery;
-- TelegramBots Java library;
-- Telegram command/update router, formatter, and delivery gateway;
-- dispatcher scheduling;
 - Playwright for Java;
-- class-selection UX using discovered VULCAN journals; and
+- secure VULCAN connect page and encrypted session/credential persistence;
+- automatic VULCAN re-login and user/account association;
+- persisted class catalog and human-readable class labels;
+- Telegram class-selection keyboards and subscription changes through discovered classes;
+- richer subject/period/teacher notification rendering;
+- delivered-outbox retention cleanup; and
 - production deployment.
 
-The next integration stage adds the Telegram adapter and delivery gateway without changing durable delivery ownership. Later stages still plan dispatcher scheduling, automated authentication/re-login, VULCAN connect/login and class-selection UX, multi-instance monitoring coordination, durable account-level rate limiting, and production deployment. Delivered-row retention and cleanup policy also remain future work. The current database and scheduling layers are foundations for those features, not a claim that the bot works yet.
+Later stages still plan automated authentication/re-login, the secure VULCAN connect flow, class catalog and selection UX, multi-instance monitoring coordination, durable account-level rate limiting, richer notifications, retention cleanup, and production deployment. The current adapter is a tested transport/runtime boundary, not a claim of full product readiness.
 
 Technology choices beyond this list will be made when a concrete feature requires them. New libraries and frameworks should use their latest stable, mutually compatible releases at the time of adoption. Spring Boot dependency management remains the default; explicit version overrides should represent a deliberate, verified project baseline.
 
