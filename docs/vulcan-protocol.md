@@ -6,6 +6,8 @@ This document describes unofficial, read-only behavior derived from browser netw
 
 The implementation should minimize traffic and collect only data needed for the user's requested monitoring. Authentication secrets, cookies, session data, tenant identifiers, personal data, HAR captures, and raw production responses must remain outside the repository. Examples and tests must use synthetic data.
 
+The project is intended only for accounts and resources the user is authorized to access. Integrations must respect authentication and authorization controls and must not bypass or circumvent access restrictions.
+
 Observed browser behavior uses week-sized date ranges for schedule requests. Longer ranges have not been verified and must not be assumed to work.
 
 ## Observed endpoint responsibilities

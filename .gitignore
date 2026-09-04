@@ -8,6 +8,11 @@ target/
 !.env.example
 secrets/
 *.har
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
 
 # Future browser automation session state
 playwright/.auth/

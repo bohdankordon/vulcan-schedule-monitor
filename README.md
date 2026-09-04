@@ -34,7 +34,7 @@ See [Architecture](docs/architecture.md) and [Unofficial VULCAN protocol notes](
 - Java 21
 - Spring Boot 4.1.1
 - Maven 3.9.16 through Maven Wrapper
-- JUnit 6.1.3
+- JUnit 6
 - Spotless formatting checks
 - GitHub Actions
 
