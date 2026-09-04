@@ -19,6 +19,8 @@ import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 
 public final class TelegramBotsLongPollingEngine implements TelegramLongPollingEngine {
 
+  private static final Duration LONG_POLLING_READ_TIMEOUT = Duration.ofSeconds(65);
+
   private final ScheduledExecutorService executor;
   private final OkHttpClient httpClient;
   private final ObjectMapper objectMapper;
@@ -29,9 +31,17 @@ public final class TelegramBotsLongPollingEngine implements TelegramLongPollingE
   public TelegramBotsLongPollingEngine() {
     this(
         newOwnedExecutor(),
-        new OkHttpClient(),
+        newLongPollingHttpClient(),
         new TelegramApiFailureClassifier(),
         TelegramUrl.DEFAULT_URL);
+  }
+
+  static OkHttpClient newLongPollingHttpClient() {
+    return new OkHttpClient.Builder().readTimeout(LONG_POLLING_READ_TIMEOUT).build();
+  }
+
+  static DefaultGetUpdatesGenerator newGetUpdatesGenerator() {
+    return new DefaultGetUpdatesGenerator();
   }
 
   static ScheduledExecutorService newOwnedExecutor() {
@@ -70,7 +80,7 @@ public final class TelegramBotsLongPollingEngine implements TelegramLongPollingE
       throws TelegramTransportException {
     try {
       new OkHttpTelegramClient(objectMapper, httpClient, token, telegramUrl).execute(new GetMe());
-      application.registerBot(token, () -> telegramUrl, new DefaultGetUpdatesGenerator(), consumer);
+      application.registerBot(token, () -> telegramUrl, newGetUpdatesGenerator(), consumer);
     } catch (TelegramApiException exception) {
       throw classifier.classify(exception);
     }
@@ -102,6 +112,14 @@ public final class TelegramBotsLongPollingEngine implements TelegramLongPollingE
 
   boolean httpDispatcherShutdown() {
     return httpClient.dispatcher().executorService().isShutdown();
+  }
+
+  Duration httpReadTimeout() {
+    return Duration.ofMillis(httpClient.readTimeoutMillis());
+  }
+
+  Duration httpCallTimeout() {
+    return Duration.ofMillis(httpClient.callTimeoutMillis());
   }
 
   boolean awaitExecutorTermination(Duration timeout) throws InterruptedException {

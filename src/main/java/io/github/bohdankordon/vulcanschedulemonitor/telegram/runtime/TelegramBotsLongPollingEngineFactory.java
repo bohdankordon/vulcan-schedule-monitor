@@ -1,7 +1,6 @@
 package io.github.bohdankordon.vulcanschedulemonitor.telegram.runtime;
 
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.transport.TelegramApiFailureClassifier;
-import okhttp3.OkHttpClient;
 
 public final class TelegramBotsLongPollingEngineFactory
     implements TelegramLongPollingEngineFactory {
@@ -9,7 +8,7 @@ public final class TelegramBotsLongPollingEngineFactory
   @Override
   public TelegramLongPollingEngine create() {
     var executor = TelegramBotsLongPollingEngine.newOwnedExecutor();
-    var httpClient = new OkHttpClient();
+    var httpClient = TelegramBotsLongPollingEngine.newLongPollingHttpClient();
     try {
       return new TelegramBotsLongPollingEngine(
           executor, httpClient, new TelegramApiFailureClassifier());

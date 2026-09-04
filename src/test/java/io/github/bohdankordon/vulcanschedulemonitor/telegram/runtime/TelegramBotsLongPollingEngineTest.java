@@ -189,6 +189,36 @@ class TelegramBotsLongPollingEngineTest {
     engine = null;
   }
 
+  @Test
+  void productionLongPollingClientOutlastsActualGetUpdatesTimeout() {
+    var getUpdates = TelegramBotsLongPollingEngine.newGetUpdatesGenerator().apply(0);
+    var httpClient = TelegramBotsLongPollingEngine.newLongPollingHttpClient();
+
+    assertThat(getUpdates.getTimeout()).isEqualTo(50);
+    assertThat(httpClient.readTimeoutMillis())
+        .isPositive()
+        .isGreaterThan(Math.toIntExact(Duration.ofSeconds(getUpdates.getTimeout()).toMillis()));
+    assertThat(httpClient.callTimeoutMillis()).isZero();
+
+    httpClient.dispatcher().executorService().shutdown();
+    httpClient.connectionPool().evictAll();
+  }
+
+  @Test
+  void productionFactoryUsesLongPollingClientAndItsResourcesStillClose()
+      throws InterruptedException {
+    engine = (TelegramBotsLongPollingEngine) new TelegramBotsLongPollingEngineFactory().create();
+
+    assertThat(engine.httpReadTimeout()).isEqualTo(Duration.ofSeconds(65));
+    assertThat(engine.httpCallTimeout()).isZero();
+
+    engine.close();
+    assertThat(engine.executorShutdown()).isTrue();
+    assertThat(engine.httpDispatcherShutdown()).isTrue();
+    assertThat(engine.awaitExecutorTermination(Duration.ofSeconds(2))).isTrue();
+    engine = null;
+  }
+
   private TelegramBotsLongPollingEngine newEngine() {
     return newEngine(server.port());
   }
