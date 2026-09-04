@@ -5,3 +5,8 @@ spring:
     hibernate:
       ddl-auto: validate
     open-in-view: false
+
+vulcan:
+  monitoring:
+    enabled: false
+    poll-interval: PT5M
