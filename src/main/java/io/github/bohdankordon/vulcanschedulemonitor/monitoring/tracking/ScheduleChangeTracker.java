@@ -17,11 +17,17 @@ public class ScheduleChangeTracker {
   private final ActiveChangeStore store;
   private final SemanticChangeHasher hasher;
   private final Clock clock;
+  private final TrackingEventOutbox outbox;
 
-  public ScheduleChangeTracker(ActiveChangeStore store, SemanticChangeHasher hasher, Clock clock) {
+  public ScheduleChangeTracker(
+      ActiveChangeStore store,
+      SemanticChangeHasher hasher,
+      Clock clock,
+      TrackingEventOutbox outbox) {
     this.store = Objects.requireNonNull(store, "store must not be null");
     this.hasher = Objects.requireNonNull(hasher, "hasher must not be null");
     this.clock = Objects.requireNonNull(clock, "clock must not be null");
+    this.outbox = Objects.requireNonNull(outbox, "outbox must not be null");
   }
 
   @Transactional
@@ -66,7 +72,10 @@ public class ScheduleChangeTracker {
 
     boolean baselineEstablishedNow = !previous.baselineEstablished();
     store.save(new TrackingState(scope, true, now, nextActive));
-    return new TrackingResult(baselineEstablishedNow, nextActive.size(), transitions);
+    TrackingResult result =
+        new TrackingResult(baselineEstablishedNow, nextActive.size(), transitions);
+    outbox.recordReconciliation(scope, result, now);
+    return result;
   }
 
   private Map<String, HashedScheduleChange> hashUniqueChanges(ScheduleSnapshot snapshot) {
