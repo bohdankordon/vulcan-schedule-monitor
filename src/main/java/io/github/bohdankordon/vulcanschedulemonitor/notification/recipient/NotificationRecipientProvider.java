@@ -4,5 +4,5 @@ import java.util.List;
 
 public interface NotificationRecipientProvider {
 
-  List<Long> activeRecipientUserIds(long journalId);
+  List<Long> activeRecipientUserIds(long catalogClassId);
 }

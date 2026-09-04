@@ -45,7 +45,7 @@ public final class ResilientWeeklyScheduleSource {
 
   public ScheduleSnapshot fetchCompleteWeeklySnapshot(TrackingScope scope) {
     Objects.requireNonNull(scope, "scope must not be null");
-    gate.activeUntil()
+    gate.activeUntil(scope.vulcanAccountId())
         .ifPresent(
             until -> {
               throw ScheduleSourceException.deferred(until);
@@ -70,12 +70,12 @@ public final class ResilientWeeklyScheduleSource {
         }
         if (category == VulcanFailureCategory.RATE_LIMITED) {
           Duration requiredDelay = exception.retryAfter().orElse(fallbackRateLimitDelay);
-          Instant deferredUntil = gate.extend(requiredDelay);
+          Instant deferredUntil = gate.extend(scope.vulcanAccountId(), requiredDelay);
           if (attempt == maxAttempts || requiredDelay.compareTo(maximumInlineRateLimitDelay) > 0) {
             throw ScheduleSourceException.deferred(deferredUntil);
           }
           waitFor(requiredDelay);
-          gate.release(deferredUntil);
+          gate.release(scope.vulcanAccountId(), deferredUntil);
           continue;
         }
         if (attempt == maxAttempts) {

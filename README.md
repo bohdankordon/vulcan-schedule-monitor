@@ -10,7 +10,7 @@ An unofficial Java service for monitoring school schedule changes available thro
 
 ## Status
 
-The project is in early development. Its read-only integration slice can use an authenticated browser session to discover journals and retrieve a synthetic-tested weekly schedule. Successful weekly snapshots establish a PostgreSQL-backed baseline and reconcile current schedule changes as `NEW`, `UPDATED`, or `RESOLVED`. Application users can hold minimized Telegram routing identities and enable journal subscriptions. A disabled-by-default TelegramBots adapter supports safe private-chat commands and recipient-specific outbox delivery. Phase 7 adds a disabled-by-default secure HTTPS VULCAN connection flow, Playwright direct-login adapter, AES-256-GCM session persistence, optional encrypted remembered credentials, and an account-scoped class catalog. Connected accounts are deliberately not a monitoring source yet; account-aware subscription identity and class selection belong to Phase 8.
+The project is in early development. A disabled-by-default secure HTTPS flow connects one authorized VULCAN account per application user, encrypts its session and optional remembered credentials, and maintains an account-scoped class catalog. Catalog-based subscriptions feed account-aware current/next-week monitoring; successful snapshots establish PostgreSQL baselines and reconcile `NEW`, `UPDATED`, or `RESOLVED` changes into a recipient-specific durable outbox. Normal fetches persist cookie rotation, authentication failures can recover once with remembered credentials, and failures/rate limits are isolated per account. The Telegram adapter provides private `/classes` selection and human-readable class-labelled delivery without exposing protocol IDs.
 
 ## Purpose and planned capabilities
 
@@ -27,7 +27,7 @@ The project aims to provide a privacy-conscious service that can:
 
 Vulcan Schedule Monitor is a modular monolith with feature-oriented packages. Its VULCAN adapter translates browser-observed payloads into small internal schedule and change models. Tracking and notification logic use protocol-independent ports; JPA entities remain internal to PostgreSQL adapters.
 
-See [Architecture](docs/architecture.md), [Secure VULCAN connection](docs/vulcan-connection.md), [Telegram adapter](docs/telegram.md), [Subscriptions](docs/subscriptions.md), [Monitoring orchestration](docs/monitoring.md), [Persistent change tracking](docs/change-tracking.md), [Notification outbox](docs/notification-outbox.md), [Unofficial VULCAN protocol notes](docs/vulcan-protocol.md), and [Manual session setup](docs/manual-session.md).
+See [Architecture](docs/architecture.md), [Account-aware monitoring](docs/account-aware-monitoring.md), [Secure VULCAN connection](docs/vulcan-connection.md), [Telegram adapter](docs/telegram.md), [Subscriptions](docs/subscriptions.md), [Monitoring orchestration](docs/monitoring.md), [Persistent change tracking](docs/change-tracking.md), [Notification outbox](docs/notification-outbox.md), [Unofficial VULCAN protocol notes](docs/vulcan-protocol.md), and [Manual session setup](docs/manual-session.md).
 
 ## Technology
 
@@ -64,9 +64,9 @@ VULCAN_MASTER_KEY=<Base64-of-exactly-32-random-bytes>
 
 No database credentials, bot tokens, encryption keys, or environment-specific URLs are stored in the repository. `TELEGRAM_BOT_TOKEN` is required only when `telegram.bot.enabled=true`. `VULCAN_MASTER_KEY` is required only when `vulcan.connection.enabled=true`. Docker is required only to run the PostgreSQL integration tests locally.
 
-Monitoring is off unless `vulcan.monitoring.enabled=true` is set. The production `MonitoringTargetProvider` reads active subscriptions, but enabling monitoring still requires an application-provided `WeeklyScheduleSource` backed by an authorized VULCAN session. The default polling interval is `PT5M`.
+Monitoring is off unless `vulcan.monitoring.enabled=true` is set and secure connection is enabled. The production source loads each target's encrypted account session automatically; an empty subscription set makes no VULCAN request. The default polling interval is `PT5M`.
 
-Telegram is off unless `telegram.bot.enabled=true` is set. Disabled startup creates no Telegram runtime, client, delivery gateway, or dispatch scheduler and requires no token. When enabled, the adapter uses long polling and dispatches at most one durable intent per two-second scheduler tick. Supported private-chat commands are `/start`, `/help`, `/status`, `/subscriptions`, and `/connect`. When secure connection is enabled, `/connect` issues a fresh short-lived link to the configured public HTTPS origin. Never send VULCAN credentials through Telegram.
+Telegram is off unless `telegram.bot.enabled=true` is set. Disabled startup creates no Telegram runtime, client, delivery gateway, or dispatch scheduler and requires no token. When enabled, the adapter uses long polling and dispatches at most one durable intent per two-second scheduler tick. Supported private-chat commands are `/start`, `/help`, `/status`, `/subscriptions`, `/classes`, and `/connect`. `/classes` uses strictly authorized catalog callbacks; `/connect` issues a fresh short-lived link to the configured public HTTPS origin. Never send VULCAN credentials through Telegram.
 
 Secure connection is off unless `vulcan.connection.enabled=true`. Enabling it also requires `vulcan.connection.public-base-url` and a valid `VULCAN_MASTER_KEY`. Install Chromium manually on the runtime host; builds and CI do not download or launch a browser:
 

@@ -29,7 +29,7 @@ public final class StatusCommandHandler implements TelegramCommandHandler {
 
   @Override
   public String handle(TelegramCommandContext context) {
-    int count = subscriptions.activeJournalIds(context.appUserId()).size();
+    int count = subscriptions.activeSubscriptions(context.appUserId()).size();
     VulcanConnectionStatus status = connections.statusForUser(context.appUserId());
     String vulcan =
         switch (status.state()) {
@@ -41,7 +41,7 @@ public final class StatusCommandHandler implements TelegramCommandHandler {
         + vulcan
         + "\nAvailable classes: "
         + status.activeClassCount()
-        + "\nActive monitoring subscriptions: "
+        + "\nMonitored classes: "
         + count;
   }
 }

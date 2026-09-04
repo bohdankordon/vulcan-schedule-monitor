@@ -6,19 +6,24 @@ import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSession
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSessionMaterial;
 import java.util.Arrays;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.locks.ReentrantLock;
 
-/** Explicit recovery foundation. Phase 7 deliberately does not call this from monitoring. */
+/** Account-scoped encrypted session loading, rotation persistence, and serialized recovery. */
 public final class VulcanSessionManager {
 
   public enum RecoveryResult {
     RECOVERED,
-    RECONNECT_REQUIRED
+    RECONNECT_REQUIRED,
+    TRANSIENT_FAILURE
   }
 
   private final VulcanSecretStore secrets;
   private final VulcanBrowserAuthenticator authenticator;
   private final VulcanSessionVerifier verifier;
   private final VulcanRecoveryPersistence persistence;
+  private final ConcurrentMap<Long, ReentrantLock> recoveryLocks = new ConcurrentHashMap<>();
 
   public VulcanSessionManager(
       VulcanSecretStore secrets,
@@ -45,6 +50,20 @@ public final class VulcanSessionManager {
   }
 
   public RecoveryResult recover(long accountId) {
+    ReentrantLock lock = recoveryLocks.computeIfAbsent(accountId, ignored -> new ReentrantLock());
+    lock.lock();
+    try {
+      return recoverLocked(accountId);
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  public void markReconnectRequired(long accountId) {
+    persistence.markReconnectRequired(accountId);
+  }
+
+  private RecoveryResult recoverLocked(long accountId) {
     Optional<RememberedCredentials> optional = secrets.loadCredentials(accountId);
     if (optional.isEmpty()) {
       persistence.markReconnectRequired(accountId);
@@ -58,6 +77,12 @@ public final class VulcanSessionManager {
         VerifiedVulcanSession verified = verifier.verifyAndDiscover(material);
         persistence.replaceRecovered(accountId, verified.sessionMaterial(), credentials);
         return RecoveryResult.RECOVERED;
+      } catch (VulcanAuthenticationException exception) {
+        if (exception.category() == VulcanAuthFailureCategory.TRANSIENT) {
+          return RecoveryResult.TRANSIENT_FAILURE;
+        }
+        persistence.markReconnectRequired(accountId);
+        return RecoveryResult.RECONNECT_REQUIRED;
       } finally {
         Arrays.fill(password, '\0');
       }

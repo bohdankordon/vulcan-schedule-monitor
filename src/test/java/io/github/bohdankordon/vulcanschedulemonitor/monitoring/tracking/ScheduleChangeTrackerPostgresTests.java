@@ -57,15 +57,23 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
   @Autowired private PersistenceRollbackProbe rollbackProbe;
   @Autowired private FailingTrackingEventOutbox failingOutbox;
 
+  private long vulcanAccountId;
+  private long catalogClassId;
+
   private final SemanticChangeHasher hasher = new SemanticChangeHasher();
 
   @BeforeEach
   void clearDatabase() {
     jdbc.update("DELETE FROM notification_outbox");
+    jdbc.update("DELETE FROM schedule_change_state");
+    jdbc.update("DELETE FROM tracking_scope");
     jdbc.update("DELETE FROM monitoring_subscription");
+    jdbc.update("DELETE FROM vulcan_class_catalog");
+    jdbc.update("DELETE FROM vulcan_account_secret");
+    jdbc.update("DELETE FROM vulcan_connect_token");
+    jdbc.update("DELETE FROM vulcan_account");
     jdbc.update("DELETE FROM telegram_identity");
     jdbc.update("DELETE FROM app_user");
-    jdbc.update("DELETE FROM tracking_scope");
     long appUserId =
         jdbc.queryForObject(
             """
@@ -76,14 +84,40 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
             Long.class,
             Timestamp.from(FIRST_FETCH),
             Timestamp.from(FIRST_FETCH));
+    vulcanAccountId =
+        jdbc.queryForObject(
+            """
+            INSERT INTO vulcan_account
+              (app_user_id, status, remember_credentials, created_at, updated_at, authenticated_at)
+            VALUES (?, 'CONNECTED', FALSE, ?, ?, ?)
+            RETURNING id
+            """,
+            Long.class,
+            appUserId,
+            Timestamp.from(FIRST_FETCH),
+            Timestamp.from(FIRST_FETCH),
+            Timestamp.from(FIRST_FETCH));
+    catalogClassId =
+        jdbc.queryForObject(
+            """
+            INSERT INTO vulcan_class_catalog
+              (vulcan_account_id, journal_id, class_id, name, school_year, active, synced_at)
+            VALUES (?, ?, ?, 'Synthetic 2A', 2026, TRUE, ?)
+            RETURNING id
+            """,
+            Long.class,
+            vulcanAccountId,
+            JOURNAL_ID,
+            420L,
+            Timestamp.from(FIRST_FETCH));
     jdbc.update(
         """
         INSERT INTO monitoring_subscription
-          (app_user_id, journal_id, enabled, created_at, updated_at)
+          (app_user_id, catalog_class_id, enabled, created_at, updated_at)
         VALUES (?, ?, TRUE, ?, ?)
         """,
         appUserId,
-        JOURNAL_ID,
+        catalogClassId,
         Timestamp.from(FIRST_FETCH),
         Timestamp.from(FIRST_FETCH));
     failingOutbox.reset();
@@ -91,7 +125,7 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
 
   @Test
   void emptySuccessfulSnapshotEstablishesBaseline() {
-    TrackingResult result = trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(snapshot());
+    TrackingResult result = trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(scope(), snapshot());
 
     assertThat(result.baselineEstablishedNow()).isTrue();
     assertThat(result.activeChangeCount()).isZero();
@@ -112,7 +146,8 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
   void existingChangesEstablishBaselineWithoutNewTransitions() {
     ScheduleChange existing = substitution(10L, 20L, 30L, 40L, "T2", "S2");
 
-    TrackingResult result = trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(snapshot(existing));
+    TrackingResult result =
+        trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(scope(), snapshot(existing));
 
     assertThat(result.baselineEstablishedNow()).isTrue();
     assertThat(result.activeChangeCount()).isOne();
@@ -130,9 +165,10 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
   @Test
   void unchangedChangeUpdatesLastSeenAndPreservesFirstSeen() {
     ScheduleChange existing = substitution(10L, 20L, 30L, 40L, "T2", "S2");
-    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(snapshot(existing));
+    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(scope(), snapshot(existing));
 
-    TrackingResult result = trackerAt(SECOND_FETCH).reconcileSuccessfulSnapshot(snapshot(existing));
+    TrackingResult result =
+        trackerAt(SECOND_FETCH).reconcileSuccessfulSnapshot(scope(), snapshot(existing));
 
     assertThat(result.baselineEstablishedNow()).isFalse();
     assertThat(result.transitions()).isEmpty();
@@ -144,10 +180,11 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
 
   @Test
   void newlyAppearingChangeIsPersistedAndEmitsNew() {
-    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(snapshot());
+    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(scope(), snapshot());
     ScheduleChange appeared = substitution(10L, 20L, 30L, 40L, "T2", "S2");
 
-    TrackingResult result = trackerAt(SECOND_FETCH).reconcileSuccessfulSnapshot(snapshot(appeared));
+    TrackingResult result =
+        trackerAt(SECOND_FETCH).reconcileSuccessfulSnapshot(scope(), snapshot(appeared));
 
     assertThat(result.transitions())
         .singleElement()
@@ -165,9 +202,10 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
   void changedContentUpdatesFingerprintWithoutDuplicatingActiveState() {
     ScheduleChange original = substitution(10L, 20L, 30L, 40L, "T2", "S2");
     ScheduleChange updated = substitution(10L, 20L, 30L, 40L, "T3", "S3");
-    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(snapshot(original));
+    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(scope(), snapshot(original));
 
-    TrackingResult result = trackerAt(SECOND_FETCH).reconcileSuccessfulSnapshot(snapshot(updated));
+    TrackingResult result =
+        trackerAt(SECOND_FETCH).reconcileSuccessfulSnapshot(scope(), snapshot(updated));
 
     assertThat(result.transitions())
         .singleElement()
@@ -184,9 +222,10 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
   @Test
   void absentChangeResolvesIsRemovedAndReappearanceBecomesNew() {
     ScheduleChange change = substitution(10L, 20L, 30L, 40L, "T2", "S2");
-    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(snapshot(change));
+    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(scope(), snapshot(change));
 
-    TrackingResult resolved = trackerAt(SECOND_FETCH).reconcileSuccessfulSnapshot(snapshot());
+    TrackingResult resolved =
+        trackerAt(SECOND_FETCH).reconcileSuccessfulSnapshot(scope(), snapshot());
 
     assertThat(resolved.transitions())
         .singleElement()
@@ -201,7 +240,7 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
     assertLatestOutboxEvent("CHANGE_RESOLVED", SECOND_FETCH);
 
     TrackingResult reappeared =
-        trackerAt(THIRD_FETCH).reconcileSuccessfulSnapshot(snapshot(change));
+        trackerAt(THIRD_FETCH).reconcileSuccessfulSnapshot(scope(), snapshot(change));
     assertThat(reappeared.transitions())
         .extracting(ChangeTransition::lifecycle)
         .containsExactly(ChangeLifecycle.NEW);
@@ -210,12 +249,13 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
 
   @Test
   void sameSlotDifferentGroupsRemainIndependent() {
-    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(snapshot());
+    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(scope(), snapshot());
     ScheduleChange firstGroup = substitution(10L, 20L, 30L, 40L, "T2", "S2");
     ScheduleChange secondGroup = substitution(10L, 20L, 30L, 41L, "T2", "S2");
 
     TrackingResult result =
-        trackerAt(SECOND_FETCH).reconcileSuccessfulSnapshot(snapshot(firstGroup, secondGroup));
+        trackerAt(SECOND_FETCH)
+            .reconcileSuccessfulSnapshot(scope(), snapshot(firstGroup, secondGroup));
 
     assertThat(result.transitions())
         .hasSize(2)
@@ -237,12 +277,14 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
     ScheduleChange unchanged = substitution(10L, 20L, 30L, 40L, "T2", "S2");
     ScheduleChange beforeUpdate = substitution(10L, 20L, 30L, 41L, "T2", "S2");
     ScheduleChange resolved = substitution(10L, 20L, 30L, 42L, "T2", "S2");
-    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(snapshot(unchanged, beforeUpdate, resolved));
+    trackerAt(FIRST_FETCH)
+        .reconcileSuccessfulSnapshot(scope(), snapshot(unchanged, beforeUpdate, resolved));
 
     ScheduleChange updated = substitution(10L, 20L, 30L, 41L, "T3", "S3");
     ScheduleChange appeared = substitution(10L, 20L, 30L, 43L, "T2", "S2");
     TrackingResult result =
-        trackerAt(SECOND_FETCH).reconcileSuccessfulSnapshot(snapshot(unchanged, updated, appeared));
+        trackerAt(SECOND_FETCH)
+            .reconcileSuccessfulSnapshot(scope(), snapshot(unchanged, updated, appeared));
 
     assertThat(result.transitions())
         .extracting(ChangeTransition::lifecycle)
@@ -262,11 +304,13 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
   @Test
   void duplicateSemanticInputFailsBeforeMutationAndPreservesExistingState() {
     ScheduleChange existing = substitution(10L, 20L, 30L, 40L, "T2", "S2");
-    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(snapshot(existing));
+    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(scope(), snapshot(existing));
     Map<String, Object> before = databaseState();
 
     assertThatThrownBy(
-            () -> trackerAt(SECOND_FETCH).reconcileSuccessfulSnapshot(snapshot(existing, existing)))
+            () ->
+                trackerAt(SECOND_FETCH)
+                    .reconcileSuccessfulSnapshot(scope(), snapshot(existing, existing)))
         .isInstanceOf(DuplicateSemanticChangeKeyException.class)
         .hasMessageContaining("duplicate semantic change key")
         .hasMessageNotContaining("T2")
@@ -280,7 +324,7 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
   @Test
   void persistenceFailureAfterFlushedReplacementWorkRollsBackEntireTransaction() {
     ScheduleChange existing = substitution(10L, 20L, 30L, 40L, "T2", "S2");
-    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(snapshot(existing));
+    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(scope(), snapshot(existing));
     Map<String, Object> before = databaseState();
 
     assertThatThrownBy(() -> rollbackProbe.replaceWithInvalidFingerprint(scope(), SECOND_FETCH))
@@ -300,11 +344,12 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
   void outboxFailureAfterRealInsertRollsBackTrackingAndNotificationIntentTogether() {
     ScheduleChange original = substitution(10L, 20L, 30L, 40L, "T2", "S2");
     ScheduleChange updated = substitution(10L, 20L, 30L, 40L, "T3", "S3");
-    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(snapshot(original));
+    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(scope(), snapshot(original));
     Map<String, Object> before = databaseState();
     failingOutbox.failAfterNextDelegate();
 
-    assertThatThrownBy(() -> trackerAt(SECOND_FETCH).reconcileSuccessfulSnapshot(snapshot(updated)))
+    assertThatThrownBy(
+            () -> trackerAt(SECOND_FETCH).reconcileSuccessfulSnapshot(scope(), snapshot(updated)))
         .isInstanceOf(SyntheticOutboxFailure.class);
 
     assertThat(databaseState()).isEqualTo(before);
@@ -317,7 +362,7 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
   @Test
   void failedFetchNeverInvokesSuccessfulReconciliationOrResolvesActiveState() {
     ScheduleChange existing = substitution(10L, 20L, 30L, 40L, "T2", "S2");
-    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(snapshot(existing));
+    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(scope(), snapshot(existing));
     Map<String, Object> before = databaseState();
     ScheduleRefreshCoordinator coordinator =
         new ScheduleRefreshCoordinator(
@@ -340,7 +385,7 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
   @Test
   void exhaustedScheduledRefreshLeavesPostgresStateUnchangedAndEmitsNoResolvedTransition() {
     ScheduleChange existing = substitution(10L, 20L, 30L, 40L, "T2", "S2");
-    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(snapshot(existing));
+    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(scope(), snapshot(existing));
     Map<String, Object> before = databaseState();
     Clock cycleClock = Clock.fixed(Instant.parse("2026-09-08T10:00:00Z"), ZoneOffset.UTC);
     WeeklyScheduleSource failingSource =
@@ -358,7 +403,7 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
             Duration.ofSeconds(10));
     MonitoringCycleRunner runner =
         new MonitoringCycleRunner(
-            () -> List.of(new MonitoringTarget(JOURNAL_ID)),
+            () -> List.of(new MonitoringTarget(vulcanAccountId, catalogClassId, JOURNAL_ID)),
             new MonitoringScopePlanner(cycleClock),
             new ScheduleRefreshCoordinator(
                 resilientSource::fetchCompleteWeeklySnapshot, trackerAt(SECOND_FETCH)),
@@ -384,16 +429,18 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
   @Test
   void databaseEnforcesUniqueScopeAndActiveChangeKeys() {
     ScheduleChange existing = substitution(10L, 20L, 30L, 40L, "T2", "S2");
-    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(snapshot(existing));
+    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(scope(), snapshot(existing));
 
     assertThatThrownBy(
             () ->
                 jdbc.update(
                     """
                     INSERT INTO tracking_scope
-                      (journal_id, week_start, week_end, baseline_established, last_success_at)
-                    VALUES (?, ?, ?, TRUE, ?)
+                      (catalog_class_id, journal_id, week_start, week_end,
+                       baseline_established, last_success_at)
+                    VALUES (?, ?, ?, ?, TRUE, ?)
                     """,
+                    catalogClassId,
                     JOURNAL_ID,
                     WEEK_START,
                     WEEK_END,
@@ -412,6 +459,87 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
                     FROM schedule_change_state
                     """))
         .isInstanceOf(DataIntegrityViolationException.class);
+  }
+
+  @Test
+  void sameJournalAcrossAccountsAndLegacyHistoryRemainIndependent() {
+    long ownerA =
+        jdbc.queryForObject(
+            "SELECT app_user_id FROM vulcan_account WHERE id = ?", Long.class, vulcanAccountId);
+    long legacyScopeId =
+        jdbc.queryForObject(
+            """
+            INSERT INTO tracking_scope
+              (journal_id, week_start, week_end, baseline_established, last_success_at, version)
+            VALUES (?, ?, ?, TRUE, ?, 0)
+            RETURNING id
+            """,
+            Long.class,
+            JOURNAL_ID,
+            WEEK_START,
+            WEEK_END,
+            Timestamp.from(FIRST_FETCH));
+    jdbc.update(
+        """
+        INSERT INTO schedule_change_state
+          (scope_id, change_key, fingerprint, change_type, lesson_date,
+           lesson_period_id, first_seen_at, last_seen_at)
+        VALUES (?, ?, ?, 'TEACHER_SUBSTITUTION', ?, 3, ?, ?)
+        """,
+        legacyScopeId,
+        "a".repeat(64),
+        "b".repeat(64),
+        WEEK_START.plusDays(1),
+        Timestamp.from(FIRST_FETCH),
+        Timestamp.from(FIRST_FETCH));
+    long[] second = createConnectedCatalogUser(JOURNAL_ID, "Synthetic 2B");
+    TrackingScope scopeA = scope();
+    TrackingScope scopeB =
+        new TrackingScope(second[1], second[2], JOURNAL_ID, WEEK_START, WEEK_END);
+    ScheduleChange changeA = substitution(10L, 20L, 30L, 40L, "T2", "S2");
+    ScheduleChange changeB = substitution(10L, 20L, 30L, 41L, "T2", "S2");
+
+    TrackingResult baselineA =
+        trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(scopeA, snapshot(changeA));
+    TrackingResult baselineB =
+        trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(scopeB, snapshot(changeB));
+    TrackingResult updatedA =
+        trackerAt(SECOND_FETCH)
+            .reconcileSuccessfulSnapshot(
+                scopeA, snapshot(substitution(10L, 20L, 30L, 40L, "T3", "S3")));
+
+    assertThat(baselineA.baselineEstablishedNow()).isTrue();
+    assertThat(baselineB.baselineEstablishedNow()).isTrue();
+    assertThat(baselineA.transitions()).isEmpty();
+    assertThat(baselineB.transitions()).isEmpty();
+    assertThat(updatedA.transitions())
+        .extracting(ChangeTransition::lifecycle)
+        .containsExactly(ChangeLifecycle.UPDATED);
+    assertThat(jdbc.queryForObject("SELECT count(*) FROM tracking_scope", Integer.class))
+        .isEqualTo(3);
+    assertThat(
+            jdbc.queryForList(
+                "SELECT catalog_class_id FROM tracking_scope ORDER BY catalog_class_id NULLS FIRST",
+                Long.class))
+        .containsExactly(null, catalogClassId, second[2]);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT fingerprint FROM schedule_change_state WHERE scope_id = ?",
+                String.class,
+                legacyScopeId))
+        .isEqualTo("b".repeat(64));
+    assertThat(
+            jdbc.queryForList(
+                """
+                SELECT catalog_class_id || ':' || recipient_user_id
+                FROM notification_outbox
+                ORDER BY id
+                """,
+                String.class))
+        .containsExactly(
+            catalogClassId + ":" + ownerA,
+            second[2] + ":" + second[0],
+            catalogClassId + ":" + ownerA);
   }
 
   @Test
@@ -447,7 +575,7 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
   @Test
   void persistedStateContainsOnlyMinimizedProtocolNeutralMetadata() {
     ScheduleChange existing = substitution(10L, 20L, 30L, 40L, "PRIVATE-TEACHER", "SUBJECT");
-    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(snapshot(existing));
+    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(scope(), snapshot(existing));
 
     List<String> columns =
         jdbc.queryForList(
@@ -504,7 +632,8 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
             "created_at",
             "delivered_at",
             "last_failure_category",
-            "recipient_user_id")
+            "recipient_user_id",
+            "catalog_class_id")
         .doesNotContain(
             "raw_annotation",
             "teacher_id",
@@ -553,8 +682,59 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
         """);
   }
 
-  private static TrackingScope scope() {
-    return new TrackingScope(JOURNAL_ID, WEEK_START, WEEK_END);
+  private TrackingScope scope() {
+    return new TrackingScope(vulcanAccountId, catalogClassId, JOURNAL_ID, WEEK_START, WEEK_END);
+  }
+
+  private long[] createConnectedCatalogUser(long journalId, String className) {
+    long userId =
+        jdbc.queryForObject(
+            """
+            INSERT INTO app_user (active, created_at, updated_at)
+            VALUES (TRUE, ?, ?)
+            RETURNING id
+            """,
+            Long.class,
+            Timestamp.from(FIRST_FETCH),
+            Timestamp.from(FIRST_FETCH));
+    long accountId =
+        jdbc.queryForObject(
+            """
+            INSERT INTO vulcan_account
+              (app_user_id, status, remember_credentials, created_at, updated_at, authenticated_at)
+            VALUES (?, 'CONNECTED', FALSE, ?, ?, ?)
+            RETURNING id
+            """,
+            Long.class,
+            userId,
+            Timestamp.from(FIRST_FETCH),
+            Timestamp.from(FIRST_FETCH),
+            Timestamp.from(FIRST_FETCH));
+    long catalogId =
+        jdbc.queryForObject(
+            """
+            INSERT INTO vulcan_class_catalog
+              (vulcan_account_id, journal_id, class_id, name, school_year, active, synced_at)
+            VALUES (?, ?, ?, ?, 2026, TRUE, ?)
+            RETURNING id
+            """,
+            Long.class,
+            accountId,
+            journalId,
+            journalId + 1000,
+            className,
+            Timestamp.from(FIRST_FETCH));
+    jdbc.update(
+        """
+        INSERT INTO monitoring_subscription
+          (app_user_id, catalog_class_id, enabled, created_at, updated_at)
+        VALUES (?, ?, TRUE, ?, ?)
+        """,
+        userId,
+        catalogId,
+        Timestamp.from(FIRST_FETCH),
+        Timestamp.from(FIRST_FETCH));
+    return new long[] {userId, accountId, catalogId};
   }
 
   private static ScheduleSnapshot snapshot(ScheduleChange... changes) {

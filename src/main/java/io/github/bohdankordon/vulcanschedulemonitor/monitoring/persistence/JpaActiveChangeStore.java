@@ -27,8 +27,8 @@ class JpaActiveChangeStore implements ActiveChangeStore {
     Objects.requireNonNull(scope, "scope must not be null");
     TrackingScopeEntity entity =
         scopeRepository
-            .findForUpdate(scope.journalId(), scope.weekStart())
-            .map(existing -> requireMatchingWeekEnd(existing, scope))
+            .findForUpdate(scope.catalogClassId(), scope.weekStart())
+            .map(existing -> requireMatchingScope(existing, scope))
             .orElseGet(() -> createScope(scope));
     var activeChanges =
         changeRepository.findAllByScopeIdOrderByChangeKey(entity.id()).stream()
@@ -42,8 +42,8 @@ class JpaActiveChangeStore implements ActiveChangeStore {
   public void save(TrackingState state) {
     TrackingScopeEntity scope =
         scopeRepository
-            .findForUpdate(state.scope().journalId(), state.scope().weekStart())
-            .map(existing -> requireMatchingWeekEnd(existing, state.scope()))
+            .findForUpdate(state.scope().catalogClassId(), state.scope().weekStart())
+            .map(existing -> requireMatchingScope(existing, state.scope()))
             .orElseThrow(() -> new IllegalStateException("Locked tracking scope no longer exists"));
     scope.recordSuccessfulReconciliation(state.lastSuccessfulReconciliation());
 
@@ -57,14 +57,20 @@ class JpaActiveChangeStore implements ActiveChangeStore {
   private TrackingScopeEntity createScope(TrackingScope scope) {
     try {
       return scopeRepository.saveAndFlush(
-          new TrackingScopeEntity(scope.journalId(), scope.weekStart(), scope.weekEnd()));
+          new TrackingScopeEntity(
+              scope.catalogClassId(), scope.journalId(), scope.weekStart(), scope.weekEnd()));
     } catch (DataIntegrityViolationException exception) {
       throw new ConcurrentScopeInitializationException(exception);
     }
   }
 
-  private static TrackingScopeEntity requireMatchingWeekEnd(
+  private static TrackingScopeEntity requireMatchingScope(
       TrackingScopeEntity entity, TrackingScope requested) {
+    if (entity.catalogClassId() == null
+        || entity.catalogClassId() != requested.catalogClassId()
+        || entity.journalId() != requested.journalId()) {
+      throw new IllegalStateException("Persisted tracking scope has conflicting class identity");
+    }
     if (!entity.weekEnd().equals(requested.weekEnd())) {
       throw new IllegalStateException("Persisted tracking scope has a conflicting week end");
     }

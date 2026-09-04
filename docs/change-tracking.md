@@ -2,7 +2,7 @@
 
 ## Scope and baseline
 
-Tracking is scoped to one journal and one Monday-to-Sunday week. The database prevents multiple scope rows for the same journal and week start.
+Production tracking is scoped to one durable catalog class and one Monday-to-Sunday week. Each scope also retains the owning VULCAN account for session selection and the account-local journal for protocol requests. The database prevents multiple production scope rows for the same catalog class and week start, so different accounts may track the same journal number independently. Journal-only rows created before Flyway V5 remain historical and are never selected by account-aware monitoring.
 
 The first successful snapshot establishes a baseline. Its current changes are persisted as active state, but it emits no `NEW` transitions. Instead, the same transaction records exactly one `BASELINE_ESTABLISHED` notification intent containing the active-change count, including when that count is zero. The result explicitly reports whether the baseline was established during that reconciliation and the number of active changes.
 

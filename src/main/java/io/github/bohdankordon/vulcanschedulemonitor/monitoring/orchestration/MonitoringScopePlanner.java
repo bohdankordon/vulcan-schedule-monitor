@@ -29,9 +29,21 @@ public final class MonitoringScopePlanner {
             .with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY));
     List<TrackingScope> scopes = new ArrayList<>();
     for (MonitoringTarget target : new TreeSet<>(targets)) {
-      scopes.add(new TrackingScope(target.journalId(), weekStart, weekStart.plusDays(6)));
+      scopes.add(
+          new TrackingScope(
+              target.vulcanAccountId(),
+              target.catalogClassId(),
+              target.journalId(),
+              weekStart,
+              weekStart.plusDays(6)));
       LocalDate nextWeekStart = weekStart.plusWeeks(1);
-      scopes.add(new TrackingScope(target.journalId(), nextWeekStart, nextWeekStart.plusDays(6)));
+      scopes.add(
+          new TrackingScope(
+              target.vulcanAccountId(),
+              target.catalogClassId(),
+              target.journalId(),
+              nextWeekStart,
+              nextWeekStart.plusDays(6)));
     }
     return List.copyOf(scopes);
   }

@@ -25,7 +25,7 @@ class JpaTrackingEventOutbox implements TrackingEventOutbox {
     Objects.requireNonNull(scope, "scope must not be null");
     Objects.requireNonNull(result, "result must not be null");
     Objects.requireNonNull(occurredAt, "occurredAt must not be null");
-    for (long recipientUserId : recipientProvider.activeRecipientUserIds(scope.journalId())) {
+    for (long recipientUserId : recipientProvider.activeRecipientUserIds(scope.catalogClassId())) {
       if (result.baselineEstablishedNow()) {
         repository.saveAndFlush(
             NotificationOutboxEntity.baseline(

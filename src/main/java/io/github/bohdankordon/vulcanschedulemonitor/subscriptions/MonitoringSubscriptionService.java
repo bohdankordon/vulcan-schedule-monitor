@@ -4,11 +4,13 @@ import java.util.List;
 
 public interface MonitoringSubscriptionService {
 
-  MonitoringSubscription enable(long appUserId, long journalId);
+  MonitoringSubscription enable(long appUserId, long catalogClassId);
 
-  void disable(long appUserId, long journalId);
+  void disable(long appUserId, long catalogClassId);
 
-  List<Long> activeJournalIds(long appUserId);
+  List<MonitoringSubscription> activeSubscriptions(long appUserId);
 
-  boolean isSubscribed(long appUserId, long journalId);
+  List<MonitoringClassSelection> availableClasses(long appUserId);
+
+  boolean isSubscribed(long appUserId, long catalogClassId);
 }

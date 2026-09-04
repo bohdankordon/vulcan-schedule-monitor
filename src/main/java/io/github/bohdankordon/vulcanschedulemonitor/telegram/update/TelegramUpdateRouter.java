@@ -4,6 +4,8 @@ import io.github.bohdankordon.vulcanschedulemonitor.telegram.command.TelegramCom
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.command.TelegramCommandContext;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.command.TelegramCommandHandler;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.command.TelegramCommandParser;
+import io.github.bohdankordon.vulcanschedulemonitor.telegram.interactive.ClassSelectionController;
+import io.github.bohdankordon.vulcanschedulemonitor.telegram.interactive.TelegramCallbackRouter;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.transport.TelegramMessageTransport;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.transport.TelegramTransportException;
 import io.github.bohdankordon.vulcanschedulemonitor.users.TelegramIdentityRegistration;
@@ -23,15 +25,29 @@ public final class TelegramUpdateRouter {
   private final TelegramIdentityRegistration identities;
   private final TelegramMessageTransport transport;
   private final Map<TelegramCommand, TelegramCommandHandler> handlers;
+  private final TelegramCallbackRouter callbackRouter;
+  private final ClassSelectionController classes;
 
   public TelegramUpdateRouter(
       TelegramCommandParser parser,
       TelegramIdentityRegistration identities,
       TelegramMessageTransport transport,
       List<TelegramCommandHandler> handlers) {
+    this(parser, identities, transport, handlers, null, null);
+  }
+
+  public TelegramUpdateRouter(
+      TelegramCommandParser parser,
+      TelegramIdentityRegistration identities,
+      TelegramMessageTransport transport,
+      List<TelegramCommandHandler> handlers,
+      TelegramCallbackRouter callbackRouter,
+      ClassSelectionController classes) {
     this.parser = Objects.requireNonNull(parser, "parser must not be null");
     this.identities = Objects.requireNonNull(identities, "identities must not be null");
     this.transport = Objects.requireNonNull(transport, "transport must not be null");
+    this.callbackRouter = callbackRouter;
+    this.classes = classes;
     this.handlers = new EnumMap<>(TelegramCommand.class);
     for (TelegramCommandHandler handler : handlers) {
       if (this.handlers.put(handler.supportedCommand(), handler) != null) {
@@ -41,7 +57,16 @@ public final class TelegramUpdateRouter {
   }
 
   public void route(Update update) {
-    if (update == null || !update.hasMessage()) {
+    if (update == null) {
+      return;
+    }
+    if (update.getCallbackQuery() != null) {
+      if (callbackRouter != null) {
+        callbackRouter.route(update.getCallbackQuery());
+      }
+      return;
+    }
+    if (!update.hasMessage()) {
       return;
     }
     var message = update.getMessage();
@@ -57,11 +82,27 @@ public final class TelegramUpdateRouter {
       return;
     }
     var command = parser.parse(message.getText());
-    if (command.isEmpty() || !handlers.containsKey(command.orElseThrow())) {
+    if (command.isEmpty()) {
       return;
     }
     var user = identities.registerOrUpdate(sender.getId(), chat.getId());
     var context = new TelegramCommandContext(user.id(), chat.getId());
+    if (command.orElseThrow() == TelegramCommand.CLASSES && classes != null) {
+      try {
+        classes.send(context.appUserId(), context.privateChatId(), 0);
+        LOGGER.debug(
+            "Telegram update processed: updateId={}, command=CLASSES", update.getUpdateId());
+      } catch (TelegramTransportException failure) {
+        LOGGER.warn(
+            "Telegram class list reply failed: updateId={}, category={}",
+            update.getUpdateId(),
+            failure.category());
+      }
+      return;
+    }
+    if (!handlers.containsKey(command.orElseThrow())) {
+      return;
+    }
     String reply = handlers.get(command.orElseThrow()).handle(context);
     try {
       transport.sendPlainText(chat.getId(), reply);

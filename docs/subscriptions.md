@@ -2,30 +2,34 @@
 
 ## Internal users and Telegram identity
 
-`app_user` is the service's protocol-neutral identity. It contains only an identity key, active flag, and creation/update timestamps. Notification delivery state and monitoring subscriptions reference this internal ID.
+`app_user` is the protocol-neutral service identity. It contains only its key, active state, and timestamps. `telegram_identity` separately stores the minimum private-delivery mapping: one Telegram user ID and one private chat ID. Usernames, profile names, locale, and message bodies are not persisted.
 
-`telegram_identity` is a separate one-to-one mapping from an application user to the minimum routing data required by the planned private-chat bot: a 64-bit Telegram user ID and a 64-bit private chat ID. Both are unique. Usernames, first and last names, profile photos, locale, and message content are not persisted.
+Registration uses the exact private-chat sender and chat values, reuses an existing identity, and reactivates its application user when necessary. Telegram identifiers never enter subscription, tracking, catalog, or notification-outbox rows.
 
-Telegram registration is atomic. An unknown Telegram user creates one application user and identity. A known Telegram user reuses the same application user and updates a changed private chat ID. Registering a known inactive user explicitly reactivates that user rather than silently creating a duplicate. Persisted timestamps come from the application `Clock`.
+## Catalog-based subscription identity
 
-The immutable `TelegramRecipientReference` returned by `TelegramRecipientDirectory` keeps JPA entities behind the persistence boundary. The Telegram delivery gateway uses it to translate the internal outbox recipient into the stored private chat only at the adapter edge.
+The durable selection identity is `vulcan_class_catalog.id`, not an external journal ID. A catalog row already binds an account-local journal to the user's single connected VULCAN account. `monitoring_subscription` is therefore unique by `(app_user_id, catalog_class_id)` and an enabled row must have a catalog class.
 
-## Subscription lifecycle
+`MonitoringSubscriptionService` accepts catalog class IDs and returns immutable safe views containing the catalog ID for internal callback construction plus class name, optional school unit, school year, selection state, and timestamps. It never returns JPA entities and callers do not supply journal IDs.
 
-`monitoring_subscription` is unique by internal application user and journal. Enabling the same pair repeatedly is idempotent. Disabling changes `enabled` to false, and re-enabling reuses the existing row rather than creating history duplicates. Application services expose enable, disable, active-journal listing, and subscription checks so a future Telegram adapter never needs direct repository access.
+Enabling validates that the catalog row exists, belongs to the requesting user's account, is active, and belongs to a `CONNECTED` account. Repeated enable is idempotent. Cross-user, stale, inactive, and tampered IDs cannot create a row. Disabling an owned row is idempotent and is allowed even when its catalog row is inactive or the account needs reconnect; disabling an unowned ID performs no mutation.
 
-The production target provider returns each journal once when it has at least one enabled subscription owned by an active user. Results are ordered by journal ID. The notification recipient provider independently returns distinct active internal application-user IDs for one journal in ascending order; it does not expose Telegram user or chat IDs.
+If a selected class later becomes inactive, its preference row is retained but produces no targets or future fan-out. Reconnecting may reactivate the same account-scoped catalog row after a complete class discovery; no class is substituted by matching only its name or journal value. Explicit account switching/replacement semantics are outside this phase.
 
-## Notification timing semantics
+## Routing and notification timing
 
-The first successful reconciliation for a scope creates `BASELINE_ESTABLISHED` once per active recipient. A scope can still establish its tracking baseline with zero recipients, producing no notification intent. Later `NEW`, `UPDATED`, and `RESOLVED` transitions each fan out once per recipient in the reconciliation transaction.
+The production target query requires an enabled subscription, active user, active catalog row, ownership-consistent account join, and `CONNECTED` status. It returns distinct account/catalog/journal targets without collapsing identical journals across accounts. Recipient lookup takes a catalog class ID and applies the same ownership, active-state, and connection filters, returning deterministic distinct internal user IDs.
 
-A subscription added after baseline establishment receives only future reconciliation events. It receives no historical baseline and no synthesized past change. The future interactive Telegram command can acknowledge “tracking enabled” directly.
+The first successful reconciliation creates a no-spam baseline intent per current recipient. A subscription enabled after a baseline receives only future reconciliation events; enabling never synthesizes historical `NEW` events. Disabling stops future fan-out but leaves already-created durable recipient intents untouched.
 
-Disabling a subscription affects future fan-out only. Existing recipient-specific outbox rows remain durable because they represented delivery intents created while the subscription was enabled. Explicit pending-notification cancellation, if desired, is a separate future product feature.
+## Telegram class selection
 
-## Telegram interaction
+`/classes` renders active authorized catalog classes as an inline keyboard using human-readable class names. `✅` marks monitored classes and `☐` marks available ones. Pages contain at most eight classes with deterministic previous/next navigation. No journal, catalog, recipient, or lesson-period ID is shown in user-facing text.
 
-Supported private-chat commands register or refresh the exact sender-user/private-chat pair before invoking an application-facing handler. `/status` and `/subscriptions` read active journal IDs through `MonitoringSubscriptionService`. Until a persisted class catalog exists, responses deliberately call these opaque IDs “schedule references,” not class names.
+Callback data is a compact versioned internal protocol: `c1:t:<catalogClassId>:<page>` for toggles and `c1:p:<page>` for navigation. It is strictly length-, shape-, action-, and numeric-range-validated. Only a private human callback with a message is accepted. The exact Telegram identity is registered, then the application service re-authorizes the catalog ID against that user before mutation. Group, supergroup, channel, bot, missing-message, cross-user, and inactive-class callbacks cannot mutate state. Valid callbacks are answered and the keyboard is refreshed from committed subscription state.
 
-Raw `/subscribe <journalId>` and `/unsubscribe <journalId>` commands do not exist. Future subscription changes will use classes dynamically discovered from the user's authorized VULCAN account. VULCAN login/session recovery, Playwright, secure web connection, class-selection keyboards, human-readable class labels, and deployment remain planned.
+Raw `/subscribe <journalId>` and `/unsubscribe <journalId>` commands do not exist. `/subscriptions` displays class labels rather than journal IDs, and Telegram code does not load or decrypt VULCAN session material.
+
+## V5 legacy handling
+
+V5 renames the old subscription journal column to nullable `legacy_journal_id`. A legacy row is mapped only through its user’s one VULCAN account to exactly one catalog row with the same account-local journal. Safely mapped rows keep their enabled state and clear the legacy value. Unmappable rows are retained, disabled, and never become production targets. No ownership is guessed and V1–V4 migration files remain unchanged.

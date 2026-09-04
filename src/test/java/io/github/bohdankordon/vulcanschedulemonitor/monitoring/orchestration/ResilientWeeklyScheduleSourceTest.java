@@ -16,6 +16,7 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -23,7 +24,7 @@ import org.junit.jupiter.api.Test;
 class ResilientWeeklyScheduleSourceTest {
 
   private static final TrackingScope SCOPE =
-      new TrackingScope(42L, LocalDate.of(2026, 9, 7), LocalDate.of(2026, 9, 13));
+      new TrackingScope(1L, 1L, 42L, LocalDate.of(2026, 9, 7), LocalDate.of(2026, 9, 13));
   private static final Instant NOW = Instant.parse("2026-09-04T10:00:00Z");
 
   @AfterEach
@@ -200,6 +201,38 @@ class ResilientWeeklyScheduleSourceTest {
   }
 
   @Test
+  void rateLimitGateIsolatedByAccountEvenWhenJournalIdsMatch() {
+    TrackingScope accountA = SCOPE;
+    TrackingScope accountB =
+        new TrackingScope(2L, 2L, accountA.journalId(), accountA.weekStart(), accountA.weekEnd());
+    MutableClock clock = new MutableClock(NOW);
+    Map<Long, AtomicInteger> calls = Map.of(1L, new AtomicInteger(), 2L, new AtomicInteger());
+    WeeklyScheduleSource delegate =
+        scope -> {
+          calls.get(scope.vulcanAccountId()).incrementAndGet();
+          if (scope.vulcanAccountId() == 1 && calls.get(1L).get() == 1) {
+            throw VulcanHttpException.responseFailure("schedule", 429, Duration.ofSeconds(30));
+          }
+          return snapshot(scope);
+        };
+    ResilientWeeklyScheduleSource source = resilient(delegate, new RecordingDelay(clock), clock);
+
+    assertThatThrownBy(() -> source.fetchCompleteWeeklySnapshot(accountA))
+        .isInstanceOfSatisfying(
+            ScheduleSourceException.class,
+            failure -> assertThat(failure.kind()).isEqualTo(SourceFailureKind.DEFERRED_RATE_LIMIT));
+    assertThat(source.fetchCompleteWeeklySnapshot(accountB)).isEqualTo(snapshot(accountB));
+    assertThatThrownBy(() -> source.fetchCompleteWeeklySnapshot(accountA))
+        .isInstanceOf(ScheduleSourceException.class);
+    assertThat(calls.get(1L)).hasValue(1);
+    assertThat(calls.get(2L)).hasValue(1);
+
+    clock.advance(Duration.ofSeconds(30));
+    assertThat(source.fetchCompleteWeeklySnapshot(accountA)).isEqualTo(snapshot(accountA));
+    assertThat(calls.get(1L)).hasValue(2);
+  }
+
+  @Test
   void serverRetryAfterIsNeverUndercutByExponentialBackoff() {
     AtomicInteger calls = new AtomicInteger();
     RecordingDelay delays = new RecordingDelay();
@@ -250,8 +283,12 @@ class ResilientWeeklyScheduleSourceTest {
   }
 
   private static ScheduleSnapshot snapshot() {
+    return snapshot(SCOPE);
+  }
+
+  private static ScheduleSnapshot snapshot(TrackingScope scope) {
     return new ScheduleSnapshot(
-        SCOPE.journalId(), SCOPE.weekStart(), SCOPE.weekEnd(), List.of(), List.of());
+        scope.journalId(), scope.weekStart(), scope.weekEnd(), List.of(), List.of());
   }
 
   private static final class RecordingDelay implements DelayStrategy {

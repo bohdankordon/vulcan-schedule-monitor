@@ -19,9 +19,9 @@ public final class ScheduleRefreshCoordinator {
         Objects.requireNonNull(
             source.fetchCompleteWeeklySnapshot(requestedScope),
             "schedule source must return a complete snapshot or throw");
-    if (!requestedScope.equals(TrackingScope.from(snapshot))) {
+    if (!requestedScope.matches(snapshot)) {
       throw new IllegalArgumentException("Schedule source returned a different tracking scope");
     }
-    return tracker.reconcileSuccessfulSnapshot(snapshot);
+    return tracker.reconcileSuccessfulSnapshot(requestedScope, snapshot);
   }
 }

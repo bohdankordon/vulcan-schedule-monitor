@@ -73,6 +73,9 @@ class NotificationOutboxEntity {
   @Column(name = "recipient_user_id")
   private Long recipientUserId;
 
+  @Column(name = "catalog_class_id")
+  private Long catalogClassId;
+
   @Enumerated(EnumType.STRING)
   @Column(nullable = false, length = 16)
   private NotificationOutboxStatus status;
@@ -127,6 +130,7 @@ class NotificationOutboxEntity {
       TrackingScope scope, long recipientUserId, Instant occurredAt) {
     NotificationOutboxEntity entity = new NotificationOutboxEntity();
     entity.journalId = scope.journalId();
+    entity.catalogClassId = scope.catalogClassId();
     entity.weekStart = scope.weekStart();
     entity.weekEnd = scope.weekEnd();
     entity.recipientUserId = recipientUserId;
@@ -180,8 +184,11 @@ class NotificationOutboxEntity {
     return new NotificationOutboxMessage(
         id,
         recipientUserId,
+        catalogClassId,
+        journalId,
         eventType,
-        new TrackingScope(journalId, weekStart, weekEnd),
+        weekStart,
+        weekEnd,
         activeChangeCount,
         changeKey,
         metadata,

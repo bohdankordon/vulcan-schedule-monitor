@@ -5,9 +5,17 @@ import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.util.Objects;
 
-public record TrackingScope(long journalId, LocalDate weekStart, LocalDate weekEnd) {
+public record TrackingScope(
+    long vulcanAccountId,
+    long catalogClassId,
+    long journalId,
+    LocalDate weekStart,
+    LocalDate weekEnd) {
 
   public TrackingScope {
+    if (vulcanAccountId <= 0 || catalogClassId <= 0 || journalId <= 0) {
+      throw new IllegalArgumentException("Tracking scope identifiers must be positive");
+    }
     Objects.requireNonNull(weekStart, "weekStart must not be null");
     Objects.requireNonNull(weekEnd, "weekEnd must not be null");
     if (weekStart.getDayOfWeek() != DayOfWeek.MONDAY || !weekEnd.equals(weekStart.plusDays(6))) {
@@ -15,8 +23,10 @@ public record TrackingScope(long journalId, LocalDate weekStart, LocalDate weekE
     }
   }
 
-  public static TrackingScope from(ScheduleSnapshot snapshot) {
+  public boolean matches(ScheduleSnapshot snapshot) {
     Objects.requireNonNull(snapshot, "snapshot must not be null");
-    return new TrackingScope(snapshot.journalId(), snapshot.weekStart(), snapshot.weekEnd());
+    return journalId == snapshot.journalId()
+        && weekStart.equals(snapshot.weekStart())
+        && weekEnd.equals(snapshot.weekEnd());
   }
 }

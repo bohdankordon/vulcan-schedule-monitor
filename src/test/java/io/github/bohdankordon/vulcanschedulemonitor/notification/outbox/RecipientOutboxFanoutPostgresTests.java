@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.ChangeLifecycle;
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.ScheduleChangeTracker;
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.TrackingResult;
+import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.TrackingScope;
 import io.github.bohdankordon.vulcanschedulemonitor.notification.recipient.NotificationRecipientProvider;
 import io.github.bohdankordon.vulcanschedulemonitor.schedule.change.LessonChangeContext;
 import io.github.bohdankordon.vulcanschedulemonitor.schedule.change.ScheduleChange;
@@ -15,6 +16,7 @@ import io.github.bohdankordon.vulcanschedulemonitor.schedule.model.ScheduleSnaps
 import io.github.bohdankordon.vulcanschedulemonitor.subscriptions.MonitoringSubscriptionService;
 import io.github.bohdankordon.vulcanschedulemonitor.testsupport.PostgresIntegrationTestSupport;
 import io.github.bohdankordon.vulcanschedulemonitor.users.TelegramIdentityRegistration;
+import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -53,12 +55,19 @@ class RecipientOutboxFanoutPostgresTests extends PostgresIntegrationTestSupport 
   @Autowired private MutableClock clock;
   @Autowired private FailingRecipientProvider recipients;
 
+  private long accountId;
+  private long catalogClassId;
+
   @BeforeEach
   void clearDatabase() {
     jdbc.update("DELETE FROM notification_outbox");
     jdbc.update("DELETE FROM schedule_change_state");
     jdbc.update("DELETE FROM tracking_scope");
     jdbc.update("DELETE FROM monitoring_subscription");
+    jdbc.update("DELETE FROM vulcan_class_catalog");
+    jdbc.update("DELETE FROM vulcan_account_secret");
+    jdbc.update("DELETE FROM vulcan_connect_token");
+    jdbc.update("DELETE FROM vulcan_account");
     jdbc.update("DELETE FROM telegram_identity");
     jdbc.update("DELETE FROM app_user");
     clock.setInstant(FIRST);
@@ -68,23 +77,25 @@ class RecipientOutboxFanoutPostgresTests extends PostgresIntegrationTestSupport 
   @Test
   void baselineCreatesOneIntentPerActiveRecipientAndNoChangeSpam() {
     long firstUser = subscribe(1);
-    long secondUser = subscribe(2);
 
-    TrackingResult result = tracker.reconcileSuccessfulSnapshot(snapshot(change("T2", "S2", 40L)));
+    TrackingResult result =
+        tracker.reconcileSuccessfulSnapshot(scope(), snapshot(change("T2", "S2", 40L)));
 
     assertThat(result.baselineEstablishedNow()).isTrue();
     assertThat(result.transitions()).isEmpty();
     assertThat(outboxRows())
         .extracting(row -> row.get("event_type"))
-        .containsExactly("BASELINE_ESTABLISHED", "BASELINE_ESTABLISHED");
+        .containsExactly("BASELINE_ESTABLISHED");
     assertThat(outboxRows())
         .extracting(row -> ((Number) row.get("recipient_user_id")).longValue())
-        .containsExactly(firstUser, secondUser);
+        .containsExactly(firstUser);
   }
 
   @Test
   void baselineWithoutRecipientsStillPersistsTrackingAndNoNotificationIntent() {
-    TrackingResult result = tracker.reconcileSuccessfulSnapshot(snapshot(change("T2", "S2", 40L)));
+    createSelectableUser(2);
+    TrackingResult result =
+        tracker.reconcileSuccessfulSnapshot(scope(), snapshot(change("T2", "S2", 40L)));
 
     assertThat(result.baselineEstablishedNow()).isTrue();
     assertThat(
@@ -98,51 +109,49 @@ class RecipientOutboxFanoutPostgresTests extends PostgresIntegrationTestSupport 
   @Test
   void newUpdatedResolvedAndUnchangedTransitionsFanOutPerRecipient() {
     long firstUser = subscribe(3);
-    long secondUser = subscribe(4);
-    tracker.reconcileSuccessfulSnapshot(snapshot());
+    tracker.reconcileSuccessfulSnapshot(scope(), snapshot());
 
     clock.setInstant(SECOND);
     ScheduleChange appeared = change("T2", "S2", 40L);
-    assertThat(tracker.reconcileSuccessfulSnapshot(snapshot(appeared)).transitions())
+    assertThat(tracker.reconcileSuccessfulSnapshot(scope(), snapshot(appeared)).transitions())
         .extracting(transition -> transition.lifecycle())
         .containsExactly(ChangeLifecycle.NEW);
-    assertFanout("CHANGE_NEW", firstUser, secondUser);
+    assertFanout("CHANGE_NEW", firstUser);
 
     clock.setInstant(THIRD);
     ScheduleChange updated = change("T3", "S3", 40L);
-    assertThat(tracker.reconcileSuccessfulSnapshot(snapshot(updated)).transitions())
+    assertThat(tracker.reconcileSuccessfulSnapshot(scope(), snapshot(updated)).transitions())
         .extracting(transition -> transition.lifecycle())
         .containsExactly(ChangeLifecycle.UPDATED);
-    assertFanout("CHANGE_UPDATED", firstUser, secondUser);
+    assertFanout("CHANGE_UPDATED", firstUser);
 
     clock.setInstant(THIRD.plusSeconds(1));
-    tracker.reconcileSuccessfulSnapshot(snapshot(updated));
+    tracker.reconcileSuccessfulSnapshot(scope(), snapshot(updated));
     assertThat(
             jdbc.queryForObject(
                 "SELECT count(*) FROM notification_outbox WHERE event_type = 'CHANGE_UPDATED'",
                 Integer.class))
-        .isEqualTo(2);
+        .isOne();
 
     clock.setInstant(THIRD.plusSeconds(2));
-    assertThat(tracker.reconcileSuccessfulSnapshot(snapshot()).transitions())
+    assertThat(tracker.reconcileSuccessfulSnapshot(scope(), snapshot()).transitions())
         .extracting(transition -> transition.lifecycle())
         .containsExactly(ChangeLifecycle.RESOLVED);
-    assertFanout("CHANGE_RESOLVED", firstUser, secondUser);
+    assertFanout("CHANGE_RESOLVED", firstUser);
   }
 
   @Test
   void transitionOrderIsPreservedForEachRecipient() {
     long firstUser = subscribe(5);
-    long secondUser = subscribe(6);
     ScheduleChange unchanged = change("T2", "S2", 40L);
     ScheduleChange beforeUpdate = change("T2", "S2", 41L);
     ScheduleChange resolved = change("T2", "S2", 42L);
-    tracker.reconcileSuccessfulSnapshot(snapshot(unchanged, beforeUpdate, resolved));
+    tracker.reconcileSuccessfulSnapshot(scope(), snapshot(unchanged, beforeUpdate, resolved));
 
     clock.setInstant(SECOND);
     ScheduleChange updated = change("T3", "S3", 41L);
     ScheduleChange appeared = change("T2", "S2", 43L);
-    tracker.reconcileSuccessfulSnapshot(snapshot(unchanged, updated, appeared));
+    tracker.reconcileSuccessfulSnapshot(scope(), snapshot(unchanged, updated, appeared));
 
     assertThat(
             jdbc.queryForList(
@@ -155,44 +164,40 @@ class RecipientOutboxFanoutPostgresTests extends PostgresIntegrationTestSupport 
         .containsExactly(
             Map.of("recipient_user_id", firstUser, "event_type", "CHANGE_UPDATED"),
             Map.of("recipient_user_id", firstUser, "event_type", "CHANGE_NEW"),
-            Map.of("recipient_user_id", firstUser, "event_type", "CHANGE_RESOLVED"),
-            Map.of("recipient_user_id", secondUser, "event_type", "CHANGE_UPDATED"),
-            Map.of("recipient_user_id", secondUser, "event_type", "CHANGE_NEW"),
-            Map.of("recipient_user_id", secondUser, "event_type", "CHANGE_RESOLVED"));
+            Map.of("recipient_user_id", firstUser, "event_type", "CHANGE_RESOLVED"));
   }
 
   @Test
   void lateSubscriberReceivesOnlyFutureTransitions() {
-    long firstUser = subscribe(7);
-    tracker.reconcileSuccessfulSnapshot(snapshot());
-    long lateUser = subscribe(8);
+    long firstUser = createSelectableUser(7);
+    tracker.reconcileSuccessfulSnapshot(scope(), snapshot());
+    subscriptions.enable(firstUser, catalogClassId);
 
     clock.setInstant(SECOND);
-    tracker.reconcileSuccessfulSnapshot(snapshot(change("T2", "S2", 40L)));
+    tracker.reconcileSuccessfulSnapshot(scope(), snapshot(change("T2", "S2", 40L)));
 
     assertThat(
             jdbc.queryForList(
                 "SELECT recipient_user_id FROM notification_outbox WHERE event_type = 'BASELINE_ESTABLISHED'",
                 Long.class))
-        .containsExactly(firstUser);
-    assertFanout("CHANGE_NEW", firstUser, lateUser);
+        .isEmpty();
+    assertFanout("CHANGE_NEW", firstUser);
   }
 
   @Test
   void unsubscribePreservesExistingIntentAndStopsFutureFanout() {
     long firstUser = subscribe(9);
-    long secondUser = subscribe(10);
-    tracker.reconcileSuccessfulSnapshot(snapshot());
+    tracker.reconcileSuccessfulSnapshot(scope(), snapshot());
     clock.setInstant(SECOND);
-    tracker.reconcileSuccessfulSnapshot(snapshot(change("T2", "S2", 40L)));
+    tracker.reconcileSuccessfulSnapshot(scope(), snapshot(change("T2", "S2", 40L)));
     int existingIntentCount = outboxRows().size();
 
-    subscriptions.disable(secondUser, JOURNAL_ID);
+    subscriptions.disable(firstUser, catalogClassId);
     clock.setInstant(THIRD);
-    tracker.reconcileSuccessfulSnapshot(snapshot(change("T3", "S3", 40L)));
+    tracker.reconcileSuccessfulSnapshot(scope(), snapshot(change("T3", "S3", 40L)));
 
-    assertThat(outboxRows()).hasSize(existingIntentCount + 1);
-    assertFanout("CHANGE_UPDATED", firstUser);
+    assertThat(outboxRows()).hasSize(existingIntentCount);
+    assertFanout("CHANGE_UPDATED");
     assertThat(
             jdbc.queryForObject(
                 """
@@ -200,22 +205,22 @@ class RecipientOutboxFanoutPostgresTests extends PostgresIntegrationTestSupport 
                 WHERE recipient_user_id = ? AND event_type = 'CHANGE_NEW'
                 """,
                 Integer.class,
-                secondUser))
+                firstUser))
         .isOne();
   }
 
   @Test
   void laterFanoutFailureRollsBackFirstInsertAndTrackingMutation() {
     long firstUser = subscribe(11);
-    subscribe(12);
     ScheduleChange original = change("T2", "S2", 40L);
-    tracker.reconcileSuccessfulSnapshot(snapshot(original));
+    tracker.reconcileSuccessfulSnapshot(scope(), snapshot(original));
     Map<String, Object> before = trackingState();
     int outboxCountBefore = outboxRows().size();
     recipients.failAfterFirstRealRecipient();
     clock.setInstant(SECOND);
 
-    assertThatThrownBy(() -> tracker.reconcileSuccessfulSnapshot(snapshot(change("T3", "S3", 40L))))
+    assertThatThrownBy(
+            () -> tracker.reconcileSuccessfulSnapshot(scope(), snapshot(change("T3", "S3", 40L))))
         .isInstanceOf(DataIntegrityViolationException.class);
 
     assertThat(trackingState()).isEqualTo(before);
@@ -229,9 +234,39 @@ class RecipientOutboxFanoutPostgresTests extends PostgresIntegrationTestSupport 
   }
 
   private long subscribe(int suffix) {
+    long userId = createSelectableUser(suffix);
+    subscriptions.enable(userId, catalogClassId);
+    return userId;
+  }
+
+  private long createSelectableUser(int suffix) {
     long userId =
         registration.registerOrUpdate(7_000_000_000L + suffix, 8_000_000_000L + suffix).id();
-    subscriptions.enable(userId, JOURNAL_ID);
+    accountId =
+        jdbc.queryForObject(
+            """
+            INSERT INTO vulcan_account
+              (app_user_id, status, remember_credentials, created_at, updated_at, authenticated_at)
+            VALUES (?, 'CONNECTED', FALSE, ?, ?, ?)
+            RETURNING id
+            """,
+            Long.class,
+            userId,
+            Timestamp.from(FIRST),
+            Timestamp.from(FIRST),
+            Timestamp.from(FIRST));
+    catalogClassId =
+        jdbc.queryForObject(
+            """
+            INSERT INTO vulcan_class_catalog
+              (vulcan_account_id, journal_id, class_id, name, school_year, active, synced_at)
+            VALUES (?, ?, 420, 'Synthetic 2A', 2026, TRUE, ?)
+            RETURNING id
+            """,
+            Long.class,
+            accountId,
+            JOURNAL_ID,
+            Timestamp.from(FIRST));
     return userId;
   }
 
@@ -251,6 +286,10 @@ class RecipientOutboxFanoutPostgresTests extends PostgresIntegrationTestSupport 
 
   private List<Map<String, Object>> outboxRows() {
     return jdbc.queryForList("SELECT * FROM notification_outbox ORDER BY id");
+  }
+
+  private TrackingScope scope() {
+    return new TrackingScope(accountId, catalogClassId, JOURNAL_ID, WEEK_START, WEEK_END);
   }
 
   private Map<String, Object> trackingState() {
@@ -309,8 +348,8 @@ class RecipientOutboxFanoutPostgresTests extends PostgresIntegrationTestSupport 
     }
 
     @Override
-    public List<Long> activeRecipientUserIds(long journalId) {
-      List<Long> actual = delegate.activeRecipientUserIds(journalId);
+    public List<Long> activeRecipientUserIds(long catalogClassId) {
+      List<Long> actual = delegate.activeRecipientUserIds(catalogClassId);
       if (!failAfterFirstRealRecipient) {
         return actual;
       }

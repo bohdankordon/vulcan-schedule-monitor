@@ -15,6 +15,10 @@ import io.github.bohdankordon.vulcanschedulemonitor.telegram.command.TelegramCom
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.delivery.TelegramNotificationDeliveryGateway;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.delivery.TelegramNotificationDispatchScheduler;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.delivery.TelegramNotificationFormatter;
+import io.github.bohdankordon.vulcanschedulemonitor.telegram.interactive.ClassSelectionCallbackParser;
+import io.github.bohdankordon.vulcanschedulemonitor.telegram.interactive.ClassSelectionController;
+import io.github.bohdankordon.vulcanschedulemonitor.telegram.interactive.TelegramCallbackRouter;
+import io.github.bohdankordon.vulcanschedulemonitor.telegram.interactive.TelegramInteractiveTransport;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.runtime.TelegramBotsLongPollingEngineFactory;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.runtime.TelegramLongPollingEngineFactory;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.runtime.TelegramLongPollingRuntime;
@@ -26,6 +30,7 @@ import io.github.bohdankordon.vulcanschedulemonitor.telegram.update.TelegramUpda
 import io.github.bohdankordon.vulcanschedulemonitor.users.TelegramIdentityRegistration;
 import io.github.bohdankordon.vulcanschedulemonitor.users.TelegramRecipientDirectory;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanConnectionStatusService;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.catalog.VulcanClassCatalog;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.token.VulcanConnectLinkService;
 import java.time.Clock;
 import java.time.Duration;
@@ -62,7 +67,7 @@ public class TelegramConfiguration {
 
   @Bean(destroyMethod = "close")
   @ConditionalOnMissingBean(TelegramMessageTransport.class)
-  TelegramMessageTransport telegramMessageTransport(TelegramProviderAvailabilityGate gate) {
+  TelegramBotsMessageTransport telegramMessageTransport(TelegramProviderAvailabilityGate gate) {
     return new TelegramBotsMessageTransport(botProperties.getToken(), gate);
   }
 
@@ -75,6 +80,31 @@ public class TelegramConfiguration {
   @Bean
   TelegramCommandParser telegramCommandParser() {
     return new TelegramCommandParser();
+  }
+
+  @Bean
+  ClassSelectionCallbackParser classSelectionCallbackParser() {
+    return new ClassSelectionCallbackParser();
+  }
+
+  @Bean
+  ClassSelectionController classSelectionController(
+      MonitoringSubscriptionService subscriptions,
+      VulcanConnectionStatusService connections,
+      TelegramMessageTransport transport,
+      TelegramInteractiveTransport interactiveTransport) {
+    return new ClassSelectionController(
+        subscriptions, connections, transport, interactiveTransport);
+  }
+
+  @Bean
+  TelegramCallbackRouter telegramCallbackRouter(
+      ClassSelectionCallbackParser parser,
+      TelegramIdentityRegistration identities,
+      MonitoringSubscriptionService subscriptions,
+      ClassSelectionController classes,
+      TelegramInteractiveTransport transport) {
+    return new TelegramCallbackRouter(parser, identities, subscriptions, classes, transport);
   }
 
   @Bean
@@ -108,8 +138,11 @@ public class TelegramConfiguration {
       TelegramCommandParser parser,
       TelegramIdentityRegistration identities,
       TelegramMessageTransport transport,
-      List<TelegramCommandHandler> handlers) {
-    return new TelegramUpdateRouter(parser, identities, transport, handlers);
+      List<TelegramCommandHandler> handlers,
+      TelegramCallbackRouter callbackRouter,
+      ClassSelectionController classes) {
+    return new TelegramUpdateRouter(
+        parser, identities, transport, handlers, callbackRouter, classes);
   }
 
   @Bean
@@ -140,9 +173,10 @@ public class TelegramConfiguration {
   @Bean
   TelegramNotificationDeliveryGateway telegramNotificationDeliveryGateway(
       TelegramRecipientDirectory recipients,
+      VulcanClassCatalog catalog,
       TelegramNotificationFormatter formatter,
       TelegramMessageTransport transport) {
-    return new TelegramNotificationDeliveryGateway(recipients, formatter, transport);
+    return new TelegramNotificationDeliveryGateway(recipients, catalog, formatter, transport);
   }
 
   @Bean

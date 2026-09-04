@@ -226,12 +226,14 @@ class VulcanConnectControllerTests extends PostgresIntegrationTestSupport {
   }
 
   private void clearDatabase() {
+    jdbc.update("DELETE FROM notification_outbox");
+    jdbc.update("DELETE FROM schedule_change_state");
+    jdbc.update("DELETE FROM tracking_scope");
+    jdbc.update("DELETE FROM monitoring_subscription");
     jdbc.update("DELETE FROM vulcan_class_catalog");
     jdbc.update("DELETE FROM vulcan_account_secret");
     jdbc.update("DELETE FROM vulcan_connect_token");
     jdbc.update("DELETE FROM vulcan_account");
-    jdbc.update("DELETE FROM notification_outbox");
-    jdbc.update("DELETE FROM monitoring_subscription");
     jdbc.update("DELETE FROM telegram_identity");
     jdbc.update("DELETE FROM app_user");
   }

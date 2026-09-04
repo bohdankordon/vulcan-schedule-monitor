@@ -4,6 +4,7 @@ public enum TelegramCommand {
   START,
   HELP,
   STATUS,
+  CLASSES,
   SUBSCRIPTIONS,
   CONNECT
 }

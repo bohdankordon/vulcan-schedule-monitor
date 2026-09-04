@@ -42,11 +42,7 @@ class MonitoringCycleRunnerTest {
         };
 
     MonitoringCycleSummary summary =
-        runner(
-                List.of(new MonitoringTarget(9), new MonitoringTarget(2), new MonitoringTarget(9)),
-                source,
-                new InMemoryStore(),
-                delays)
+        runner(List.of(target(9), target(2), target(9)), source, new InMemoryStore(), delays)
             .runCycle();
 
     assertThat(summary.targetCount()).isEqualTo(2);
@@ -68,8 +64,7 @@ class MonitoringCycleRunnerTest {
     AtomicInteger cycle = new AtomicInteger();
     WeeklyScheduleSource source =
         scope -> cycle.get() == 0 ? snapshot(scope) : snapshot(scope, substitution(scope));
-    MonitoringCycleRunner runner =
-        runner(List.of(new MonitoringTarget(42)), source, store, new RecordingDelay());
+    MonitoringCycleRunner runner = runner(List.of(target(42)), source, store, new RecordingDelay());
 
     MonitoringCycleSummary baseline = runner.runCycle();
     cycle.incrementAndGet();
@@ -106,11 +101,7 @@ class MonitoringCycleRunnerTest {
         };
 
     MonitoringCycleSummary summary =
-        runner(
-                List.of(new MonitoringTarget(2), new MonitoringTarget(9)),
-                source,
-                new InMemoryStore(),
-                new RecordingDelay())
+        runner(List.of(target(2), target(9)), source, new InMemoryStore(), new RecordingDelay())
             .runCycle();
 
     assertThat(calls).hasValue(4);
@@ -124,16 +115,47 @@ class MonitoringCycleRunnerTest {
   }
 
   @Test
-  void authenticationFailureStopsAllRemainingSharedSessionWork() {
-    assertStopsAfterFirst(
+  void authenticationFailureSkipsRemainingWorkForTheSameAccount() {
+    assertBlocksAccountAfterFirst(
         SourceFailureKind.AUTHENTICATION_REQUIRED,
         MonitoringOutcomeCategory.AUTHENTICATION_REQUIRED);
   }
 
   @Test
-  void rateLimitDeferralStopsAllRemainingWork() {
-    assertStopsAfterFirst(
+  void rateLimitDeferralSkipsRemainingWorkForTheSameAccount() {
+    assertBlocksAccountAfterFirst(
         SourceFailureKind.DEFERRED_RATE_LIMIT, MonitoringOutcomeCategory.DEFERRED_RATE_LIMIT);
+  }
+
+  @Test
+  void accountAuthenticationFailureSkipsOnlyThatAccountAndHealthyAccountStillRuns() {
+    List<TrackingScope> fetched = new ArrayList<>();
+    WeeklyScheduleSource source =
+        scope -> {
+          fetched.add(scope);
+          if (scope.vulcanAccountId() == 1) {
+            throw ScheduleSourceException.of(SourceFailureKind.AUTHENTICATION_REQUIRED);
+          }
+          return snapshot(scope);
+        };
+
+    MonitoringCycleSummary summary =
+        runner(
+                List.of(target(1, 101, 77), target(1, 102, 78), target(2, 201, 77)),
+                source,
+                new InMemoryStore(),
+                new RecordingDelay())
+            .runCycle();
+
+    assertThat(fetched).extracting(TrackingScope::vulcanAccountId).containsExactly(1L, 2L, 2L);
+    assertThat(fetched).extracting(TrackingScope::catalogClassId).containsExactly(101L, 201L, 201L);
+    assertThat(summary.stoppedEarly()).isFalse();
+    assertThat(summary.outcomes())
+        .extracting(ScopeMonitoringOutcome::category)
+        .containsExactly(
+            MonitoringOutcomeCategory.AUTHENTICATION_REQUIRED,
+            MonitoringOutcomeCategory.BASELINE_ESTABLISHED,
+            MonitoringOutcomeCategory.BASELINE_ESTABLISHED);
   }
 
   @Test
@@ -145,7 +167,7 @@ class MonitoringCycleRunnerTest {
         };
 
     MonitoringCycleSummary summary =
-        runner(List.of(new MonitoringTarget(42)), source, store, new RecordingDelay()).runCycle();
+        runner(List.of(target(42)), source, store, new RecordingDelay()).runCycle();
 
     assertThat(summary.outcomes())
         .allSatisfy(
@@ -180,7 +202,7 @@ class MonitoringCycleRunnerTest {
     assertThat(delays.values).isEmpty();
   }
 
-  private static void assertStopsAfterFirst(
+  private static void assertBlocksAccountAfterFirst(
       SourceFailureKind failureKind, MonitoringOutcomeCategory expectedCategory) {
     AtomicInteger calls = new AtomicInteger();
     WeeklyScheduleSource source =
@@ -193,15 +215,11 @@ class MonitoringCycleRunnerTest {
         };
 
     MonitoringCycleSummary summary =
-        runner(
-                List.of(new MonitoringTarget(2), new MonitoringTarget(9)),
-                source,
-                new InMemoryStore(),
-                new RecordingDelay())
+        runner(List.of(target(2), target(9)), source, new InMemoryStore(), new RecordingDelay())
             .runCycle();
 
     assertThat(calls).hasValue(1);
-    assertThat(summary.stoppedEarly()).isTrue();
+    assertThat(summary.stoppedEarly()).isFalse();
     assertThat(summary.outcomes())
         .singleElement()
         .extracting(ScopeMonitoringOutcome::category)
@@ -223,6 +241,14 @@ class MonitoringCycleRunnerTest {
         delay,
         SPACING,
         CLOCK);
+  }
+
+  private static MonitoringTarget target(long journalId) {
+    return new MonitoringTarget(1L, journalId, journalId);
+  }
+
+  private static MonitoringTarget target(long accountId, long catalogId, long journalId) {
+    return new MonitoringTarget(accountId, catalogId, journalId);
   }
 
   private static ScheduleSnapshot snapshot(TrackingScope scope, TeacherSubstitution... changes) {
