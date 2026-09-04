@@ -1,0 +1,28 @@
+# Build output
+target/
+*.log
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+secrets/
+*.har
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+
+# Future browser automation session state
+playwright/.auth/
+**/playwright/.auth/
+storage-state.json
+*-storage-state.json
+
+# IDE and operating-system files
+.idea/
+*.iml
+.vscode/
+.DS_Store
+Thumbs.db
