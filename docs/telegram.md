@@ -27,7 +27,9 @@ Telegram Bot API -> long polling -> TelegramUpdateConsumer -> TelegramUpdateRout
                  -> command handler -> existing application service
 ```
 
-`TelegramBotsLongPollingApplication` is wrapped behind a small engine/factory boundary. Each registration attempt owns a named scheduled executor and an OkHttp client. A failed partial attempt closes the wrapper; shutdown closes bot sessions/application first, then shuts down the executor, OkHttp dispatcher, connection pool, and optional cache.
+`TelegramBotsLongPollingApplication` is wrapped behind a small engine/factory boundary. Before registration, the engine calls the side-effect-free Bot API `getMe` method through the same engine-owned OkHttp client and Telegram URL. This structured preflight is necessary because TelegramBots 10.2.1 can report its internal registration-time `deleteWebhook` failure as `TelegramApiErrorResponseException`, whose HTTP code is not exposed. The adapter does not parse exception strings or use reflection. A structured preflight `401` suspends Telegram until restart, while `429` honors `retry_after` (with the existing 30-second fallback). If registration still fails after a successful preflight without structured details, it is conservatively transient.
+
+Each registration attempt owns a named scheduled executor and an OkHttp client. A failed partial attempt closes the wrapper; shutdown closes bot sessions/application first, then shuts down the executor, OkHttp dispatcher, connection pool, and optional cache.
 
 Registration runs under a thin scheduled supervisor rather than application-context startup. Transient failures keep PostgreSQL, monitoring, and outbox accumulation alive and retry without sleeping after 5 seconds, 15 seconds, 45 seconds, then two minutes capped. Authentication failure suspends Telegram work until process restart. Restart clears all process-local gate and retry state.
 
