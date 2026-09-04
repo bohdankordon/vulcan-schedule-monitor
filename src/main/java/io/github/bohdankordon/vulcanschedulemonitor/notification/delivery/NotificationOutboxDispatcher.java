@@ -41,6 +41,15 @@ public final class NotificationOutboxDispatcher {
     int dead = 0;
 
     for (NotificationOutboxClaim claim : claims) {
+      if (claim.message().attemptNumber() > policy.maxAttempts()) {
+        if (store.markDead(
+            claim.message().id(),
+            claim.ownershipToken(),
+            NotificationOutboxFailureCategory.EXHAUSTED)) {
+          dead++;
+        }
+        continue;
+      }
       try {
         gateway.deliver(claim.message());
       } catch (NotificationDeliveryException exception) {

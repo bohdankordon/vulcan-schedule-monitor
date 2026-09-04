@@ -27,7 +27,7 @@ CREATE TABLE notification_outbox (
     ),
     CONSTRAINT ck_notification_outbox_failure_category CHECK (
         last_failure_category IS NULL
-        OR last_failure_category IN ('RETRYABLE', 'PERMANENT', 'UNEXPECTED')
+        OR last_failure_category IN ('RETRYABLE', 'PERMANENT', 'UNEXPECTED', 'EXHAUSTED')
     ),
     CONSTRAINT ck_notification_outbox_week_range CHECK (week_end = week_start + 6),
     CONSTRAINT ck_notification_outbox_attempt_count CHECK (attempt_count >= 0),

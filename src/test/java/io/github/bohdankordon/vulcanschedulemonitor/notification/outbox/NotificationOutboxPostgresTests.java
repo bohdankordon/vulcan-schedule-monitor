@@ -223,6 +223,50 @@ class NotificationOutboxPostgresTests extends PostgresIntegrationTestSupport {
   }
 
   @Test
+  void finalAllowedAttemptStillReachesGatewayAndCanBeDelivered() {
+    long id = insert("PENDING", 4, NOW, null, null, null);
+    AtomicInteger gatewayCalls = new AtomicInteger();
+    NotificationOutboxDispatcher dispatcher =
+        dispatcher(
+            message -> {
+              gatewayCalls.incrementAndGet();
+              assertThat(message.attemptNumber()).isEqualTo(5);
+            });
+
+    var summary = dispatcher.dispatchOnce();
+
+    assertThat(gatewayCalls).hasValue(1);
+    assertThat(summary.claimed()).isOne();
+    assertThat(summary.delivered()).isOne();
+    assertThat(summary.dead()).isZero();
+    assertThat(row(id))
+        .containsEntry("status", "DELIVERED")
+        .containsEntry("attempt_count", 5)
+        .containsEntry("delivered_at", Timestamp.from(NOW));
+  }
+
+  @Test
+  void staleFinalAttemptIsReclaimedForCleanupWithoutSixthGatewayCall() {
+    long id = insert("IN_FLIGHT", 5, NOW, NOW.minusSeconds(1), UUID.randomUUID(), null);
+    AtomicInteger gatewayCalls = new AtomicInteger();
+    NotificationOutboxDispatcher dispatcher = dispatcher(message -> gatewayCalls.incrementAndGet());
+
+    var summary = dispatcher.dispatchOnce();
+
+    assertThat(gatewayCalls).hasValue(0);
+    assertThat(summary.claimed()).isOne();
+    assertThat(summary.delivered()).isZero();
+    assertThat(summary.dead()).isOne();
+    assertThat(row(id))
+        .containsEntry("status", "DEAD")
+        .containsEntry("attempt_count", 6)
+        .containsEntry("last_failure_category", "EXHAUSTED")
+        .containsEntry("lease_until", null)
+        .containsEntry("claim_token", null);
+    assertThat(store.claimDue(NOW.plus(Duration.ofDays(1)), 1, LEASE)).isEmpty();
+  }
+
+  @Test
   void finalRetryableAndUnexpectedFailuresExhaustTheAttemptBudget() {
     long retryableId = insert("PENDING", 4, NOW, null, null, null);
     NotificationOutboxDispatcher retryable =
