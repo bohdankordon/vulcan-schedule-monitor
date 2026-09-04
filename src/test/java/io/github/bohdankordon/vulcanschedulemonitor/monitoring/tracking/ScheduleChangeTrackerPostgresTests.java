@@ -62,7 +62,30 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
   @BeforeEach
   void clearDatabase() {
     jdbc.update("DELETE FROM notification_outbox");
+    jdbc.update("DELETE FROM monitoring_subscription");
+    jdbc.update("DELETE FROM telegram_identity");
+    jdbc.update("DELETE FROM app_user");
     jdbc.update("DELETE FROM tracking_scope");
+    long appUserId =
+        jdbc.queryForObject(
+            """
+            INSERT INTO app_user (active, created_at, updated_at)
+            VALUES (TRUE, ?, ?)
+            RETURNING id
+            """,
+            Long.class,
+            Timestamp.from(FIRST_FETCH),
+            Timestamp.from(FIRST_FETCH));
+    jdbc.update(
+        """
+        INSERT INTO monitoring_subscription
+          (app_user_id, journal_id, enabled, created_at, updated_at)
+        VALUES (?, ?, TRUE, ?, ?)
+        """,
+        appUserId,
+        JOURNAL_ID,
+        Timestamp.from(FIRST_FETCH),
+        Timestamp.from(FIRST_FETCH));
     failingOutbox.reset();
   }
 
@@ -480,7 +503,8 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
             "claim_token",
             "created_at",
             "delivered_at",
-            "last_failure_category")
+            "last_failure_category",
+            "recipient_user_id")
         .doesNotContain(
             "raw_annotation",
             "teacher_id",

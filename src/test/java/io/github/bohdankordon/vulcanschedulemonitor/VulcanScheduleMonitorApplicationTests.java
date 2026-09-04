@@ -22,9 +22,9 @@ class VulcanScheduleMonitorApplicationTests extends PostgresIntegrationTestSuppo
 
   @Test
   void contextLoadsWithMigratedSchemaValidatedByHibernate() {
-    assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("2");
+    assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("3");
     assertThat(context.getBeansOfType(MonitoringScheduler.class)).isEmpty();
-    assertThat(context.getBeansOfType(MonitoringTargetProvider.class)).isEmpty();
+    assertThat(context.getBeansOfType(MonitoringTargetProvider.class)).hasSize(1);
     assertThat(context.getBeansOfType(WeeklyScheduleSource.class)).isEmpty();
     assertThat(context.getBeansOfType(NotificationDeliveryGateway.class)).isEmpty();
     assertThat(context.getBeansOfType(NotificationOutboxDispatcher.class)).isEmpty();

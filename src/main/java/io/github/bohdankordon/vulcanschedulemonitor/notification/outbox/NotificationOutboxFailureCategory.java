@@ -4,5 +4,6 @@ public enum NotificationOutboxFailureCategory {
   RETRYABLE,
   PERMANENT,
   UNEXPECTED,
-  EXHAUSTED
+  EXHAUSTED,
+  UNROUTABLE
 }

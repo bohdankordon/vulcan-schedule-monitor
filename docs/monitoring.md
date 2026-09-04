@@ -2,7 +2,7 @@
 
 ## Scope selection and ordering
 
-Each `MonitoringTarget` contains one opaque journal identifier. `MonitoringTargetProvider` is a port only; there is intentionally no production subscription table or provider in this phase, and tracking rows are not treated as subscriptions.
+Each `MonitoringTarget` contains one opaque journal identifier. The production `MonitoringTargetProvider` queries subscriptions and returns one distinct, deterministically ordered target for every journal having at least one enabled subscription owned by an active application user. Multiple subscribers to one journal therefore produce one VULCAN monitoring target. Disabled subscriptions and inactive users produce none. Tracking rows are never inferred as subscriptions.
 
 At the start of each cycle, targets are deduplicated and sorted by journal identifier. The planner uses the injected clock in `Europe/Warsaw`, independent of the machine timezone. It produces exactly two separate Monday-to-Sunday scopes per target: the Polish current week followed by the next week. The two weeks remain two requests because multi-week VULCAN ranges have not been established as supported.
 
@@ -33,6 +33,6 @@ vulcan:
     poll-interval: PT5M
 ```
 
-When enabled, the first execution waits one configured interval. Required `MonitoringTargetProvider` and `WeeklyScheduleSource` beans must also be supplied explicitly; missing adapters fail application-context creation rather than simulating active monitoring. The application does not read browser-session environment values or make VULCAN calls during normal default startup.
+When enabled, the first execution waits one configured interval. The subscription-backed `MonitoringTargetProvider` is always available, while a `WeeklyScheduleSource` must still be supplied explicitly; a missing source fails application-context creation rather than simulating active monitoring. The application does not read browser-session environment values or make VULCAN calls during normal default startup.
 
-The current deployment assumption is one application instance. There is no distributed scheduler lock. Successful reconciliation now appends durable notification intent to the implemented transactional outbox, but this monitoring scheduler does not dispatch it. Playwright login/re-login, credential persistence, a real subscription provider, `RefreshSession` keepalive, Telegram delivery, outbox dispatch scheduling, and production deployment are intentionally deferred.
+The current deployment assumption is one application instance. There is no distributed scheduler lock. Successful reconciliation appends per-recipient durable notification intent to the transactional outbox, but this monitoring scheduler does not dispatch it. Playwright login/re-login, credential persistence, `RefreshSession` keepalive, Telegram commands and delivery, outbox dispatch scheduling, and production deployment are intentionally deferred.

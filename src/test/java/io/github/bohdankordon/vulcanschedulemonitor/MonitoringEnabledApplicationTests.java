@@ -3,7 +3,6 @@ package io.github.bohdankordon.vulcanschedulemonitor;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.orchestration.MonitoringScheduler;
-import io.github.bohdankordon.vulcanschedulemonitor.monitoring.orchestration.MonitoringTargetProvider;
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.WeeklyScheduleSource;
 import io.github.bohdankordon.vulcanschedulemonitor.schedule.model.ScheduleSnapshot;
 import io.github.bohdankordon.vulcanschedulemonitor.testsupport.PostgresIntegrationTestSupport;
@@ -33,11 +32,6 @@ class MonitoringEnabledApplicationTests extends PostgresIntegrationTestSupport {
 
   @TestConfiguration(proxyBeanMethods = false)
   static class SyntheticMonitoringConfiguration {
-
-    @Bean
-    MonitoringTargetProvider monitoringTargetProvider() {
-      return List::of;
-    }
 
     @Bean
     WeeklyScheduleSource weeklyScheduleSource() {

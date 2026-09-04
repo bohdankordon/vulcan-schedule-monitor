@@ -3,6 +3,7 @@ package io.github.bohdankordon.vulcanschedulemonitor.notification.outbox.persist
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.TrackingEventOutbox;
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.TrackingResult;
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.TrackingScope;
+import io.github.bohdankordon.vulcanschedulemonitor.notification.recipient.NotificationRecipientProvider;
 import java.time.Instant;
 import java.util.Objects;
 import org.springframework.stereotype.Repository;
@@ -11,9 +12,12 @@ import org.springframework.stereotype.Repository;
 class JpaTrackingEventOutbox implements TrackingEventOutbox {
 
   private final NotificationOutboxRepository repository;
+  private final NotificationRecipientProvider recipientProvider;
 
-  JpaTrackingEventOutbox(NotificationOutboxRepository repository) {
+  JpaTrackingEventOutbox(
+      NotificationOutboxRepository repository, NotificationRecipientProvider recipientProvider) {
     this.repository = repository;
+    this.recipientProvider = recipientProvider;
   }
 
   @Override
@@ -21,13 +25,19 @@ class JpaTrackingEventOutbox implements TrackingEventOutbox {
     Objects.requireNonNull(scope, "scope must not be null");
     Objects.requireNonNull(result, "result must not be null");
     Objects.requireNonNull(occurredAt, "occurredAt must not be null");
-    if (result.baselineEstablishedNow()) {
-      repository.save(
-          NotificationOutboxEntity.baseline(scope, result.activeChangeCount(), occurredAt));
-      return;
+    for (long recipientUserId : recipientProvider.activeRecipientUserIds(scope.journalId())) {
+      if (result.baselineEstablishedNow()) {
+        repository.saveAndFlush(
+            NotificationOutboxEntity.baseline(
+                scope, recipientUserId, result.activeChangeCount(), occurredAt));
+      } else {
+        result.transitions().stream()
+            .map(
+                transition ->
+                    NotificationOutboxEntity.transition(
+                        scope, recipientUserId, transition, occurredAt))
+            .forEach(repository::saveAndFlush);
+      }
     }
-    result.transitions().stream()
-        .map(transition -> NotificationOutboxEntity.transition(scope, transition, occurredAt))
-        .forEach(repository::save);
   }
 }
