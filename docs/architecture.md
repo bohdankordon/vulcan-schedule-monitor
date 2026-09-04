@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-Vulcan Schedule Monitor currently contains its Spring Boot foundation, a read-only VULCAN integration slice, PostgreSQL-backed active schedule-change tracking, and a disabled-by-default scheduled monitoring foundation. This document separates implemented foundations from future architecture without prescribing unimplemented class designs.
+Vulcan Schedule Monitor currently contains its Spring Boot foundation, a read-only VULCAN integration slice, PostgreSQL-backed active schedule-change tracking, a transactional notification outbox with a generic durable dispatcher core, and a disabled-by-default scheduled monitoring foundation. This document separates implemented foundations from future architecture without prescribing unimplemented class designs.
 
 ## Architectural style
 
@@ -40,7 +40,7 @@ The persistence and tracking boundary currently provides:
 - a coordinator boundary that never reconciles after a failed fetch; and
 - PostgreSQL/Testcontainers coverage for migrations, Hibernate validation, constraints, lifecycle behavior, and rollback.
 
-Only current active changes are retained. Resolved rows are removed after their transition is produced; durable delivery history belongs to the planned transactional outbox.
+Only current active changes are retained in tracking state. Resolved rows are removed after their transition is produced; their minimized notification intent remains durable in the implemented outbox.
 
 The monitoring application boundary currently provides:
 
@@ -56,6 +56,20 @@ The monitoring application boundary currently provides:
 
 The monitoring trigger is disabled by default. Enabling it without application-provided target and weekly-source adapters fails context wiring clearly. The single-instance guard is not a distributed lock; multi-instance coordination is deployment work for a later phase.
 
+The notification boundary currently provides:
+
+- a Flyway V2 `notification_outbox` table with explicit minimized columns and database invariants;
+- one baseline summary intent or one ordered intent per `NEW`, `UPDATED`, and `RESOLVED` transition;
+- atomic enqueue inside successful tracking reconciliation;
+- `PENDING`, `IN_FLIGHT`, `DELIVERED`, and `DEAD` delivery states;
+- bounded PostgreSQL claims using `FOR UPDATE SKIP LOCKED`, two-minute leases, and per-claim ownership tokens;
+- recovery of expired claims with an incremented attempt count;
+- a protocol-independent immutable message and delivery gateway contract;
+- success acknowledgement, bounded exponential retry, provider `retryAfter`, permanent failure, and five-attempt exhaustion handling; and
+- a programmatically callable sequential dispatcher that performs delivery outside database transactions.
+
+No production delivery gateway or dispatcher scheduler is registered. Normal startup and monitoring therefore remain independent of external notification providers; pending events may accumulate safely.
+
 ## Planned modules
 
 The planned major module boundaries are:
@@ -65,12 +79,12 @@ The planned major module boundaries are:
 - **schedule/change domain** — internal schedule and change concepts;
 - **monitoring** — implemented successful-snapshot reconciliation and conditional, traffic-conscious scheduling foundation;
 - **subscriptions** — user monitoring preferences;
-- **notification/outbox** — reliable notification intent and delivery state;
+- **notification/outbox** — implemented reliable notification intent, delivery state, and generic dispatcher core;
 - **Telegram adapter** — user interaction and outbound messages;
 - **persistence** — implemented tracking-state storage adapter and transaction boundary, with future feature storage added only as required; and
 - **secure account connection** — careful onboarding without exposing credentials.
 
-The VULCAN integration, initial schedule/change domain, and persistent active-change tracking are implemented. The remaining items are intended boundaries, not placeholder packages.
+The VULCAN integration, initial schedule/change domain, persistent active-change tracking, transactional notification intent persistence, and generic durable dispatch core are implemented. The remaining items are intended boundaries, not placeholder packages.
 
 ## Technology roadmap
 
@@ -80,13 +94,15 @@ The following capabilities are planned but **not implemented yet**:
 
 - production monitoring-target/session adapters;
 - automatic session recovery;
-- transactional notification outbox;
 - TelegramBots Java library;
+- Telegram gateway, formatter, and routing;
+- a real notification subscription provider;
+- dispatcher scheduling;
 - Playwright for Java;
 - user subscriptions; and
 - production deployment.
 
-The next integration stages still plan reliable outbox delivery, Telegram, automated authentication/re-login, user subscriptions, multi-instance coordination, durable account-level rate limiting, and production deployment. The current database and scheduling layers are foundations for those features, not a claim of production readiness.
+The next integration stages still plan Telegram delivery, formatter/routing, dispatcher scheduling, automated authentication/re-login, user subscriptions, multi-instance monitoring coordination, durable account-level rate limiting, and production deployment. Delivered-row retention and cleanup policy also remain future work. The current database and scheduling layers are foundations for those features, not a claim of production readiness.
 
 Technology choices beyond this list will be made when a concrete feature requires them. New libraries and frameworks should use their latest stable, mutually compatible releases at the time of adoption. Spring Boot dependency management remains the default; explicit version overrides should represent a deliberate, verified project baseline.
 

@@ -10,7 +10,7 @@ An unofficial Java service for monitoring school schedule changes available thro
 
 ## Status
 
-The project is in early development. Its read-only integration slice can use an already authenticated browser session to discover journals and retrieve a synthetic-tested weekly schedule. Successful weekly snapshots establish a PostgreSQL-backed baseline and reconcile current schedule changes as `NEW`, `UPDATED`, or `RESOLVED`. A disabled-by-default monitoring foundation can plan and safely execute current- and next-week refreshes when application code explicitly supplies both a target provider and an authorized weekly source. Automated authentication, production subscriptions, APIs, and notifications are not implemented yet.
+The project is in early development. Its read-only integration slice can use an already authenticated browser session to discover journals and retrieve a synthetic-tested weekly schedule. Successful weekly snapshots establish a PostgreSQL-backed baseline and reconcile current schedule changes as `NEW`, `UPDATED`, or `RESOLVED`. Each successful reconciliation atomically records minimized notification intent in a PostgreSQL outbox. A disabled-by-default monitoring foundation can plan and safely execute current- and next-week refreshes when application code explicitly supplies both a target provider and an authorized weekly source. Automated authentication, production subscriptions, APIs, Telegram delivery, and outbox dispatch scheduling are not implemented yet.
 
 ## Purpose and planned capabilities
 
@@ -25,9 +25,9 @@ The project aims to provide a privacy-conscious service that can:
 
 ## Architecture
 
-Vulcan Schedule Monitor is a modular monolith with feature-oriented packages. Its VULCAN adapter translates browser-observed payloads into small internal schedule and change models. Tracking logic uses a persistence port; JPA entities remain internal to the PostgreSQL adapter.
+Vulcan Schedule Monitor is a modular monolith with feature-oriented packages. Its VULCAN adapter translates browser-observed payloads into small internal schedule and change models. Tracking and notification logic use protocol-independent ports; JPA entities remain internal to PostgreSQL adapters.
 
-See [Architecture](docs/architecture.md), [Monitoring orchestration](docs/monitoring.md), [Persistent change tracking](docs/change-tracking.md), [Unofficial VULCAN protocol notes](docs/vulcan-protocol.md), and [Manual session setup](docs/manual-session.md).
+See [Architecture](docs/architecture.md), [Monitoring orchestration](docs/monitoring.md), [Persistent change tracking](docs/change-tracking.md), [Notification outbox](docs/notification-outbox.md), [Unofficial VULCAN protocol notes](docs/vulcan-protocol.md), and [Manual session setup](docs/manual-session.md).
 
 ## Technology
 
@@ -59,7 +59,7 @@ SPRING_DATASOURCE_PASSWORD=<password>
 
 No database credentials or environment-specific URLs are stored in the repository. Docker is required only to run the PostgreSQL integration tests locally.
 
-Monitoring is off unless `vulcan.monitoring.enabled=true` is set. Enabling it also requires application-provided `MonitoringTargetProvider` and `WeeklyScheduleSource` beans; the repository deliberately provides neither a production subscription provider nor an automatically constructed VULCAN session. The default polling interval is `PT5M`.
+Monitoring is off unless `vulcan.monitoring.enabled=true` is set. Enabling it also requires application-provided `MonitoringTargetProvider` and `WeeklyScheduleSource` beans; the repository deliberately provides neither a production subscription provider nor an automatically constructed VULCAN session. The default polling interval is `PT5M`. Monitoring does not require a delivery gateway: notification intents safely accumulate as `PENDING` until a future integration invokes the dispatcher.
 
 ## Build and test
 
@@ -85,7 +85,7 @@ On Windows, use `.\mvnw.cmd spotless:apply`.
 
 ## Security and privacy
 
-The project follows data-minimization and least-privilege principles. Persistent tracking state contains only versioned hashes, change type, lesson slot identifiers, group/subject identifiers, and timestamps. Raw VULCAN responses, unknown annotations, teacher identifiers, replacement codes, credentials, cookies, session state, HAR captures, tenant identifiers, and personal school data are not stored in the tracking database or committed. Browser captures used for protocol research remain outside this repository.
+The project follows data-minimization and least-privilege principles. Persistent tracking and outbox state contains only versioned change keys/fingerprints where applicable, event/change type, lesson slot identifiers, group/subject identifiers, delivery state, and timestamps. Raw VULCAN responses, unknown annotations, teacher identifiers or names, replacement codes, credentials, cookies, session state, HAR captures, tenant identifiers, and personal school data are not stored in these tables or committed. Browser captures used for protocol research remain outside this repository.
 
 Review [SECURITY.md](SECURITY.md) before reporting a vulnerability and [CONTRIBUTING.md](CONTRIBUTING.md) before contributing.
 
