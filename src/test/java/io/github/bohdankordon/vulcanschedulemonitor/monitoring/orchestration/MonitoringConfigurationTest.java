@@ -4,7 +4,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.Clock;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.NoSuchBeanDefinitionException;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
 class MonitoringConfigurationTest {
@@ -19,9 +18,8 @@ class MonitoringConfigurationTest {
             context -> {
               assertThat(context.getStartupFailure()).isNotNull();
               assertThat(context.getStartupFailure())
-                  .hasMessageContaining("resilientWeeklyScheduleSource")
-                  .hasMessageContaining("WeeklyScheduleSource")
-                  .hasRootCauseInstanceOf(NoSuchBeanDefinitionException.class);
+                  .hasRootCauseMessage(
+                      "VULCAN monitoring requires secure VULCAN connection infrastructure");
             });
   }
 }

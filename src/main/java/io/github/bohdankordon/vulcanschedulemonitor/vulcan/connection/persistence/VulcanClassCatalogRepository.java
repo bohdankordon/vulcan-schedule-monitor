@@ -17,5 +17,7 @@ interface VulcanClassCatalogRepository extends JpaRepository<VulcanClassCatalogE
   Optional<VulcanClassCatalogEntity> findByIdAndVulcanAccountIdAndActiveTrue(
       long id, long accountId);
 
+  Optional<VulcanClassCatalogEntity> findByIdAndVulcanAccountId(long id, long accountId);
+
   long countByVulcanAccountIdAndActiveTrue(long accountId);
 }

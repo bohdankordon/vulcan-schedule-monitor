@@ -14,7 +14,7 @@ class MonitoringScopePlannerTest {
 
   @Test
   void mondayPlansCurrentAndSeparateNextWeek() {
-    List<TrackingScope> scopes = planAt("2026-09-07T10:00:00Z", new MonitoringTarget(42));
+    List<TrackingScope> scopes = planAt("2026-09-07T10:00:00Z", target(42));
 
     assertThat(scopes)
         .extracting(TrackingScope::weekStart)
@@ -26,21 +26,21 @@ class MonitoringScopePlannerTest {
 
   @Test
   void sundayRemainsInCurrentPolishWeek() {
-    assertThat(planAt("2026-09-13T18:00:00Z", new MonitoringTarget(42)))
+    assertThat(planAt("2026-09-13T18:00:00Z", target(42)))
         .extracting(TrackingScope::weekStart)
         .containsExactly(LocalDate.of(2026, 9, 7), LocalDate.of(2026, 9, 14));
   }
 
   @Test
   void warsawDateWinsAtUtcLocalDayBoundary() {
-    assertThat(planAt("2026-09-06T22:30:00Z", new MonitoringTarget(42)))
+    assertThat(planAt("2026-09-06T22:30:00Z", target(42)))
         .extracting(TrackingScope::weekStart)
         .containsExactly(LocalDate.of(2026, 9, 7), LocalDate.of(2026, 9, 14));
   }
 
   @Test
   void yearBoundaryProducesValidMondaySundayScopes() {
-    assertThat(planAt("2026-12-31T12:00:00Z", new MonitoringTarget(42)))
+    assertThat(planAt("2026-12-31T12:00:00Z", target(42)))
         .extracting(TrackingScope::weekStart, TrackingScope::weekEnd)
         .containsExactly(
             org.assertj.core.groups.Tuple.tuple(
@@ -51,12 +51,7 @@ class MonitoringScopePlannerTest {
 
   @Test
   void targetsAreDeduplicatedSortedAndEachProducesExactlyTwoScopes() {
-    List<TrackingScope> scopes =
-        planAt(
-            "2026-09-09T10:00:00Z",
-            new MonitoringTarget(9),
-            new MonitoringTarget(2),
-            new MonitoringTarget(9));
+    List<TrackingScope> scopes = planAt("2026-09-09T10:00:00Z", target(9), target(2), target(9));
 
     assertThat(scopes).hasSize(4);
     assertThat(scopes).extracting(TrackingScope::journalId).containsExactly(2L, 2L, 9L, 9L);
@@ -72,5 +67,9 @@ class MonitoringScopePlannerTest {
   private static List<TrackingScope> planAt(String instant, MonitoringTarget... targets) {
     Clock clock = Clock.fixed(Instant.parse(instant), ZoneOffset.UTC);
     return new MonitoringScopePlanner(clock).plan(List.of(targets));
+  }
+
+  private static MonitoringTarget target(long journalId) {
+    return new MonitoringTarget(1L, journalId, journalId);
   }
 }

@@ -3,6 +3,7 @@ package io.github.bohdankordon.vulcanschedulemonitor.telegram.delivery;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.ScheduleChangeTracker;
+import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.TrackingScope;
 import io.github.bohdankordon.vulcanschedulemonitor.notification.delivery.NotificationDispatchPolicy;
 import io.github.bohdankordon.vulcanschedulemonitor.notification.delivery.NotificationOutboxDispatcher;
 import io.github.bohdankordon.vulcanschedulemonitor.notification.outbox.NotificationOutboxStore;
@@ -16,6 +17,8 @@ import io.github.bohdankordon.vulcanschedulemonitor.telegram.transport.TelegramT
 import io.github.bohdankordon.vulcanschedulemonitor.testsupport.PostgresIntegrationTestSupport;
 import io.github.bohdankordon.vulcanschedulemonitor.users.TelegramIdentityRegistration;
 import io.github.bohdankordon.vulcanschedulemonitor.users.TelegramRecipientDirectory;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.catalog.VulcanClassCatalog;
+import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -47,6 +50,7 @@ class TelegramDeliveryPostgresTests extends PostgresIntegrationTestSupport {
   @Autowired private MonitoringSubscriptionService subscriptions;
   @Autowired private NotificationOutboxStore store;
   @Autowired private MutableClock clock;
+  @Autowired private VulcanClassCatalog catalog;
 
   @BeforeEach
   void clearDatabase() {
@@ -54,6 +58,10 @@ class TelegramDeliveryPostgresTests extends PostgresIntegrationTestSupport {
     jdbc.update("DELETE FROM schedule_change_state");
     jdbc.update("DELETE FROM tracking_scope");
     jdbc.update("DELETE FROM monitoring_subscription");
+    jdbc.update("DELETE FROM vulcan_class_catalog");
+    jdbc.update("DELETE FROM vulcan_account_secret");
+    jdbc.update("DELETE FROM vulcan_connect_token");
+    jdbc.update("DELETE FROM vulcan_account");
     jdbc.update("DELETE FROM telegram_identity");
     jdbc.update("DELETE FROM app_user");
   }
@@ -73,7 +81,7 @@ class TelegramDeliveryPostgresTests extends PostgresIntegrationTestSupport {
             new Send(
                 PRIVATE_CHAT_ID,
                 "Monitoring baseline established.\n"
-                    + "Schedule reference: #42\n"
+                    + "Class: Synthetic 2A\n"
                     + "Week: 2026-08-31 to 2026-09-06\n"
                     + "Active changes: 0"));
     assertThat(jdbc.queryForObject("SELECT status FROM notification_outbox", String.class))
@@ -135,8 +143,39 @@ class TelegramDeliveryPostgresTests extends PostgresIntegrationTestSupport {
 
   private void createBaselineIntent() {
     long appUserId = registration.registerOrUpdate(TELEGRAM_USER_ID, PRIVATE_CHAT_ID).id();
-    subscriptions.enable(appUserId, JOURNAL_ID);
+    long accountId =
+        jdbc.queryForObject(
+            """
+            INSERT INTO vulcan_account
+              (app_user_id, status, remember_credentials, created_at, updated_at, authenticated_at)
+            VALUES (?, 'CONNECTED', FALSE, ?, ?, ?)
+            RETURNING id
+            """,
+            Long.class,
+            appUserId,
+            Timestamp.from(NOW),
+            Timestamp.from(NOW),
+            Timestamp.from(NOW));
+    long catalogClassId =
+        jdbc.queryForObject(
+            """
+            INSERT INTO vulcan_class_catalog
+              (vulcan_account_id, journal_id, class_id, name, school_year, active, synced_at)
+            VALUES (?, ?, 420, 'Synthetic 2A', 2026, TRUE, ?)
+            RETURNING id
+            """,
+            Long.class,
+            accountId,
+            JOURNAL_ID,
+            Timestamp.from(NOW));
+    subscriptions.enable(appUserId, catalogClassId);
     tracker.reconcileSuccessfulSnapshot(
+        new TrackingScope(
+            accountId,
+            catalogClassId,
+            JOURNAL_ID,
+            LocalDate.of(2026, 8, 31),
+            LocalDate.of(2026, 9, 6)),
         new ScheduleSnapshot(
             JOURNAL_ID, LocalDate.of(2026, 8, 31), LocalDate.of(2026, 9, 6), List.of(), List.of()));
     assertThat(outboxStatus()).isEqualTo("PENDING");
@@ -145,7 +184,7 @@ class TelegramDeliveryPostgresTests extends PostgresIntegrationTestSupport {
   private NotificationOutboxDispatcher dispatcher(TelegramMessageTransport transport) {
     var gateway =
         new TelegramNotificationDeliveryGateway(
-            recipients, new TelegramNotificationFormatter(), transport);
+            recipients, catalog, new TelegramNotificationFormatter(), transport);
     return new NotificationOutboxDispatcher(
         store,
         gateway,

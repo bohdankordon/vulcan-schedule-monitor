@@ -21,12 +21,17 @@ class JpaSubscriptionRoutingProvider
   @Override
   @Transactional(readOnly = true)
   public Collection<MonitoringTarget> activeTargets() {
-    return repository.findDistinctActiveJournalIds().stream().map(MonitoringTarget::new).toList();
+    return repository.findDistinctActiveTargets().stream()
+        .map(
+            row ->
+                new MonitoringTarget(
+                    row.getVulcanAccountId(), row.getCatalogClassId(), row.getJournalId()))
+        .toList();
   }
 
   @Override
   @Transactional(readOnly = true)
-  public List<Long> activeRecipientUserIds(long journalId) {
-    return repository.findActiveRecipientUserIds(journalId);
+  public List<Long> activeRecipientUserIds(long catalogClassId) {
+    return repository.findActiveRecipientUserIds(catalogClassId);
   }
 }

@@ -2,6 +2,7 @@ package io.github.bohdankordon.vulcanschedulemonitor.telegram.update;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import io.github.bohdankordon.vulcanschedulemonitor.subscriptions.MonitoringClassSelection;
 import io.github.bohdankordon.vulcanschedulemonitor.subscriptions.MonitoringSubscription;
 import io.github.bohdankordon.vulcanschedulemonitor.subscriptions.MonitoringSubscriptionService;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.command.ConnectCommandHandler;
@@ -49,8 +50,8 @@ class TelegramUpdateRouterTest {
         .hasSize(5)
         .anySatisfy(text -> assertThat(text).contains("Never send VULCAN credentials"))
         .anySatisfy(text -> assertThat(text).contains("Supported commands"))
-        .anySatisfy(text -> assertThat(text).contains("Active monitoring subscriptions: 2"))
-        .anySatisfy(text -> assertThat(text).contains("Schedule references: #42, #51"))
+        .anySatisfy(text -> assertThat(text).contains("Monitored classes: 2"))
+        .anySatisfy(text -> assertThat(text).contains("Synthetic 2A", "Synthetic 3B"))
         .anySatisfy(text -> assertThat(text).contains("HTTPS web page"));
   }
 
@@ -110,23 +111,33 @@ class TelegramUpdateRouterTest {
     MonitoringSubscriptionService subscriptions =
         new MonitoringSubscriptionService() {
           @Override
-          public MonitoringSubscription enable(long appUserId, long journalId) {
+          public MonitoringSubscription enable(long appUserId, long catalogClassId) {
             throw new UnsupportedOperationException();
           }
 
           @Override
-          public void disable(long appUserId, long journalId) {
+          public void disable(long appUserId, long catalogClassId) {
             throw new UnsupportedOperationException();
           }
 
           @Override
-          public List<Long> activeJournalIds(long appUserId) {
+          public List<MonitoringSubscription> activeSubscriptions(long appUserId) {
             assertThat(appUserId).isEqualTo(1001);
-            return List.of(42L, 51L);
+            Instant now = Instant.parse("2026-09-04T10:00:00Z");
+            return List.of(
+                new MonitoringSubscription(
+                    1, appUserId, 42, "Synthetic 2A", null, 2026, true, now, now),
+                new MonitoringSubscription(
+                    2, appUserId, 51, "Synthetic 3B", null, 2026, true, now, now));
           }
 
           @Override
-          public boolean isSubscribed(long appUserId, long journalId) {
+          public List<MonitoringClassSelection> availableClasses(long appUserId) {
+            return List.of();
+          }
+
+          @Override
+          public boolean isSubscribed(long appUserId, long catalogClassId) {
             return false;
           }
         };

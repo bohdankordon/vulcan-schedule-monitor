@@ -8,8 +8,10 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.TreeSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -52,18 +54,25 @@ public final class MonitoringCycleRunner {
     TreeSet<MonitoringTarget> targets = new TreeSet<>(providedTargets);
     List<TrackingScope> scopes = scopePlanner.plan(targets);
     List<ScopeMonitoringOutcome> outcomes = new ArrayList<>();
+    Set<Long> blockedAccounts = new HashSet<>();
     boolean stoppedEarly = false;
     LOGGER.info("Monitoring cycle started: targets={}, scopes={}", targets.size(), scopes.size());
 
     for (int index = 0; index < scopes.size(); index++) {
       TrackingScope scope = scopes.get(index);
+      if (blockedAccounts.contains(scope.vulcanAccountId())) {
+        continue;
+      }
       ScopeMonitoringOutcome outcome = refresh(scope);
       outcomes.add(outcome);
-      if (mustStop(outcome.category())) {
+      if (outcome.category() == MonitoringOutcomeCategory.INTERRUPTED) {
         stoppedEarly = index + 1 < scopes.size();
         break;
       }
-      if (index + 1 < scopes.size() && !pace()) {
+      if (blocksAccount(outcome.category())) {
+        blockedAccounts.add(scope.vulcanAccountId());
+      }
+      if (hasEligibleLaterScope(scopes, index + 1, blockedAccounts) && !pace()) {
         stoppedEarly = true;
         break;
       }
@@ -114,17 +123,27 @@ public final class MonitoringCycleRunner {
     }
   }
 
-  private static boolean mustStop(MonitoringOutcomeCategory category) {
+  private static boolean blocksAccount(MonitoringOutcomeCategory category) {
     return category == MonitoringOutcomeCategory.AUTHENTICATION_REQUIRED
         || category == MonitoringOutcomeCategory.DEFERRED_RATE_LIMIT;
+  }
+
+  private static boolean hasEligibleLaterScope(
+      List<TrackingScope> scopes, int start, Set<Long> blockedAccounts) {
+    for (int index = start; index < scopes.size(); index++) {
+      if (!blockedAccounts.contains(scopes.get(index).vulcanAccountId())) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private static MonitoringOutcomeCategory map(SourceFailureKind kind) {
     return switch (kind) {
       case AUTHENTICATION_REQUIRED -> MonitoringOutcomeCategory.AUTHENTICATION_REQUIRED;
       case DEFERRED_RATE_LIMIT -> MonitoringOutcomeCategory.DEFERRED_RATE_LIMIT;
-      case TRANSIENT_FAILURE_EXHAUSTED, INTERRUPTED ->
-          MonitoringOutcomeCategory.TRANSIENT_FAILURE_EXHAUSTED;
+      case TRANSIENT_FAILURE_EXHAUSTED -> MonitoringOutcomeCategory.TRANSIENT_FAILURE_EXHAUSTED;
+      case INTERRUPTED -> MonitoringOutcomeCategory.INTERRUPTED;
       case PERMANENT_FAILURE -> MonitoringOutcomeCategory.PERMANENT_FAILURE;
       case PROTOCOL_FAILURE -> MonitoringOutcomeCategory.PROTOCOL_FAILURE;
     };

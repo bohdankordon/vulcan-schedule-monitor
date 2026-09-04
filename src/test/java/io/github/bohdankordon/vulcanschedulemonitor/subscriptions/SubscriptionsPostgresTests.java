@@ -46,6 +46,11 @@ class SubscriptionsPostgresTests extends PostgresIntegrationTestSupport {
   void clearDatabase() {
     jdbc.update("DELETE FROM notification_outbox");
     jdbc.update("DELETE FROM monitoring_subscription");
+    jdbc.update("DELETE FROM tracking_scope");
+    jdbc.update("DELETE FROM vulcan_class_catalog");
+    jdbc.update("DELETE FROM vulcan_account_secret");
+    jdbc.update("DELETE FROM vulcan_connect_token");
+    jdbc.update("DELETE FROM vulcan_account");
     jdbc.update("DELETE FROM telegram_identity");
     jdbc.update("DELETE FROM app_user");
     clock.setInstant(FIRST);
@@ -130,20 +135,22 @@ class SubscriptionsPostgresTests extends PostgresIntegrationTestSupport {
   @Test
   void enablingDisablingAndReenablingSubscriptionIsIdempotent() {
     long userId = register(10);
+    long catalogClassId = connectAndAddClass(userId, 42L, "Synthetic 2A");
 
-    MonitoringSubscription created = subscriptions.enable(userId, 42L);
-    MonitoringSubscription unchanged = subscriptions.enable(userId, 42L);
+    MonitoringSubscription created = subscriptions.enable(userId, catalogClassId);
+    MonitoringSubscription unchanged = subscriptions.enable(userId, catalogClassId);
     assertThat(unchanged.id()).isEqualTo(created.id());
-    assertThat(subscriptions.isSubscribed(userId, 42L)).isTrue();
+    assertThat(created.className()).isEqualTo("Synthetic 2A");
+    assertThat(subscriptions.isSubscribed(userId, catalogClassId)).isTrue();
 
     clock.setInstant(SECOND);
-    subscriptions.disable(userId, 42L);
-    assertThat(subscriptions.isSubscribed(userId, 42L)).isFalse();
+    subscriptions.disable(userId, catalogClassId);
+    assertThat(subscriptions.isSubscribed(userId, catalogClassId)).isFalse();
     assertThat(jdbc.queryForMap("SELECT * FROM monitoring_subscription"))
         .containsEntry("enabled", false)
         .containsEntry("updated_at", Timestamp.from(SECOND));
 
-    MonitoringSubscription reenabled = subscriptions.enable(userId, 42L);
+    MonitoringSubscription reenabled = subscriptions.enable(userId, catalogClassId);
     assertThat(reenabled.id()).isEqualTo(created.id());
     assertThat(reenabled.enabled()).isTrue();
     assertThat(jdbc.queryForObject("SELECT count(*) FROM monitoring_subscription", Integer.class))
@@ -151,62 +158,132 @@ class SubscriptionsPostgresTests extends PostgresIntegrationTestSupport {
   }
 
   @Test
-  void usersMaySubscribeAcrossJournalsAndActiveListingIsDeterministic() {
+  void usersMaySelectOwnedClassesAndActiveListingIsDeterministic() {
     long firstUser = register(20);
     long secondUser = register(21);
+    long firstC = connectAndAddClass(firstUser, 300L, "Synthetic C");
+    long firstA = addClass(firstUser, 100L, "Synthetic A");
+    long firstB = addClass(firstUser, 200L, "Synthetic B");
+    long secondA = connectAndAddClass(secondUser, 100L, "Synthetic A");
 
-    subscriptions.enable(firstUser, 300L);
-    subscriptions.enable(firstUser, 100L);
-    subscriptions.enable(firstUser, 200L);
-    subscriptions.enable(secondUser, 100L);
+    subscriptions.enable(firstUser, firstC);
+    subscriptions.enable(firstUser, firstA);
+    subscriptions.enable(firstUser, firstB);
+    subscriptions.enable(secondUser, secondA);
 
-    assertThat(subscriptions.activeJournalIds(firstUser)).containsExactly(100L, 200L, 300L);
+    assertThat(subscriptions.activeSubscriptions(firstUser))
+        .extracting(MonitoringSubscription::className)
+        .containsExactly("Synthetic A", "Synthetic B", "Synthetic C");
     assertThat(jdbc.queryForObject("SELECT count(*) FROM monitoring_subscription", Integer.class))
         .isEqualTo(4);
   }
 
   @Test
-  void targetProviderReturnsDistinctSortedActiveJournalsOnly() {
+  void targetProviderKeepsSameJournalClassesAccountScopedAndFiltersInactiveState() {
     assertThat(targetProvider.activeTargets()).isEmpty();
     long firstUser = register(30);
     long secondUser = register(31);
     long inactiveUser = register(32);
+    long first300 = connectAndAddClass(firstUser, 300L, "Synthetic 3A");
+    long first100 = addClass(firstUser, 100L, "Synthetic 1A");
+    long second100 = connectAndAddClass(secondUser, 100L, "Synthetic 1B");
+    long second200 = addClass(secondUser, 200L, "Synthetic 2B");
+    long inactive400 = connectAndAddClass(inactiveUser, 400L, "Synthetic 4A");
 
-    subscriptions.enable(firstUser, 300L);
-    subscriptions.enable(firstUser, 100L);
-    subscriptions.enable(secondUser, 100L);
-    subscriptions.enable(secondUser, 200L);
-    subscriptions.disable(secondUser, 200L);
-    subscriptions.enable(inactiveUser, 400L);
+    subscriptions.enable(firstUser, first300);
+    subscriptions.enable(firstUser, first100);
+    subscriptions.enable(secondUser, second100);
+    subscriptions.enable(secondUser, second200);
+    subscriptions.disable(secondUser, second200);
+    subscriptions.enable(inactiveUser, inactive400);
     jdbc.update("UPDATE app_user SET active = FALSE WHERE id = ?", inactiveUser);
 
     assertThat(targetProvider.activeTargets())
         .extracting(MonitoringTarget::journalId)
-        .containsExactly(100L, 300L);
+        .containsExactly(300L, 100L, 100L);
+    assertThat(targetProvider.activeTargets())
+        .extracting(MonitoringTarget::catalogClassId)
+        .containsExactly(first300, first100, second100);
+
+    jdbc.update(
+        "UPDATE vulcan_account SET status = 'RECONNECT_REQUIRED' WHERE app_user_id = ?", firstUser);
+    jdbc.update("UPDATE vulcan_class_catalog SET active = FALSE WHERE id = ?", second100);
+    assertThat(targetProvider.activeTargets()).isEmpty();
   }
 
   @Test
-  void recipientProviderReturnsDistinctSortedInternalActiveUserIdsOnly() {
+  void recipientProviderRoutesByOwnedCatalogClassNotSharedJournal() {
     long firstUser = register(40);
     long secondUser = register(41);
-    long disabledUser = register(42);
-    long inactiveUser = register(43);
-    long unrelatedUser = register(44);
-    subscriptions.enable(secondUser, 500L);
-    subscriptions.enable(firstUser, 500L);
-    subscriptions.enable(disabledUser, 500L);
-    subscriptions.disable(disabledUser, 500L);
-    subscriptions.enable(inactiveUser, 500L);
-    subscriptions.enable(unrelatedUser, 501L);
-    jdbc.update("UPDATE app_user SET active = FALSE WHERE id = ?", inactiveUser);
+    long firstCatalog = connectAndAddClass(firstUser, 500L, "Synthetic 5A");
+    long secondCatalog = connectAndAddClass(secondUser, 500L, "Synthetic 5B");
+    subscriptions.enable(firstUser, firstCatalog);
+    subscriptions.enable(secondUser, secondCatalog);
 
-    assertThat(recipientProvider.activeRecipientUserIds(500L))
-        .containsExactly(firstUser, secondUser)
+    assertThat(recipientProvider.activeRecipientUserIds(firstCatalog))
+        .containsExactly(firstUser)
         .allMatch(id -> id < 8_000_000_000L);
+    assertThat(recipientProvider.activeRecipientUserIds(secondCatalog)).containsExactly(secondUser);
+  }
+
+  @Test
+  void crossUserAndInactiveCatalogSelectionIsRejectedWithoutMutation() {
+    long firstUser = register(50);
+    long secondUser = register(51);
+    long firstCatalog = connectAndAddClass(firstUser, 600L, "Synthetic 6A");
+    long secondCatalog = connectAndAddClass(secondUser, 600L, "Synthetic 6B");
+
+    assertThatThrownBy(() -> subscriptions.enable(firstUser, secondCatalog))
+        .isInstanceOf(IllegalArgumentException.class);
+    jdbc.update("UPDATE vulcan_class_catalog SET active = FALSE WHERE id = ?", firstCatalog);
+    assertThatThrownBy(() -> subscriptions.enable(firstUser, firstCatalog))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThat(jdbc.queryForObject("SELECT count(*) FROM monitoring_subscription", Integer.class))
+        .isZero();
   }
 
   private long register(int suffix) {
     return registration.registerOrUpdate(8_000_000_000L + suffix, 9_000_000_000L + suffix).id();
+  }
+
+  private long connectAndAddClass(long appUserId, long journalId, String name) {
+    long accountId =
+        jdbc.queryForObject(
+            """
+            INSERT INTO vulcan_account
+              (app_user_id, status, remember_credentials, created_at, updated_at, authenticated_at)
+            VALUES (?, 'CONNECTED', FALSE, ?, ?, ?)
+            RETURNING id
+            """,
+            Long.class,
+            appUserId,
+            Timestamp.from(FIRST),
+            Timestamp.from(FIRST),
+            Timestamp.from(FIRST));
+    return insertCatalogClass(accountId, journalId, name);
+  }
+
+  private long addClass(long appUserId, long journalId, String name) {
+    long accountId =
+        jdbc.queryForObject(
+            "SELECT id FROM vulcan_account WHERE app_user_id = ?", Long.class, appUserId);
+    return insertCatalogClass(accountId, journalId, name);
+  }
+
+  private long insertCatalogClass(long accountId, long journalId, String name) {
+    return jdbc.queryForObject(
+        """
+        INSERT INTO vulcan_class_catalog
+          (vulcan_account_id, journal_id, class_id, name, school_year, active, synced_at)
+        VALUES (?, ?, ?, ?, 2026, TRUE, ?)
+        RETURNING id
+        """,
+        Long.class,
+        accountId,
+        journalId,
+        journalId + 10_000,
+        name,
+        Timestamp.from(FIRST));
   }
 
   private long insertUser() {

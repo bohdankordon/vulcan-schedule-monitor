@@ -22,7 +22,7 @@ public final class VulcanWeeklyScheduleSource implements WeeklyScheduleSource {
   public ScheduleSnapshot fetchCompleteWeeklySnapshot(TrackingScope scope) {
     Objects.requireNonNull(scope, "scope must not be null");
     ScheduleSnapshot snapshot = client.getWeekSchedule(scope.journalId(), scope.weekStart());
-    if (!scope.equals(TrackingScope.from(snapshot))) {
+    if (!scope.matches(snapshot)) {
       throw new VulcanProtocolException(OPERATION);
     }
     return snapshot;

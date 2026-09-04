@@ -5,22 +5,11 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
-import jakarta.persistence.Index;
 import jakarta.persistence.Table;
-import jakarta.persistence.UniqueConstraint;
 import java.time.Instant;
 
 @Entity
-@Table(
-    name = "monitoring_subscription",
-    uniqueConstraints =
-        @UniqueConstraint(
-            name = "uq_monitoring_subscription_user_journal",
-            columnNames = {"app_user_id", "journal_id"}),
-    indexes =
-        @Index(
-            name = "ix_monitoring_subscription_enabled_journal",
-            columnList = "journal_id, app_user_id"))
+@Table(name = "monitoring_subscription")
 class MonitoringSubscriptionEntity {
 
   @Id
@@ -30,8 +19,8 @@ class MonitoringSubscriptionEntity {
   @Column(name = "app_user_id", nullable = false)
   private long appUserId;
 
-  @Column(name = "journal_id", nullable = false)
-  private long journalId;
+  @Column(name = "catalog_class_id")
+  private Long catalogClassId;
 
   @Column(nullable = false)
   private boolean enabled;
@@ -44,9 +33,9 @@ class MonitoringSubscriptionEntity {
 
   protected MonitoringSubscriptionEntity() {}
 
-  MonitoringSubscriptionEntity(long appUserId, long journalId, Instant now) {
+  MonitoringSubscriptionEntity(long appUserId, long catalogClassId, Instant now) {
     this.appUserId = appUserId;
-    this.journalId = journalId;
+    this.catalogClassId = catalogClassId;
     enabled = true;
     createdAt = now;
     updatedAt = now;
@@ -67,8 +56,8 @@ class MonitoringSubscriptionEntity {
     return appUserId;
   }
 
-  long journalId() {
-    return journalId;
+  Long catalogClassId() {
+    return catalogClassId;
   }
 
   boolean enabled() {

@@ -6,17 +6,20 @@ import java.util.Objects;
 
 public final class TelegramNotificationFormatter {
 
-  public String format(NotificationOutboxMessage message) {
+  public String format(NotificationOutboxMessage message, String className) {
     Objects.requireNonNull(message, "message must not be null");
-    String schedule = "Schedule reference: #" + message.scope().journalId();
+    if (className == null || className.isBlank()) {
+      throw new IllegalArgumentException("Class name must be present");
+    }
+    String schedule = "Class: " + className;
     return switch (message.eventType()) {
       case BASELINE_ESTABLISHED ->
           "Monitoring baseline established.\n"
               + schedule
               + "\nWeek: "
-              + message.scope().weekStart()
+              + message.weekStart()
               + " to "
-              + message.scope().weekEnd()
+              + message.weekEnd()
               + "\nActive changes: "
               + message.activeChangeCount();
       case CHANGE_NEW -> change("New schedule change", schedule, message);

@@ -132,12 +132,12 @@ class VulcanClientWireMockTests {
         post(urlPathEqualTo(APPLICATION_PATH + "PlanLekcji.mvc/GetPlanLekcjiContext"))
             .willReturn(jsonResponse("schedule-normal")));
     TrackingScope scope =
-        new TrackingScope(4201L, LocalDate.of(2099, 9, 7), LocalDate.of(2099, 9, 13));
+        new TrackingScope(1L, 1L, 4201L, LocalDate.of(2099, 9, 7), LocalDate.of(2099, 9, 13));
 
     ScheduleSnapshot snapshot =
         new VulcanWeeklyScheduleSource(client).fetchCompleteWeeklySnapshot(scope);
 
-    assertThat(TrackingScope.from(snapshot)).isEqualTo(scope);
+    assertThat(scope.matches(snapshot)).isTrue();
   }
 
   @Test

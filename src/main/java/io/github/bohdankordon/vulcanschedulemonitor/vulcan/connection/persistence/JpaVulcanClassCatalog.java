@@ -41,6 +41,15 @@ class JpaVulcanClassCatalog implements VulcanClassCatalog {
         .map(JpaVulcanClassCatalog::toModel);
   }
 
+  @Override
+  @Transactional(readOnly = true)
+  public Optional<CatalogClass> findForUser(long appUserId, long catalogId) {
+    return accounts
+        .findByAppUserId(appUserId)
+        .flatMap(account -> catalog.findByIdAndVulcanAccountId(catalogId, account.id()))
+        .map(JpaVulcanClassCatalog::toModel);
+  }
+
   private static CatalogClass toModel(VulcanClassCatalogEntity entity) {
     return new CatalogClass(
         entity.id(),

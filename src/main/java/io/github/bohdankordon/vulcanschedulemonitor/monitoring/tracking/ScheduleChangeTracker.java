@@ -31,9 +31,13 @@ public class ScheduleChangeTracker {
   }
 
   @Transactional
-  public TrackingResult reconcileSuccessfulSnapshot(ScheduleSnapshot snapshot) {
+  public TrackingResult reconcileSuccessfulSnapshot(
+      TrackingScope scope, ScheduleSnapshot snapshot) {
+    Objects.requireNonNull(scope, "scope must not be null");
     Objects.requireNonNull(snapshot, "successful snapshot must not be null");
-    TrackingScope scope = TrackingScope.from(snapshot);
+    if (!scope.matches(snapshot)) {
+      throw new IllegalArgumentException("Successful snapshot does not match tracking scope");
+    }
     Map<String, HashedScheduleChange> current = hashUniqueChanges(snapshot);
 
     TrackingState previous = store.lockOrCreate(scope);

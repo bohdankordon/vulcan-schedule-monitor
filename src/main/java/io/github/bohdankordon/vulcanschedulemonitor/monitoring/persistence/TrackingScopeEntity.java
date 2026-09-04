@@ -6,23 +6,20 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
-import jakarta.persistence.UniqueConstraint;
 import jakarta.persistence.Version;
 import java.time.Instant;
 import java.time.LocalDate;
 
 @Entity
-@Table(
-    name = "tracking_scope",
-    uniqueConstraints =
-        @UniqueConstraint(
-            name = "uq_tracking_scope_journal_week",
-            columnNames = {"journal_id", "week_start"}))
+@Table(name = "tracking_scope")
 class TrackingScopeEntity {
 
   @Id
   @GeneratedValue(strategy = GenerationType.IDENTITY)
   private Long id;
+
+  @Column(name = "catalog_class_id")
+  private Long catalogClassId;
 
   @Column(name = "journal_id", nullable = false)
   private long journalId;
@@ -45,7 +42,8 @@ class TrackingScopeEntity {
 
   protected TrackingScopeEntity() {}
 
-  TrackingScopeEntity(long journalId, LocalDate weekStart, LocalDate weekEnd) {
+  TrackingScopeEntity(long catalogClassId, long journalId, LocalDate weekStart, LocalDate weekEnd) {
+    this.catalogClassId = catalogClassId;
     this.journalId = journalId;
     this.weekStart = weekStart;
     this.weekEnd = weekEnd;
@@ -53,6 +51,10 @@ class TrackingScopeEntity {
 
   Long id() {
     return id;
+  }
+
+  Long catalogClassId() {
+    return catalogClassId;
   }
 
   long journalId() {

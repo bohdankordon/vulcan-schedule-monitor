@@ -41,14 +41,20 @@ class NotificationOutboxPostgresTests extends PostgresIntegrationTestSupport {
 
   private final MutableClock clock = new MutableClock(NOW);
   private long recipientUserId;
+  private long catalogClassId;
 
   @BeforeEach
   void clearDatabase() {
     jdbc.update("DELETE FROM notification_outbox");
+    jdbc.update("DELETE FROM schedule_change_state");
+    jdbc.update("DELETE FROM tracking_scope");
     jdbc.update("DELETE FROM monitoring_subscription");
+    jdbc.update("DELETE FROM vulcan_class_catalog");
+    jdbc.update("DELETE FROM vulcan_account_secret");
+    jdbc.update("DELETE FROM vulcan_connect_token");
+    jdbc.update("DELETE FROM vulcan_account");
     jdbc.update("DELETE FROM telegram_identity");
     jdbc.update("DELETE FROM app_user");
-    jdbc.update("DELETE FROM tracking_scope");
     recipientUserId =
         jdbc.queryForObject(
             """
@@ -58,6 +64,30 @@ class NotificationOutboxPostgresTests extends PostgresIntegrationTestSupport {
             """,
             Long.class,
             Timestamp.from(NOW),
+            Timestamp.from(NOW));
+    long accountId =
+        jdbc.queryForObject(
+            """
+            INSERT INTO vulcan_account
+              (app_user_id, status, remember_credentials, created_at, updated_at, authenticated_at)
+            VALUES (?, 'CONNECTED', FALSE, ?, ?, ?)
+            RETURNING id
+            """,
+            Long.class,
+            recipientUserId,
+            Timestamp.from(NOW),
+            Timestamp.from(NOW),
+            Timestamp.from(NOW));
+    catalogClassId =
+        jdbc.queryForObject(
+            """
+            INSERT INTO vulcan_class_catalog
+              (vulcan_account_id, journal_id, class_id, name, school_year, active, synced_at)
+            VALUES (?, 42, 420, 'Synthetic 2A', 2026, TRUE, ?)
+            RETURNING id
+            """,
+            Long.class,
+            accountId,
             Timestamp.from(NOW));
     clock.setInstant(NOW);
   }
@@ -384,15 +414,17 @@ class NotificationOutboxPostgresTests extends PostgresIntegrationTestSupport {
     return jdbc.queryForObject(
         """
         INSERT INTO notification_outbox
-          (event_type, journal_id, week_start, week_end, active_change_count, recipient_user_id, status,
-           attempt_count, next_attempt_at, lease_until, claim_token, created_at, delivered_at)
-        VALUES ('BASELINE_ESTABLISHED', 42, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+          (event_type, journal_id, week_start, week_end, active_change_count,
+           recipient_user_id, catalog_class_id, status, attempt_count, next_attempt_at,
+           lease_until, claim_token, created_at, delivered_at)
+        VALUES ('BASELINE_ESTABLISHED', 42, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         RETURNING id
         """,
         Long.class,
         WEEK_START,
         WEEK_END,
         recipientUserId,
+        catalogClassId,
         status,
         attemptCount,
         Timestamp.from(nextAttemptAt),

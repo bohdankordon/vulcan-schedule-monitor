@@ -14,10 +14,11 @@ interface TrackingScopeRepository extends JpaRepository<TrackingScopeEntity, Lon
   @Query(
       """
       select scope from TrackingScopeEntity scope
-      where scope.journalId = :journalId and scope.weekStart = :weekStart
+      where scope.catalogClassId = :catalogClassId and scope.weekStart = :weekStart
       """)
   Optional<TrackingScopeEntity> findForUpdate(
-      @Param("journalId") long journalId, @Param("weekStart") LocalDate weekStart);
+      @Param("catalogClassId") long catalogClassId, @Param("weekStart") LocalDate weekStart);
 
-  Optional<TrackingScopeEntity> findByJournalIdAndWeekStart(long journalId, LocalDate weekStart);
+  Optional<TrackingScopeEntity> findByCatalogClassIdAndWeekStart(
+      long catalogClassId, LocalDate weekStart);
 }

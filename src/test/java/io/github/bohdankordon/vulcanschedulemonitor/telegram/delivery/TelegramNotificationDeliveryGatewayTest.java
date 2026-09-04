@@ -3,7 +3,6 @@ package io.github.bohdankordon.vulcanschedulemonitor.telegram.delivery;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.TrackingScope;
 import io.github.bohdankordon.vulcanschedulemonitor.notification.delivery.DeliveryFailureKind;
 import io.github.bohdankordon.vulcanschedulemonitor.notification.delivery.NotificationDeliveryException;
 import io.github.bohdankordon.vulcanschedulemonitor.notification.outbox.NotificationEventType;
@@ -12,6 +11,8 @@ import io.github.bohdankordon.vulcanschedulemonitor.telegram.transport.TelegramF
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.transport.TelegramMessageTransport;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.transport.TelegramTransportException;
 import io.github.bohdankordon.vulcanschedulemonitor.users.TelegramRecipientReference;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.catalog.CatalogClass;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.catalog.VulcanClassCatalog;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -36,7 +37,7 @@ class TelegramNotificationDeliveryGatewayTest {
     gateway.deliver(message());
 
     assertThat(chat).hasValue(5001);
-    assertThat(text.get()).contains("Schedule reference: #1001");
+    assertThat(text.get()).contains("Class: Synthetic 2A").doesNotContain("1001", "7002");
   }
 
   @Test
@@ -79,7 +80,7 @@ class TelegramNotificationDeliveryGatewayTest {
   private TelegramNotificationDeliveryGateway gateway(
       Optional<TelegramRecipientReference> recipient, TelegramMessageTransport transport) {
     return new TelegramNotificationDeliveryGateway(
-        ignored -> recipient, new TelegramNotificationFormatter(), transport);
+        ignored -> recipient, catalog(), new TelegramNotificationFormatter(), transport);
   }
 
   private void assertFailure(
@@ -99,12 +100,36 @@ class TelegramNotificationDeliveryGatewayTest {
     return new NotificationOutboxMessage(
         1,
         9001,
+        7002,
+        1001,
         NotificationEventType.BASELINE_ESTABLISHED,
-        new TrackingScope(1001, LocalDate.of(2026, 8, 31), LocalDate.of(2026, 9, 6)),
+        LocalDate.of(2026, 8, 31),
+        LocalDate.of(2026, 9, 6),
         0,
         null,
         null,
         Instant.parse("2026-09-04T10:00:00Z"),
         1);
+  }
+
+  private VulcanClassCatalog catalog() {
+    CatalogClass catalogClass =
+        new CatalogClass(7002, 1001, 3001, "Synthetic 2A", null, 2, 2026, null, null);
+    return new VulcanClassCatalog() {
+      @Override
+      public java.util.List<CatalogClass> listActiveForUser(long appUserId) {
+        return java.util.List.of(catalogClass);
+      }
+
+      @Override
+      public Optional<CatalogClass> findActiveForUser(long appUserId, long catalogId) {
+        return findForUser(appUserId, catalogId);
+      }
+
+      @Override
+      public Optional<CatalogClass> findForUser(long appUserId, long catalogId) {
+        return catalogId == catalogClass.id() ? Optional.of(catalogClass) : Optional.empty();
+      }
+    };
   }
 }
