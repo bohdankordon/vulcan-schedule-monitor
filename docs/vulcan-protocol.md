@@ -44,7 +44,7 @@ Observed as a full schedule context containing schedule entries, changed or effe
 
 Observed as a lighter schedule response containing the base schedule, schedule with changes, and days off. Its intended future role is regular schedule monitoring using the week-sized ranges observed in the browser.
 
-**Implemented now:** callers provide a journal discovered from `GetTree` and a date within the requested week. The adapter derives Monday and Sunday boundaries, sends all date form values at local midnight, and preserves the supplied date as the browser-style `data` anchor inside that week. This is response retrieval only, not scheduled polling.
+**Implemented now:** callers provide a journal discovered from `GetTree` and a date within the requested week. The adapter derives Monday and Sunday boundaries, sends all date form values at local midnight, and preserves the supplied date as the browser-style `data` anchor inside that week. The monitoring adapter verifies that the returned journal and week match the requested scope; failures are never converted to empty snapshots.
 
 ### `Home.mvc/RefreshSession`
 
@@ -72,4 +72,6 @@ Each extracted change retains protocol-independent planned and effective lesson 
 
 The integration keeps browser-observed fields at the system boundary and translates them into internal models. Full context retrieval and lighter monitoring retrieval have different observed responsibilities and should be used accordingly. The current implementation fails safely when an expected envelope or mapped field changes and does not place response bodies in exceptions.
 
-`PlanLekcji.mvc/GetContext` and `Home.mvc/RefreshSession` remain documented observations only. Automated login/re-login, session touching, scheduled monitoring, cross-poll change detection, persistence, and notifications are still planned.
+HTTP failures are sanitized into authentication required (`401`/`403`), rate limited (`429`), server error (`5xx`), permanent client error (other `4xx`), transport error, and session redirect categories. Automatic redirect following remains disabled. A `2xx` response explicitly identified as HTML is treated as a session/authentication failure before JSON decoding; its body is neither stored nor included in diagnostics. `Retry-After` supports delta-seconds and RFC 1123 HTTP dates using an injected clock. The raw header value is not retained in errors.
+
+`PlanLekcji.mvc/GetContext` and `Home.mvc/RefreshSession` remain documented observations only. Schedule polling already creates authenticated traffic, so `RefreshSession` has not been added without a concrete tested need and is not modeled as OAuth refresh. Automated login/re-login, production subscriptions, notifications, and durable delivery remain planned.

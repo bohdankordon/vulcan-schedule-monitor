@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-Vulcan Schedule Monitor currently contains its Spring Boot foundation, a read-only VULCAN integration slice, and PostgreSQL-backed active schedule-change tracking. This document separates implemented foundations from future architecture without prescribing unimplemented class designs.
+Vulcan Schedule Monitor currently contains its Spring Boot foundation, a read-only VULCAN integration slice, PostgreSQL-backed active schedule-change tracking, and a disabled-by-default scheduled monitoring foundation. This document separates implemented foundations from future architecture without prescribing unimplemented class designs.
 
 ## Architectural style
 
@@ -26,7 +26,7 @@ The read-only VULCAN boundary currently provides:
 - known teacher-substitution extraction plus explicit, transient preservation of unknown annotations with redacted diagnostics; and
 - JUnit 6 unit tests and WireMock protocol integration tests using synthetic fixtures.
 
-The current session input is temporary development plumbing. It does not log in, renew an expired session, or poll continuously.
+The current session input is temporary development plumbing. It does not log in or renew an expired session.
 
 The persistence and tracking boundary currently provides:
 
@@ -42,6 +42,20 @@ The persistence and tracking boundary currently provides:
 
 Only current active changes are retained. Resolved rows are removed after their transition is produced; durable delivery history belongs to the planned transactional outbox.
 
+The monitoring application boundary currently provides:
+
+- a protocol-neutral target-provider port without a production subscription implementation;
+- deterministic Europe/Warsaw planning of exactly two scopes per deduplicated target: current week, then next week;
+- a constructible `VulcanWeeklyScheduleSource` for an already authorized `VulcanClient`;
+- sequential cycle execution with minimum inter-scope pacing;
+- three-attempt bounded transport/server retry with exponential backoff;
+- `Retry-After` handling, including a process-local `notBefore` gate for long rate limits;
+- explicit per-scope and cycle outcomes with auth and rate-limit stop behavior;
+- a conditional five-minute Spring fixed-delay trigger with a local overlap guard; and
+- tests proving failed scheduled fetches never reach reconciliation or resolve PostgreSQL state.
+
+The monitoring trigger is disabled by default. Enabling it without application-provided target and weekly-source adapters fails context wiring clearly. The single-instance guard is not a distributed lock; multi-instance coordination is deployment work for a later phase.
+
 ## Planned modules
 
 The planned major module boundaries are:
@@ -49,7 +63,7 @@ The planned major module boundaries are:
 - **VULCAN integration** — extend the current read-only transport and mapping as verified needs arise;
 - **authentication/session management** — Playwright-based authorized login and session recovery;
 - **schedule/change domain** — internal schedule and change concepts;
-- **monitoring** — implemented successful-snapshot reconciliation; traffic-conscious scheduled cadence remains planned;
+- **monitoring** — implemented successful-snapshot reconciliation and conditional, traffic-conscious scheduling foundation;
 - **subscriptions** — user monitoring preferences;
 - **notification/outbox** — reliable notification intent and delivery state;
 - **Telegram adapter** — user interaction and outbound messages;
@@ -64,15 +78,15 @@ The project uses Java 21, Spring Boot 4.1.1, PostgreSQL, Spring Data JPA / Hiber
 
 The following capabilities are planned but **not implemented yet**:
 
-- actual scheduler and poll cadence;
-- HTTP 429 backoff and session recovery;
+- production monitoring-target/session adapters;
+- automatic session recovery;
 - transactional notification outbox;
 - TelegramBots Java library;
 - Playwright for Java;
 - user subscriptions; and
 - production deployment.
 
-The next integration stages still plan a monitoring scheduler, reliable outbox delivery, Telegram, automated authentication/re-login, user subscriptions, and production deployment. The current database layer is a foundation for those features, not a claim of production readiness.
+The next integration stages still plan reliable outbox delivery, Telegram, automated authentication/re-login, user subscriptions, multi-instance coordination, durable account-level rate limiting, and production deployment. The current database and scheduling layers are foundations for those features, not a claim of production readiness.
 
 Technology choices beyond this list will be made when a concrete feature requires them. New libraries and frameworks should use their latest stable, mutually compatible releases at the time of adoption. Spring Boot dependency management remains the default; explicit version overrides should represent a deliberate, verified project baseline.
 

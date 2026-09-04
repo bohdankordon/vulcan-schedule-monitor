@@ -19,9 +19,7 @@ After the baseline:
 
 ## Successful snapshots only
 
-Resolution is inferred only by `reconcileSuccessfulSnapshot`, which accepts a non-null complete weekly `ScheduleSnapshot`. The orchestration boundary fetches a complete weekly snapshot first and calls the tracker only after that succeeds. A network, authorization, timeout, parsing, or other fetch failure therefore leaves active state untouched and cannot produce `RESOLVED`.
-
-No scheduler is implemented in this phase.
+Resolution is inferred only by `reconcileSuccessfulSnapshot`, which accepts a non-null complete weekly `ScheduleSnapshot`. The orchestration boundary fetches a complete weekly snapshot first and calls the tracker only after that succeeds. A network, authorization, timeout, parsing, rate-limit deferral, or other fetch failure therefore leaves active state untouched and cannot produce `RESOLVED`. The scheduled path preserves the same boundary: the resilient source must return a complete, matching weekly snapshot before `ScheduleRefreshCoordinator` invokes reconciliation. Unit and PostgreSQL cross-layer tests cover this invariant after retry exhaustion.
 
 ## Semantic identity
 

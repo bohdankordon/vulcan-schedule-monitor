@@ -14,18 +14,25 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.github.tomakehurst.wiremock.core.WireMockConfiguration;
+import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.TrackingScope;
 import io.github.bohdankordon.vulcanschedulemonitor.schedule.change.TeacherSubstitution;
 import io.github.bohdankordon.vulcanschedulemonitor.schedule.model.ScheduleSnapshot;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.bootstrap.SchoolBootstrap;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanFailureCategory;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanHttpException;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanProtocolException;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.journal.SchoolClass;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.schedule.VulcanWeeklyScheduleSource;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSession;
 import java.net.URI;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -120,6 +127,20 @@ class VulcanClientWireMockTests {
   }
 
   @Test
+  void authorizedClientAdapterReturnsTheCompleteRequestedWeeklyScope() {
+    server.stubFor(
+        post(urlPathEqualTo(APPLICATION_PATH + "PlanLekcji.mvc/GetPlanLekcjiContext"))
+            .willReturn(jsonResponse("schedule-normal")));
+    TrackingScope scope =
+        new TrackingScope(4201L, LocalDate.of(2099, 9, 7), LocalDate.of(2099, 9, 13));
+
+    ScheduleSnapshot snapshot =
+        new VulcanWeeklyScheduleSource(client).fetchCompleteWeeklySnapshot(scope);
+
+    assertThat(TrackingScope.from(snapshot)).isEqualTo(scope);
+  }
+
+  @Test
   void cookieJarPreservesEqualsAndAppliesServerUpdatesToLaterRequests() {
     server.stubFor(
         get(urlPathEqualTo(APPLICATION_PATH + "DziennikCache.mvc/GetCache"))
@@ -170,6 +191,136 @@ class VulcanClientWireMockTests {
         .hasMessageNotContaining("invalid synthetic response body")
         .hasMessageNotContaining(TOKEN)
         .hasMessageNotContaining(APP_ID);
+  }
+
+  @Test
+  void authenticationStatusesAreClassifiedWithoutRetrying() {
+    for (int status : List.of(401, 403)) {
+      server.resetAll();
+      server.stubFor(
+          get(urlPathEqualTo(APPLICATION_PATH + "DziennikCache.mvc/GetCache"))
+              .willReturn(aResponse().withStatus(status)));
+
+      assertThatThrownBy(client::getCache)
+          .isInstanceOfSatisfying(
+              VulcanHttpException.class,
+              failure ->
+                  assertThat(failure.category())
+                      .isEqualTo(VulcanFailureCategory.AUTHENTICATION_REQUIRED));
+      server.verify(
+          1, getRequestedFor(urlPathEqualTo(APPLICATION_PATH + "DziennikCache.mvc/GetCache")));
+    }
+  }
+
+  @Test
+  void rateLimitParsesDeltaSeconds() {
+    server.stubFor(
+        get(urlPathEqualTo(APPLICATION_PATH + "DziennikCache.mvc/GetCache"))
+            .willReturn(aResponse().withStatus(429).withHeader("Retry-After", "30")));
+
+    assertThatThrownBy(client::getCache)
+        .isInstanceOfSatisfying(
+            VulcanHttpException.class,
+            failure -> {
+              assertThat(failure.category()).isEqualTo(VulcanFailureCategory.RATE_LIMITED);
+              assertThat(failure.retryAfter()).contains(Duration.ofSeconds(30));
+            });
+  }
+
+  @Test
+  void rateLimitParsesHttpDateAgainstInjectedClock() {
+    String retryAt =
+        DateTimeFormatter.RFC_1123_DATE_TIME.format(
+            ZonedDateTime.ofInstant(CLOCK.instant().plusSeconds(45), ZoneOffset.UTC));
+    server.stubFor(
+        get(urlPathEqualTo(APPLICATION_PATH + "DziennikCache.mvc/GetCache"))
+            .willReturn(aResponse().withStatus(429).withHeader("Retry-After", retryAt)));
+
+    assertThatThrownBy(client::getCache)
+        .isInstanceOfSatisfying(
+            VulcanHttpException.class,
+            failure -> assertThat(failure.retryAfter()).contains(Duration.ofSeconds(45)));
+  }
+
+  @Test
+  void malformedAndAbsentRetryAfterRemainSanitizedAndUseNoParsedHint() {
+    for (String retryAfter : List.of("malformed", "")) {
+      server.resetAll();
+      var response = aResponse().withStatus(429);
+      if (!retryAfter.isEmpty()) {
+        response.withHeader("Retry-After", retryAfter);
+      }
+      server.stubFor(
+          get(urlPathEqualTo(APPLICATION_PATH + "DziennikCache.mvc/GetCache"))
+              .willReturn(response));
+
+      assertThatThrownBy(client::getCache)
+          .isInstanceOfSatisfying(
+              VulcanHttpException.class,
+              failure -> {
+                assertThat(failure.retryAfter()).isEmpty();
+                if (!retryAfter.isEmpty()) {
+                  assertThat(failure).hasMessageNotContaining(retryAfter);
+                }
+              });
+    }
+  }
+
+  @Test
+  void serviceUnavailableIsClassifiedAndCanCarryRetryHint() {
+    server.stubFor(
+        get(urlPathEqualTo(APPLICATION_PATH + "DziennikCache.mvc/GetCache"))
+            .willReturn(aResponse().withStatus(503).withHeader("Retry-After", "7")));
+
+    assertThatThrownBy(client::getCache)
+        .isInstanceOfSatisfying(
+            VulcanHttpException.class,
+            failure -> {
+              assertThat(failure.category()).isEqualTo(VulcanFailureCategory.SERVER_ERROR);
+              assertThat(failure.retryAfter()).contains(Duration.ofSeconds(7));
+            });
+  }
+
+  @Test
+  void redirectIsObservableAndNeverFollowed() {
+    server.stubFor(
+        get(urlPathEqualTo(APPLICATION_PATH + "DziennikCache.mvc/GetCache"))
+            .willReturn(
+                aResponse()
+                    .withStatus(302)
+                    .withHeader("Location", APPLICATION_PATH + "synthetic-login")));
+    server.stubFor(
+        get(urlPathEqualTo(APPLICATION_PATH + "synthetic-login"))
+            .willReturn(aResponse().withStatus(200).withBody("should not be requested")));
+
+    assertThatThrownBy(client::getCache)
+        .isInstanceOfSatisfying(
+            VulcanHttpException.class,
+            failure ->
+                assertThat(failure.category()).isEqualTo(VulcanFailureCategory.SESSION_REDIRECT));
+    server.verify(0, getRequestedFor(urlPathEqualTo(APPLICATION_PATH + "synthetic-login")));
+  }
+
+  @Test
+  void successfulHtmlSessionPageNeverReachesJsonDecoderOrLeaksBody() {
+    server.stubFor(
+        get(urlPathEqualTo(APPLICATION_PATH + "DziennikCache.mvc/GetCache"))
+            .willReturn(
+                aResponse()
+                    .withStatus(200)
+                    .withHeader("Content-Type", "text/html; charset=UTF-8")
+                    .withBody("<html>sensitive synthetic login body</html>")));
+
+    assertThatThrownBy(client::getCache)
+        .isInstanceOfSatisfying(
+            VulcanHttpException.class,
+            failure -> {
+              assertThat(failure.category()).isEqualTo(VulcanFailureCategory.UNEXPECTED_HTML);
+              assertThat(failure)
+                  .hasMessageNotContaining("sensitive synthetic login body")
+                  .hasMessageNotContaining(TOKEN)
+                  .hasMessageNotContaining(APP_ID);
+            });
   }
 
   private static com.github.tomakehurst.wiremock.client.ResponseDefinitionBuilder jsonResponse(

@@ -3,6 +3,7 @@ package io.github.bohdankordon.vulcanschedulemonitor.vulcan.http;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSession;
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.time.Clock;
 import java.time.Duration;
 import java.util.Objects;
 import org.springframework.http.HttpHeaders;
@@ -23,11 +24,18 @@ public final class VulcanHttpTransport {
   private final VulcanSession session;
   private final RestClient restClient;
   private final ObjectMapper objectMapper;
+  private final RetryAfterParser retryAfterParser;
 
   public VulcanHttpTransport(VulcanSession session, Duration connectTimeout, Duration readTimeout) {
+    this(session, connectTimeout, readTimeout, Clock.systemUTC());
+  }
+
+  public VulcanHttpTransport(
+      VulcanSession session, Duration connectTimeout, Duration readTimeout, Clock clock) {
     this.session = Objects.requireNonNull(session, "session must not be null");
     Objects.requireNonNull(connectTimeout, "connectTimeout must not be null");
     Objects.requireNonNull(readTimeout, "readTimeout must not be null");
+    Objects.requireNonNull(clock, "clock must not be null");
 
     HttpClient httpClient =
         session
@@ -44,6 +52,7 @@ public final class VulcanHttpTransport {
             .defaultHeaders(session::applyCommonHeaders)
             .build();
     this.objectMapper = new ObjectMapper();
+    this.retryAfterParser = new RetryAfterParser(clock);
   }
 
   public JsonNode get(String operation, URI uri) {
@@ -67,7 +76,14 @@ public final class VulcanHttpTransport {
           (clientRequest, clientResponse) -> {
             int statusCode = clientResponse.getStatusCode().value();
             if (!clientResponse.getStatusCode().is2xxSuccessful()) {
-              throw VulcanHttpException.responseFailure(operation, statusCode);
+              Duration retryAfter =
+                  retryAfterParser.parse(
+                      clientResponse.getHeaders().getFirst(HttpHeaders.RETRY_AFTER));
+              throw VulcanHttpException.responseFailure(operation, statusCode, retryAfter);
+            }
+            MediaType contentType = clientResponse.getHeaders().getContentType();
+            if (contentType != null && MediaType.TEXT_HTML.isCompatibleWith(contentType)) {
+              throw VulcanHttpException.unexpectedHtml(operation);
             }
             try {
               JsonNode response = objectMapper.readTree(clientResponse.getBody());
