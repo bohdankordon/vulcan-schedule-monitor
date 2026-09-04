@@ -70,6 +70,9 @@ class NotificationOutboxEntity {
   @Column(name = "subject_id")
   private Long subjectId;
 
+  @Column(name = "recipient_user_id")
+  private Long recipientUserId;
+
   @Enumerated(EnumType.STRING)
   @Column(nullable = false, length = 16)
   private NotificationOutboxStatus status;
@@ -99,16 +102,16 @@ class NotificationOutboxEntity {
   protected NotificationOutboxEntity() {}
 
   static NotificationOutboxEntity baseline(
-      TrackingScope scope, int activeChangeCount, Instant occurredAt) {
-    NotificationOutboxEntity entity = pending(scope, occurredAt);
+      TrackingScope scope, long recipientUserId, int activeChangeCount, Instant occurredAt) {
+    NotificationOutboxEntity entity = pending(scope, recipientUserId, occurredAt);
     entity.eventType = NotificationEventType.BASELINE_ESTABLISHED;
     entity.activeChangeCount = activeChangeCount;
     return entity;
   }
 
   static NotificationOutboxEntity transition(
-      TrackingScope scope, ChangeTransition transition, Instant occurredAt) {
-    NotificationOutboxEntity entity = pending(scope, occurredAt);
+      TrackingScope scope, long recipientUserId, ChangeTransition transition, Instant occurredAt) {
+    NotificationOutboxEntity entity = pending(scope, recipientUserId, occurredAt);
     ChangeMetadata metadata = transition.metadata();
     entity.eventType = NotificationEventType.from(transition.lifecycle());
     entity.changeKey = transition.changeKey();
@@ -120,11 +123,13 @@ class NotificationOutboxEntity {
     return entity;
   }
 
-  private static NotificationOutboxEntity pending(TrackingScope scope, Instant occurredAt) {
+  private static NotificationOutboxEntity pending(
+      TrackingScope scope, long recipientUserId, Instant occurredAt) {
     NotificationOutboxEntity entity = new NotificationOutboxEntity();
     entity.journalId = scope.journalId();
     entity.weekStart = scope.weekStart();
     entity.weekEnd = scope.weekEnd();
+    entity.recipientUserId = recipientUserId;
     entity.status = NotificationOutboxStatus.PENDING;
     entity.nextAttemptAt = occurredAt;
     entity.createdAt = occurredAt;
@@ -174,6 +179,7 @@ class NotificationOutboxEntity {
             : new ChangeMetadata(changeType, lessonDate, lessonPeriodId, groupId, subjectId);
     return new NotificationOutboxMessage(
         id,
+        recipientUserId,
         eventType,
         new TrackingScope(journalId, weekStart, weekEnd),
         activeChangeCount,

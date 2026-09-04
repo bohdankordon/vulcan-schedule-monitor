@@ -7,6 +7,7 @@ import java.util.Objects;
 
 public record NotificationOutboxMessage(
     long id,
+    long recipientUserId,
     NotificationEventType eventType,
     TrackingScope scope,
     Integer activeChangeCount,
@@ -19,9 +20,9 @@ public record NotificationOutboxMessage(
     Objects.requireNonNull(eventType, "eventType must not be null");
     Objects.requireNonNull(scope, "scope must not be null");
     Objects.requireNonNull(occurredAt, "occurredAt must not be null");
-    if (id <= 0 || attemptNumber <= 0) {
+    if (id <= 0 || recipientUserId <= 0 || attemptNumber <= 0) {
       throw new IllegalArgumentException(
-          "Claimed message identifiers and attempts must be positive");
+          "Claimed message, recipient, and attempt identifiers must be positive");
     }
     if (eventType == NotificationEventType.BASELINE_ESTABLISHED) {
       if (activeChangeCount == null
