@@ -18,6 +18,7 @@ $PostgresUsername = "vulcan"
 $PostgresPassword = "vulcan-local-dev-only"
 $PostgresHostPort = 54329
 $ApplicationPort = 8080
+$DockerExecutable = $null
 
 function Show-DevHelp {
     @'
@@ -43,30 +44,88 @@ function Assert-Windows {
     }
 }
 
+function Invoke-NativeCapture {
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [string[]]$ArgumentList = @()
+    )
+
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $FilePath
+    $startInfo.Arguments = $ArgumentList -join " "
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.CreateNoWindow = $true
+
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) {
+            throw "start failed"
+        }
+        $standardOutput = $process.StandardOutput.ReadToEndAsync()
+        $standardError = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        return [pscustomobject]@{
+            ExitCode = $process.ExitCode
+            StandardOutput = $standardOutput.GetAwaiter().GetResult()
+            StandardError = $standardError.GetAwaiter().GetResult()
+        }
+    }
+    catch {
+        throw "A required local command could not be started."
+    }
+    finally {
+        $process.Dispose()
+    }
+}
+
+function Get-JavaMajorVersion {
+    param([Parameter(Mandatory)][string]$VersionText)
+
+    $match = [regex]::Match(
+        $VersionText,
+        '(?im)^\s*(?:openjdk|java)\s+version\s+"(?<major>\d+)(?=[.\-"])')
+    if (-not $match.Success) {
+        return $null
+    }
+    return [int]$match.Groups["major"].Value
+}
+
 function Assert-Java21 {
-    if ($null -eq (Get-Command java -ErrorAction SilentlyContinue)) {
+    $javaCommand = Get-Command java -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -eq $javaCommand) {
         throw "Java 21 is required. Install a Java 21 JDK and run scripts/dev.ps1 again."
     }
 
-    $versionOutput = & java -version 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    try {
+        $probe = Invoke-NativeCapture -FilePath $javaCommand.Source -ArgumentList @("-version")
+    }
+    catch {
+        throw "Java could not be started. Install a working Java 21 JDK and run scripts/dev.ps1 again."
+    }
+    if ($probe.ExitCode -ne 0) {
         throw "Java could not be started. Install a working Java 21 JDK and run scripts/dev.ps1 again."
     }
 
-    $versionText = $versionOutput | Out-String
-    $match = [regex]::Match($versionText, 'version\s+"(?<major>\d+)(?:[.\-"]|$)')
-    if (-not $match.Success -or [int]$match.Groups["major"].Value -ne 21) {
+    $versionText = $probe.StandardOutput + [Environment]::NewLine + $probe.StandardError
+    if ((Get-JavaMajorVersion -VersionText $versionText) -ne 21) {
         throw "Java 21 is required. Select a Java 21 JDK and run scripts/dev.ps1 again."
     }
 }
 
 function Assert-Docker {
-    if ($null -eq (Get-Command docker -ErrorAction SilentlyContinue)) {
+    $dockerCommand = Get-Command docker -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -eq $dockerCommand) {
         throw "Docker is required. Install Docker Desktop and run scripts/dev.ps1 again."
     }
 
-    & docker info --format "{{.ServerVersion}}" *> $null
-    if ($LASTEXITCODE -ne 0) {
+    $script:DockerExecutable = $dockerCommand.Source
+    $probe = Invoke-NativeCapture -FilePath $script:DockerExecutable -ArgumentList @("info")
+    if ($probe.ExitCode -ne 0) {
         throw "Start Docker Desktop and run scripts/dev.ps1 again."
     }
 }
@@ -74,15 +133,19 @@ function Assert-Docker {
 function Test-DockerContainerExists {
     param([Parameter(Mandatory)][string]$Name)
 
-    & docker container inspect $Name *> $null
-    return $LASTEXITCODE -eq 0
+    $probe = Invoke-NativeCapture `
+        -FilePath $script:DockerExecutable `
+        -ArgumentList @("container", "inspect", $Name)
+    return $probe.ExitCode -eq 0
 }
 
 function Test-DockerVolumeExists {
     param([Parameter(Mandatory)][string]$Name)
 
-    & docker volume inspect $Name *> $null
-    return $LASTEXITCODE -eq 0
+    $probe = Invoke-NativeCapture `
+        -FilePath $script:DockerExecutable `
+        -ArgumentList @("volume", "inspect", $Name)
+    return $probe.ExitCode -eq 0
 }
 
 function Invoke-DockerQuietly {
@@ -91,8 +154,10 @@ function Invoke-DockerQuietly {
         [Parameter(Mandatory)][string]$FailureMessage
     )
 
-    & docker @Arguments *> $null
-    if ($LASTEXITCODE -ne 0) {
+    $probe = Invoke-NativeCapture `
+        -FilePath $script:DockerExecutable `
+        -ArgumentList $Arguments
+    if ($probe.ExitCode -ne 0) {
         throw $FailureMessage
     }
 }
@@ -281,11 +346,13 @@ function Assert-PortAvailable {
 function Get-PostgresContainerDetails {
     param([Parameter(Mandatory)][string]$Name)
 
-    $json = & docker container inspect $Name 2>$null
-    if ($LASTEXITCODE -ne 0) {
+    $probe = Invoke-NativeCapture `
+        -FilePath $script:DockerExecutable `
+        -ArgumentList @("container", "inspect", $Name)
+    if ($probe.ExitCode -ne 0) {
         throw "The local PostgreSQL container could not be inspected."
     }
-    return (($json -join [Environment]::NewLine) | ConvertFrom-Json)
+    return ($probe.StandardOutput | ConvertFrom-Json)
 }
 
 function Assert-PostgresContainerCompatible {
@@ -363,9 +430,15 @@ function Ensure-Postgres {
 function Wait-Postgres {
     $timeout = [System.Diagnostics.Stopwatch]::StartNew()
     while ($timeout.Elapsed -lt [TimeSpan]::FromSeconds(60)) {
-        & docker exec $PostgresContainerName pg_isready `
-            --username $PostgresUsername --dbname $PostgresDatabase *> $null
-        if ($LASTEXITCODE -eq 0) {
+        $probe = Invoke-NativeCapture `
+            -FilePath $script:DockerExecutable `
+            -ArgumentList @(
+                "exec",
+                $PostgresContainerName,
+                "pg_isready",
+                "--username", $PostgresUsername,
+                "--dbname", $PostgresDatabase)
+        if ($probe.ExitCode -eq 0) {
             return
         }
         Start-Sleep -Seconds 2
