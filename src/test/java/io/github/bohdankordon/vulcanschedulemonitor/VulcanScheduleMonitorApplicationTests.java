@@ -13,6 +13,9 @@ import io.github.bohdankordon.vulcanschedulemonitor.telegram.runtime.TelegramLon
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.runtime.TelegramLongPollingSupervisor;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.transport.TelegramMessageTransport;
 import io.github.bohdankordon.vulcanschedulemonitor.testsupport.PostgresIntegrationTestSupport;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanBrowserAuthenticator;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanConnectionService;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanSessionManager;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -27,7 +30,7 @@ class VulcanScheduleMonitorApplicationTests extends PostgresIntegrationTestSuppo
 
   @Test
   void contextLoadsWithMigratedSchemaValidatedByHibernate() {
-    assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("3");
+    assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("4");
     assertThat(context.getBeansOfType(MonitoringScheduler.class)).isEmpty();
     assertThat(context.getBeansOfType(MonitoringTargetProvider.class)).hasSize(1);
     assertThat(context.getBeansOfType(WeeklyScheduleSource.class)).isEmpty();
@@ -38,5 +41,8 @@ class VulcanScheduleMonitorApplicationTests extends PostgresIntegrationTestSuppo
     assertThat(context.getBeansOfType(TelegramNotificationDispatchScheduler.class)).isEmpty();
     assertThat(context.getBeansOfType(TelegramLongPollingRuntime.class)).isEmpty();
     assertThat(context.getBeansOfType(TelegramLongPollingSupervisor.class)).isEmpty();
+    assertThat(context.getBeansOfType(VulcanBrowserAuthenticator.class)).isEmpty();
+    assertThat(context.getBeansOfType(VulcanConnectionService.class)).isEmpty();
+    assertThat(context.getBeansOfType(VulcanSessionManager.class)).isEmpty();
   }
 }

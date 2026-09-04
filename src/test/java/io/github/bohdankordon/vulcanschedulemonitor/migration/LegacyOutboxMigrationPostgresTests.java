@@ -57,7 +57,12 @@ class LegacyOutboxMigrationPostgresTests extends PostgresIntegrationTestSupport 
               Timestamp.from(NOW));
 
       Flyway throughV3 =
-          Flyway.configure().dataSource(dataSource).schemas(SCHEMA).defaultSchema(SCHEMA).load();
+          Flyway.configure()
+              .dataSource(dataSource)
+              .schemas(SCHEMA)
+              .defaultSchema(SCHEMA)
+              .target(MigrationVersion.fromVersion("3"))
+              .load();
       throughV3.migrate();
 
       assertThat(throughV3.info().current().getVersion().getVersion()).isEqualTo("3");
