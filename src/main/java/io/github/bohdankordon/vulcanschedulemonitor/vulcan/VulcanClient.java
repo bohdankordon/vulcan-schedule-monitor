@@ -33,7 +33,8 @@ public final class VulcanClient {
   public VulcanClient(VulcanSession session, Clock clock) {
     Objects.requireNonNull(session, "session must not be null");
     Objects.requireNonNull(clock, "clock must not be null");
-    VulcanHttpTransport transport = new VulcanHttpTransport(session, CONNECT_TIMEOUT, READ_TIMEOUT);
+    VulcanHttpTransport transport =
+        new VulcanHttpTransport(session, CONNECT_TIMEOUT, READ_TIMEOUT, clock);
     this.bootstrapAdapter = new VulcanBootstrapAdapter(session, transport, clock);
     this.journalAdapter = new VulcanJournalAdapter(session, transport, clock);
     this.scheduleAdapter = new VulcanScheduleAdapter(session, transport);
