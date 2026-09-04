@@ -1,0 +1,50 @@
+{
+  "success": true,
+  "data": {
+    "children": {
+      "organizationalUnits": [
+        {
+          "text": "Synthetic unit",
+          "children": {
+            "yearGroups": {
+              "gradeFour": [
+                {
+                  "children": {
+                    "classes": {
+                      "syntheticClass": {
+                        "ObjectData": {
+                          "IdDziennik": 4201,
+                          "IdOddzial": 4301,
+                          "NazwaOddzialu": "4Z",
+                          "RokSzkolny": 2099,
+                          "PoziomOddzialu": 4,
+                          "IstniejeDziennik": true,
+                          "SkrotJednostki": "SYN",
+                          "DziennikDataOd": "2099-09-01T00:00:00",
+                          "DziennikDataDo": "2100-06-30T00:00:00"
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "ObjectData": {
+            "IdDziennik": 9999,
+            "IdOddzial": 9998,
+            "NazwaOddzialu": "No journal",
+            "RokSzkolny": 2099,
+            "PoziomOddzialu": 9,
+            "IstniejeDziennik": false,
+            "SkrotJednostki": "SYN",
+            "DziennikDataOd": "2099-09-01T00:00:00",
+            "DziennikDataDo": "2100-06-30T00:00:00"
+          }
+        }
+      ]
+    }
+  }
+}

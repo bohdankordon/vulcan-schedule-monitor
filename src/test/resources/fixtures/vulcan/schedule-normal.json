@@ -1,0 +1,61 @@
+{
+  "success": true,
+  "data": {
+    "oddzialInfo": {},
+    "planLekcji": [
+      {
+        "Id": 7001,
+        "IdOddzial": 4301,
+        "Dzien": "2099-09-07T00:00:00",
+        "IdPoraLekcji": 501,
+        "IdPodzial": 8001,
+        "IdPrzedmiot": 9001,
+        "IdPracownik": 9101,
+        "IdSala": 9201,
+        "CzyZmiana": false
+      },
+      {
+        "Id": 7002,
+        "IdOddzial": 4301,
+        "Dzien": "2099-09-07T00:00:00",
+        "IdPoraLekcji": 501,
+        "IdPodzial": null,
+        "IdPrzedmiot": 9002,
+        "IdPracownik": null,
+        "IdSala": null,
+        "CzyZmiana": false
+      }
+    ],
+    "planLekcjiZeZmianami": [
+      {
+        "Id": 7101,
+        "IdPozycjiPlanu": 7001,
+        "IdOddzial": 4301,
+        "Dzien": "2099-09-07T00:00:00",
+        "IdPoraLekcji": 501,
+        "IdPodzial": 8001,
+        "IdPrzedmiot": 9001,
+        "IdPracownik": 9101,
+        "IdSala": 9201,
+        "ChangeAnnotation": null,
+        "Striked": false,
+        "Bolded": false
+      },
+      {
+        "Id": 7102,
+        "IdPozycjiPlanu": 7002,
+        "IdOddzial": 4301,
+        "Dzien": "2099-09-07T00:00:00",
+        "IdPoraLekcji": 501,
+        "IdPodzial": null,
+        "IdPrzedmiot": 9002,
+        "IdPracownik": null,
+        "IdSala": null,
+        "ChangeAnnotation": null,
+        "Striked": false,
+        "Bolded": false
+      }
+    ],
+    "dniWolne": []
+  }
+}
