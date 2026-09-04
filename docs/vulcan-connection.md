@@ -12,9 +12,9 @@ Phase 7 connects one authorized VULCAN account to one internal application user.
 4. The self-contained page asks only for the VULCAN portal URL, login, password, and an opt-in remember-credentials checkbox. The checkbox defaults to false. Spring Security CSRF remains enabled.
 5. The portal URL is validated before Playwright starts. Only standard-port HTTPS hosts equal to `vulcan.net.pl` or ending in `.vulcan.net.pl`, without userinfo or fragments, are accepted.
 6. Playwright performs the supported direct login in a new headless Chromium browser context. Credentials are never accepted in Telegram.
-7. Browser request observation captures only the authenticated application root, same-path Referer, verification token, AppGuid, and cookies applicable to that application URL. Cookie names are not hard-coded.
-8. A reconstructed `VulcanClient` must successfully parse `getCache()` and a complete `getTree(currentSchoolYear)` before persistence.
-9. A short transaction locks and revalidates the token, upserts the account, encrypts session material, synchronizes the complete catalog, and consumes the token atomically. Browser and protocol work never run inside this transaction.
+7. Browser request observation retains only the request URI, Referer, request-verification token, and AppGuid required to identify an authenticated application request. It does not retain an arbitrary header map. Cookies are obtained separately for the authenticated application URL, and cookie names are not hard-coded.
+8. A reconstructed `VulcanClient` must successfully parse `getCache()` and a complete `getTree(currentSchoolYear)`. The verified result contains the final session snapshot taken after both calls, including any `Set-Cookie` rotations received during verification.
+9. A short transaction locks and revalidates the token, upserts the account, encrypts the post-verification session snapshot, synchronizes the complete catalog, and consumes the token atomically. Browser and protocol work never run inside this transaction.
 
 ## Feature configuration
 
@@ -49,7 +49,9 @@ Invalid or expired tokens never render the credential form and clear the cookie.
 
 ## Direct-login boundary
 
-Public inspection identified a tenant landing page with a teacher/employee `LoginEndpoint.aspx` link and a VULCAN-hosted direct login form using semantic username and current-password autocomplete fields. The adapter supports only this identifiable path. Immediately before filling the password it checks that the current page is still an allowlisted HTTPS VULCAN host. Off-domain identity providers, MFA, CAPTCHA, interactive verification, missing form semantics, or a session that never produces the required authenticated request headers fail with a sanitized category. The implementation does not bypass or weaken any security control.
+Public inspection identified a tenant landing page with a teacher/employee `LoginEndpoint.aspx` link and a VULCAN-hosted direct login form using semantic username and current-password autocomplete fields. The adapter supports only this identifiable path. Before either credential is entered, it requires the username, password, and selected submit control to belong to the same form. It reads the browser-resolved effective action, including relative/empty actions and a submitter `formaction` override, and requires the effective method, including `formmethod`, to be `POST`. Both the current page and effective submission target must be allowlisted HTTPS VULCAN URLs. The policy is checked again immediately before the verified in-form submitter is clicked.
+
+Once credential entry begins, a temporary Playwright request route aborts requests to every non-allowlisted destination before network transmission without inspecting a request body or recording a destination URL. Off-domain identity providers, external form actions, MFA, CAPTCHA, interactive verification, missing form semantics, or a session that never produces the required authenticated request values fail with a sanitized category. The implementation does not bypass or weaken any security control.
 
 Every attempt owns fresh Playwright, Browser, BrowserContext, and Page instances. Persistent profiles, storage-state files, screenshots, video, traces, HAR, DOM dumps, and provider response text are not produced. Resources close on success and every failure path.
 
@@ -65,7 +67,7 @@ When remember credentials is false, credential nonce and ciphertext remain null.
 
 After complete verification, discovered journals are inserted or updated and marked active. Previously known journals absent from that complete tree become inactive rather than being deleted. Failed authentication or discovery cannot deactivate catalog rows because synchronization occurs only in the final transaction after successful verification. Active reads are deterministic and scoped through the internal user/account association, so the same journal ID can exist for different accounts.
 
-`VulcanSessionManager` can load and reconstruct a stored session, persist a cookie-rotation snapshot, and perform an explicit recovery when remembered credentials exist. Without remembered credentials it marks the account reconnect-required. Nothing calls this manager from `MonitoringCycleRunner`, and there are no background Playwright jobs in Phase 7.
+`VulcanSessionManager` can load and reconstruct a stored session, persist a cookie-rotation snapshot, and perform an explicit recovery when remembered credentials exist. Connect and explicit recovery both persist the verifier's post-`getCache()`/`getTree()` snapshot rather than the pre-verification browser capture. Without remembered credentials it marks the account reconnect-required. Nothing calls this manager from `MonitoringCycleRunner`, and there are no background Playwright jobs in Phase 7.
 
 ## Manual validation
 

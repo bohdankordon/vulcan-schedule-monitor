@@ -55,8 +55,8 @@ public final class VulcanSessionManager {
       try (VulcanLoginRequest request =
           new VulcanLoginRequest(credentials.portalUri(), credentials.login(), password)) {
         VulcanSessionMaterial material = authenticator.authenticate(request);
-        verifier.verifyAndDiscover(material);
-        persistence.replaceRecovered(accountId, material, credentials);
+        VerifiedVulcanSession verified = verifier.verifyAndDiscover(material);
+        persistence.replaceRecovered(accountId, verified.sessionMaterial(), credentials);
         return RecoveryResult.RECOVERED;
       } finally {
         Arrays.fill(password, '\0');

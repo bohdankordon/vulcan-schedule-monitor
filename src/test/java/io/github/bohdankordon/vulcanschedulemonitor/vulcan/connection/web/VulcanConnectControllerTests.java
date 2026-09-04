@@ -12,6 +12,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import io.github.bohdankordon.vulcanschedulemonitor.testsupport.PostgresIntegrationTestSupport;
 import io.github.bohdankordon.vulcanschedulemonitor.users.TelegramIdentityRegistration;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VerifiedVulcanSession;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanAuthFailureCategory;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanAuthenticationException;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanBrowserAuthenticator;
@@ -257,16 +258,18 @@ class VulcanConnectControllerTests extends PostgresIntegrationTestSupport {
     @Primary
     VulcanSessionVerifier fakeVerifier() {
       return material ->
-          List.of(
-              new SchoolClass(
-                  7101,
-                  8101,
-                  "Synthetic Class",
-                  "UNIT",
-                  1,
-                  2026,
-                  LocalDate.of(2026, 9, 1),
-                  LocalDate.of(2027, 6, 30)));
+          new VerifiedVulcanSession(
+              material,
+              List.of(
+                  new SchoolClass(
+                      7101,
+                      8101,
+                      "Synthetic Class",
+                      "UNIT",
+                      1,
+                      2026,
+                      LocalDate.of(2026, 9, 1),
+                      LocalDate.of(2027, 6, 30))));
     }
 
     @Bean

@@ -1,11 +1,14 @@
 package io.github.bohdankordon.vulcanschedulemonitor.vulcan.session;
 
+import java.io.IOException;
 import java.net.CookieManager;
 import java.net.CookiePolicy;
 import java.net.HttpCookie;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.http.HttpClient;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 import org.springframework.http.HttpHeaders;
@@ -147,10 +150,13 @@ public final class VulcanSession {
       }
 
       try {
-        HttpCookie cookie = new HttpCookie(name, value);
-        cookie.setVersion(0);
-        cookieManager.getCookieStore().add(applicationBaseUri, cookie);
-      } catch (IllegalArgumentException exception) {
+        new HttpCookie(name, value);
+        cookieManager.put(
+            applicationBaseUri,
+            Map.of(
+                HttpHeaders.SET_COOKIE,
+                List.of(candidate + "; Path=" + applicationBaseUri.getRawPath())));
+      } catch (IllegalArgumentException | IOException exception) {
         throw malformedCookieHeader();
       }
     }

@@ -12,8 +12,6 @@ import java.util.stream.Collectors;
 
 public final class VulcanSessionCapture {
 
-  private static final String VERIFICATION = "x-v-requestverificationtoken";
-  private static final String APP_GUID = "x-v-appguid";
   private final PortalUrlValidator portalUrls;
 
   public VulcanSessionCapture(PortalUrlValidator portalUrls) {
@@ -24,9 +22,9 @@ public final class VulcanSessionCapture {
       List<BrowserRequestObservation> requests, List<BrowserCookieObservation> cookies) {
     for (int index = requests.size() - 1; index >= 0; index--) {
       BrowserRequestObservation request = requests.get(index);
-      String verification = request.header(VERIFICATION);
-      String appGuid = request.header(APP_GUID);
-      String referer = request.header("referer");
+      String verification = request.requestVerificationToken();
+      String appGuid = request.appGuid();
+      String referer = request.referer();
       if (!portalUrls.isAllowed(request.uri())
           || isBlank(verification)
           || isBlank(appGuid)

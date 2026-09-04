@@ -7,6 +7,8 @@ import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
 import com.microsoft.playwright.PlaywrightException;
+import com.microsoft.playwright.Request;
+import com.microsoft.playwright.Route;
 import com.microsoft.playwright.options.Cookie;
 import com.microsoft.playwright.options.LoadState;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.PortalUrlValidator;
@@ -39,37 +41,25 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
             playwright.chromium().launch(new BrowserType.LaunchOptions().setHeadless(headless));
         BrowserContext context = browser.newContext();
         Page page = context.newPage()) {
-      page.onRequest(
-          observed -> {
-            try {
-              observations.add(
-                  new BrowserRequestObservation(URI.create(observed.url()), observed.headers()));
-            } catch (RuntimeException ignored) {
-              // Malformed or unavailable metadata is never used for session capture.
-            }
-          });
+      page.onRequest(observed -> observeAuthenticatedRequest(observed, observations));
       page.navigate(request.portalUri().toASCIIString());
       requireAllowedPage(page);
       locateDirectLogin(page);
       requireAllowedPage(page);
       rejectInteractiveSecurity(page);
 
-      Locator username =
-          page.locator("input[autocomplete='username'], input[name='LoginName']").first();
-      Locator password =
-          page.locator("input[autocomplete='current-password'], input[type='password']").first();
-      if (username.count() == 0 || password.count() == 0) {
-        throw new VulcanAuthenticationException(VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
-      }
+      VerifiedLoginForm loginForm = requireSafeLoginForm(page);
+      context.route("**/*", this::guardCredentialRequest);
       char[] passwordChars = request.password();
       try {
-        username.fill(request.login());
+        loginForm.username().fill(request.login());
         requireAllowedPage(page);
-        password.fill(new String(passwordChars));
+        loginForm.password().fill(new String(passwordChars));
+        requireSafeSubmission(page, loginForm.form(), loginForm.submitter());
+        loginForm.submitter().click();
       } finally {
         Arrays.fill(passwordChars, '\0');
       }
-      page.locator("input[type='submit'], button[type='submit']").first().click();
       page.waitForLoadState(LoadState.DOMCONTENTLOADED);
       page.waitForTimeout(2_000);
       requireAllowedPage(page);
@@ -92,6 +82,104 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
     } catch (RuntimeException exception) {
       throw new VulcanAuthenticationException(VulcanAuthFailureCategory.PROTOCOL_FAILURE);
     }
+  }
+
+  private VerifiedLoginForm requireSafeLoginForm(Page page) {
+    Locator passwords =
+        page.locator("input[autocomplete='current-password'], input[type='password']");
+    if (passwords.count() != 1) {
+      throw unsupported();
+    }
+    Locator password = passwords.first();
+    Locator forms = password.locator("xpath=ancestor::form[1]");
+    if (forms.count() != 1) {
+      throw unsupported();
+    }
+    Locator form = forms.first();
+    Locator usernames = form.locator("input[autocomplete='username'], input[name='LoginName']");
+    Locator submitters =
+        form.locator(
+            "input[type='submit'], button[type='submit'], button:not([type]), input[type='image']");
+    if (usernames.count() != 1 || submitters.count() == 0) {
+      throw unsupported();
+    }
+    Locator submitter = submitters.first();
+    requireSafeSubmission(page, form, submitter);
+    return new VerifiedLoginForm(form, usernames.first(), password, submitter);
+  }
+
+  private void requireSafeSubmission(Page page, Locator form, Locator submitter) {
+    try {
+      boolean actionOverride = submitter.getAttribute("formaction") != null;
+      boolean methodOverride = submitter.getAttribute("formmethod") != null;
+      new LoginFormSubmissionPolicy(portalUrls)
+          .requireSafeSubmission(
+              URI.create(page.url()),
+              true,
+              true,
+              stringProperty(form, "form => form.action"),
+              stringProperty(form, "form => form.method"),
+              actionOverride,
+              actionOverride
+                  ? stringProperty(submitter, "submitter => submitter.formAction")
+                  : null,
+              methodOverride,
+              methodOverride
+                  ? stringProperty(submitter, "submitter => submitter.formMethod")
+                  : null);
+    } catch (VulcanAuthenticationException exception) {
+      throw exception;
+    } catch (RuntimeException exception) {
+      throw unsupported();
+    }
+  }
+
+  private void observeAuthenticatedRequest(
+      Request observed, List<BrowserRequestObservation> observations) {
+    try {
+      URI uri = URI.create(observed.url());
+      if (!portalUrls.isAllowed(uri)) {
+        return;
+      }
+      BrowserRequestObservation observation =
+          new BrowserRequestObservation(
+              uri,
+              observed.headerValue("referer"),
+              observed.headerValue("x-v-requestverificationtoken"),
+              observed.headerValue("x-v-appguid"));
+      if (observation.isComplete()) {
+        observations.add(observation);
+      }
+    } catch (RuntimeException ignored) {
+      // Malformed or incomplete metadata is discarded immediately.
+    }
+  }
+
+  private void guardCredentialRequest(Route route) {
+    URI destination;
+    try {
+      destination = URI.create(route.request().url());
+    } catch (RuntimeException exception) {
+      route.abort();
+      return;
+    }
+    if (portalUrls.isAllowed(destination)) {
+      route.resume();
+    } else {
+      route.abort();
+    }
+  }
+
+  private static String stringProperty(Locator locator, String expression) {
+    Object value = locator.evaluate(expression);
+    if (!(value instanceof String text)) {
+      throw unsupported();
+    }
+    return text;
+  }
+
+  private static VulcanAuthenticationException unsupported() {
+    return new VulcanAuthenticationException(VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
   }
 
   private void locateDirectLogin(Page page) {
@@ -137,8 +225,7 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
       BrowserContext context, List<BrowserRequestObservation> observations) {
     for (int index = observations.size() - 1; index >= 0; index--) {
       BrowserRequestObservation observation = observations.get(index);
-      if (observation.header("x-v-requestverificationtoken") == null
-          || observation.header("x-v-appguid") == null) {
+      if (!observation.isComplete()) {
         continue;
       }
       URI origin = toOrigin(observation.uri());
@@ -157,4 +244,7 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
       throw new VulcanAuthenticationException(VulcanAuthFailureCategory.PROTOCOL_FAILURE);
     }
   }
+
+  private record VerifiedLoginForm(
+      Locator form, Locator username, Locator password, Locator submitter) {}
 }

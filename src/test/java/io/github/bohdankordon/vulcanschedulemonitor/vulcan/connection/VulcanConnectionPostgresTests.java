@@ -74,6 +74,8 @@ class VulcanConnectionPostgresTests extends PostgresIntegrationTestSupport {
     fakes.barrier = null;
     fakes.authenticationCalls = 0;
     fakes.verifierFailure.set(false);
+    fakes.capturedCookie.set("session=before");
+    fakes.verifiedCookie.set("session=after");
   }
 
   @AfterEach
@@ -147,6 +149,42 @@ class VulcanConnectionPostgresTests extends PostgresIntegrationTestSupport {
     assertNoPlaintextMarkers();
     assertThat(sessions.recover(accountId()))
         .isEqualTo(VulcanSessionManager.RecoveryResult.RECOVERED);
+  }
+
+  @Test
+  void connectionEncryptsPostVerificationSessionSnapshot() {
+    long userId = register(24);
+    fakes.capturedCookie.set("session=before-connect-verification");
+    fakes.verifiedCookie.set("session=after-connect-verification");
+
+    assertThat(connect(issue(userId)).status()).isEqualTo(ConnectOutcome.Status.SUCCESS);
+
+    assertThat(sessions.loadCurrent(accountId()).snapshotMaterial().cookieHeader())
+        .contains("session=after-connect-verification")
+        .doesNotContain("session=before-connect-verification");
+  }
+
+  @Test
+  void explicitRecoveryEncryptsPostVerificationSessionSnapshot() {
+    long userId = register(25);
+    assertThat(
+            connections
+                .connect(
+                    issue(userId),
+                    "https://school.vulcan.net.pl/tenant/",
+                    "synthetic-login",
+                    "synthetic-password".toCharArray(),
+                    true)
+                .status())
+        .isEqualTo(ConnectOutcome.Status.SUCCESS);
+    fakes.capturedCookie.set("session=before-recovery-verification");
+    fakes.verifiedCookie.set("session=after-recovery-verification");
+
+    assertThat(sessions.recover(accountId()))
+        .isEqualTo(VulcanSessionManager.RecoveryResult.RECOVERED);
+    assertThat(sessions.loadCurrent(accountId()).snapshotMaterial().cookieHeader())
+        .contains("session=after-recovery-verification")
+        .doesNotContain("session=before-recovery-verification");
   }
 
   @Test
@@ -342,7 +380,8 @@ class VulcanConnectionPostgresTests extends PostgresIntegrationTestSupport {
         .doesNotContain(
             "plain-login-marker",
             "plain-password-marker",
-            "synthetic-cookie",
+            "session=before",
+            "session=after",
             "synthetic-verification");
   }
 
@@ -374,6 +413,8 @@ class VulcanConnectionPostgresTests extends PostgresIntegrationTestSupport {
     private final AtomicReference<VulcanAuthFailureCategory> mode = new AtomicReference<>();
     private final AtomicReference<List<SchoolClass>> classes = new AtomicReference<>();
     private final AtomicBoolean verifierFailure = new AtomicBoolean();
+    private final AtomicReference<String> capturedCookie = new AtomicReference<>();
+    private final AtomicReference<String> verifiedCookie = new AtomicReference<>();
     private volatile CyclicBarrier barrier;
     private int authenticationCalls;
 
@@ -397,7 +438,7 @@ class VulcanConnectionPostgresTests extends PostgresIntegrationTestSupport {
           throw new VulcanAuthenticationException(failure);
         }
         return new VulcanSessionMaterial(
-            APP, APP, "synthetic-verification", "synthetic-guid", "unknown=synthetic-cookie");
+            APP, APP, "synthetic-verification", "synthetic-guid", capturedCookie.get());
       };
     }
 
@@ -408,7 +449,14 @@ class VulcanConnectionPostgresTests extends PostgresIntegrationTestSupport {
         if (verifierFailure.get()) {
           throw new VulcanAuthenticationException(VulcanAuthFailureCategory.PROTOCOL_FAILURE);
         }
-        return classes.get();
+        return new VerifiedVulcanSession(
+            new VulcanSessionMaterial(
+                material.applicationBaseUri(),
+                material.refererUri(),
+                material.requestVerificationToken(),
+                material.appGuid(),
+                verifiedCookie.get()),
+            classes.get());
       };
     }
 

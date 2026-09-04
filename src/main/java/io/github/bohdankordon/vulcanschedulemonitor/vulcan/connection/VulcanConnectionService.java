@@ -4,11 +4,9 @@ import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.persistenc
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.persistence.VulcanConnectionCompletion;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.token.ConnectTokenState;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.token.RawConnectToken;
-import io.github.bohdankordon.vulcanschedulemonitor.vulcan.journal.SchoolClass;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSessionMaterial;
 import java.net.URI;
 import java.util.Arrays;
-import java.util.List;
 
 public final class VulcanConnectionService {
 
@@ -53,15 +51,17 @@ public final class VulcanConnectionService {
     try (VulcanLoginRequest loginRequest =
         new VulcanLoginRequest(portalUri, login, submittedPassword)) {
       VulcanSessionMaterial session = authenticator.authenticate(loginRequest);
-      List<SchoolClass> classes = verifier.verifyAndDiscover(session);
+      VerifiedVulcanSession verified = verifier.verifyAndDiscover(session);
       RememberedCredentials remembered =
           rememberCredentials
               ? new RememberedCredentials(portalUri, login, loginRequest.password())
               : null;
       try {
-        boolean committed = completion.complete(rawToken, session, remembered, classes);
+        boolean committed =
+            completion.complete(
+                rawToken, verified.sessionMaterial(), remembered, verified.classes());
         return committed
-            ? ConnectOutcome.success(classes.size())
+            ? ConnectOutcome.success(verified.classes().size())
             : ConnectOutcome.failure(ConnectOutcome.Status.TOKEN_INVALID, false);
       } finally {
         if (remembered != null) {

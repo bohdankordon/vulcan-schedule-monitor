@@ -7,8 +7,8 @@ import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.PortalUrlV
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanAuthenticationException;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSessionMaterial;
 import java.net.URI;
+import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class VulcanSessionCaptureTest {
@@ -22,13 +22,9 @@ class VulcanSessionCaptureTest {
     BrowserRequestObservation observation =
         new BrowserRequestObservation(
             request,
-            Map.of(
-                "Referer",
-                "https://uonetplus-dziennik.vulcan.net.pl/tenant/unit/start",
-                "X-V-RequestVerificationToken",
-                "synthetic-verification",
-                "X-V-AppGuid",
-                "synthetic-guid"));
+            "https://uonetplus-dziennik.vulcan.net.pl/tenant/unit/start",
+            "synthetic-verification",
+            "synthetic-guid");
 
     VulcanSessionMaterial material =
         capture.capture(
@@ -58,19 +54,34 @@ class VulcanSessionCaptureTest {
     BrowserRequestObservation foreign =
         new BrowserRequestObservation(
             URI.create("https://attacker.example/Dziennik.mvc/GetTree"),
-            Map.of(
-                "Referer",
-                "https://attacker.example/",
-                "X-V-RequestVerificationToken",
-                "value",
-                "X-V-AppGuid",
-                "value"));
+            "https://attacker.example/",
+            "value",
+            "value");
     BrowserRequestObservation missing =
         new BrowserRequestObservation(
             URI.create("https://school.vulcan.net.pl/tenant/Dziennik.mvc/GetTree"),
-            Map.of("Referer", "https://school.vulcan.net.pl/tenant/"));
+            "https://school.vulcan.net.pl/tenant/",
+            null,
+            null);
 
     assertThatThrownBy(() -> capture.capture(List.of(foreign, missing), List.of()))
         .isInstanceOf(VulcanAuthenticationException.class);
+  }
+
+  @Test
+  void observationRetainsOnlyRequiredHeaderValuesAndRedactsDiagnostics() {
+    BrowserRequestObservation observation =
+        new BrowserRequestObservation(
+            URI.create("https://school.vulcan.net.pl/tenant/Dziennik.mvc/GetTree"),
+            "https://school.vulcan.net.pl/tenant/",
+            "synthetic-verification",
+            "synthetic-guid");
+
+    assertThat(
+            Arrays.stream(BrowserRequestObservation.class.getDeclaredFields())
+                .map(java.lang.reflect.Field::getName))
+        .containsExactlyInAnyOrder("uri", "referer", "requestVerificationToken", "appGuid");
+    assertThat(observation.toString())
+        .doesNotContain("synthetic-verification", "synthetic-guid", "school.vulcan.net.pl");
   }
 }
