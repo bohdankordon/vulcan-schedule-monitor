@@ -74,6 +74,28 @@ Secure connection is off unless `vulcan.connection.enabled=true`. Enabling it al
 .\mvnw.cmd -Dexec.mainClass=com.microsoft.playwright.CLI -Dexec.args="install chromium" exec:java
 ```
 
+## Local development
+
+Windows developers with Docker Desktop and a Java 21 JDK can start the complete local stack from the repository root:
+
+```powershell
+.\scripts\dev.ps1
+```
+
+The script resolves every project path from its own location, so it does not depend on the caller's current working directory when invoked through another relative or absolute path.
+
+On first use, the runner creates a stable VULCAN encryption key, asks once for the Telegram bot token without echoing it, protects both secrets with Windows DPAPI for the current user, starts a persistent PostgreSQL 18.6 container bound only to `127.0.0.1:54329`, installs the compatible Playwright Chromium build, and starts Spring Boot in the foreground. Telegram and the secure `/connect` flow are enabled, while automatic monitoring remains off for the initial authorized connection and `/classes` catalog smoke test. VULCAN credentials and the portal URL are entered only through `/connect`, never through the script.
+
+Later runs reuse the named PostgreSQL volume and the protected files under the ignored `.dev/` directory. DPAPI data is bound to the same Windows machine/user profile and is a local development convenience, not production secret storage. PostgreSQL remains running when the application stops.
+
+After the connection/catalog flow has been validated, monitoring can be enabled explicitly:
+
+```powershell
+.\scripts\dev.ps1 -EnableMonitoring
+```
+
+Replace the protected Telegram token with `.\scripts\dev.ps1 -ReconfigureTelegram`. To intentionally delete both the local database and protected secrets, run `.\scripts\dev.ps1 -ResetDevState` and type the requested `RESET` confirmation. Use `.\scripts\dev.ps1 -Help` for all runner options. The reset is coupled so a new encryption key is never silently used with ciphertext from the previous database.
+
 ## Build and test
 
 On Linux or macOS:
