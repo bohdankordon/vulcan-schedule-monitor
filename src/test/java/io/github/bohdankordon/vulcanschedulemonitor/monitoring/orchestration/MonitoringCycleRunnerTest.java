@@ -214,7 +214,8 @@ class MonitoringCycleRunnerTest {
       InMemoryStore store,
       DelayStrategy delay) {
     ScheduleChangeTracker tracker =
-        new ScheduleChangeTracker(store, new SemanticChangeHasher(), CLOCK);
+        new ScheduleChangeTracker(
+            store, new SemanticChangeHasher(), CLOCK, (scope, result, at) -> {});
     return new MonitoringCycleRunner(
         () -> targets,
         new MonitoringScopePlanner(CLOCK),

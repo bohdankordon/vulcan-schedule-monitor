@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.orchestration.MonitoringScheduler;
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.orchestration.MonitoringTargetProvider;
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.WeeklyScheduleSource;
+import io.github.bohdankordon.vulcanschedulemonitor.notification.delivery.NotificationDeliveryGateway;
+import io.github.bohdankordon.vulcanschedulemonitor.notification.delivery.NotificationOutboxDispatcher;
 import io.github.bohdankordon.vulcanschedulemonitor.testsupport.PostgresIntegrationTestSupport;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
@@ -20,9 +22,11 @@ class VulcanScheduleMonitorApplicationTests extends PostgresIntegrationTestSuppo
 
   @Test
   void contextLoadsWithMigratedSchemaValidatedByHibernate() {
-    assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("1");
+    assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("2");
     assertThat(context.getBeansOfType(MonitoringScheduler.class)).isEmpty();
     assertThat(context.getBeansOfType(MonitoringTargetProvider.class)).isEmpty();
     assertThat(context.getBeansOfType(WeeklyScheduleSource.class)).isEmpty();
+    assertThat(context.getBeansOfType(NotificationDeliveryGateway.class)).isEmpty();
+    assertThat(context.getBeansOfType(NotificationOutboxDispatcher.class)).isEmpty();
   }
 }

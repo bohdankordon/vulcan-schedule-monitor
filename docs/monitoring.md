@@ -35,4 +35,4 @@ vulcan:
 
 When enabled, the first execution waits one configured interval. Required `MonitoringTargetProvider` and `WeeklyScheduleSource` beans must also be supplied explicitly; missing adapters fail application-context creation rather than simulating active monitoring. The application does not read browser-session environment values or make VULCAN calls during normal default startup.
 
-The current deployment assumption is one application instance. There is no distributed scheduler lock. Playwright login/re-login, credential persistence, a real subscription provider, `RefreshSession` keepalive, notification outbox, Telegram delivery, and production deployment are intentionally deferred.
+The current deployment assumption is one application instance. There is no distributed scheduler lock. Successful reconciliation now appends durable notification intent to the implemented transactional outbox, but this monitoring scheduler does not dispatch it. Playwright login/re-login, credential persistence, a real subscription provider, `RefreshSession` keepalive, Telegram delivery, outbox dispatch scheduling, and production deployment are intentionally deferred.
