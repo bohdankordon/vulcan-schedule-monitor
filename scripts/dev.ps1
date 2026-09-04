@@ -480,6 +480,44 @@ function Reset-LocalDevState {
     return $true
 }
 
+function Invoke-MavenWrapper {
+    param(
+        [Parameter(Mandatory)][string]$RepositoryRoot,
+        [Parameter(Mandatory)][string[]]$ArgumentList
+    )
+
+    $mavenWrapper = Join-Path $RepositoryRoot "mvnw.cmd"
+    $quote = [string][char]34
+    $quotedArguments = $ArgumentList | ForEach-Object {
+        if ($_.Contains($quote)) {
+            throw "Maven Wrapper arguments must not contain quotation marks."
+        }
+        $quote + $_ + $quote
+    }
+    $command = $quote + $mavenWrapper + $quote + " " + ($quotedArguments -join " ")
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $env:ComSpec
+    $startInfo.Arguments = "/d /s /c $quote$command$quote"
+    $startInfo.WorkingDirectory = $RepositoryRoot
+    $startInfo.UseShellExecute = $false
+
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) {
+            throw "start failed"
+        }
+        $process.WaitForExit()
+        return $process.ExitCode
+    }
+    catch {
+        throw "Maven Wrapper could not be started."
+    }
+    finally {
+        $process.Dispose()
+    }
+}
+
 function Ensure-PlaywrightChromium {
     param(
         [Parameter(Mandatory)][string]$RepositoryRoot,
@@ -492,18 +530,19 @@ function Ensure-PlaywrightChromium {
     }
 
     Write-Host "Ensuring Playwright Chromium is installed..."
-    Push-Location $RepositoryRoot
     try {
-        & (Join-Path $RepositoryRoot "mvnw.cmd") `
-            -Dexec.mainClass=com.microsoft.playwright.CLI `
-            '-Dexec.args=install chromium' `
-            exec:java
-        if ($LASTEXITCODE -ne 0) {
+        $exitCode = Invoke-MavenWrapper `
+            -RepositoryRoot $RepositoryRoot `
+            -ArgumentList @(
+                "-Dexec.mainClass=com.microsoft.playwright.CLI",
+                "-Dexec.args=install chromium",
+                "exec:java")
+        if ($exitCode -ne 0) {
             throw "Playwright Chromium installation failed."
         }
     }
-    finally {
-        Pop-Location
+    catch {
+        throw "Playwright Chromium installation failed."
     }
 }
 
