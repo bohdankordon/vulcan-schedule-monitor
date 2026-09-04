@@ -19,6 +19,13 @@ playwright/.auth/
 **/playwright/.auth/
 storage-state.json
 *-storage-state.json
+storageState*.json
+playwright-report/
+test-results/
+*.trace
+trace.zip
+screenshots/
+videos/
 
 # IDE and operating-system files
 .idea/

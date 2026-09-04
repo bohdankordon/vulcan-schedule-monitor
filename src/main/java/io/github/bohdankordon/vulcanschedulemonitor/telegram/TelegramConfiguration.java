@@ -25,6 +25,8 @@ import io.github.bohdankordon.vulcanschedulemonitor.telegram.update.TelegramUpda
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.update.TelegramUpdateRouter;
 import io.github.bohdankordon.vulcanschedulemonitor.users.TelegramIdentityRegistration;
 import io.github.bohdankordon.vulcanschedulemonitor.users.TelegramRecipientDirectory;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanConnectionStatusService;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.token.VulcanConnectLinkService;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
@@ -86,13 +88,14 @@ public class TelegramConfiguration {
   }
 
   @Bean
-  TelegramCommandHandler connectCommandHandler() {
-    return new ConnectCommandHandler();
+  TelegramCommandHandler connectCommandHandler(VulcanConnectLinkService links) {
+    return new ConnectCommandHandler(links);
   }
 
   @Bean
-  TelegramCommandHandler statusCommandHandler(MonitoringSubscriptionService subscriptions) {
-    return new StatusCommandHandler(subscriptions);
+  TelegramCommandHandler statusCommandHandler(
+      MonitoringSubscriptionService subscriptions, VulcanConnectionStatusService connections) {
+    return new StatusCommandHandler(subscriptions, connections);
   }
 
   @Bean

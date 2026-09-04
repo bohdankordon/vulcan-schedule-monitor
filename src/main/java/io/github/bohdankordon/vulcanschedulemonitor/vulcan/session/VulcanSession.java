@@ -7,6 +7,7 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.http.HttpClient;
 import java.util.Objects;
+import java.util.stream.Collectors;
 import org.springframework.http.HttpHeaders;
 
 /** An already authenticated, isolated VULCAN browser session. */
@@ -45,6 +46,30 @@ public final class VulcanSession {
       URI refererUri) {
     return new VulcanSession(
         applicationBaseUri, requestVerificationToken, appGuid, browserCookieHeader, refererUri);
+  }
+
+  public static VulcanSession fromMaterial(VulcanSessionMaterial material) {
+    Objects.requireNonNull(material, "material must not be null");
+    return new VulcanSession(
+        material.applicationBaseUri(),
+        material.requestVerificationToken(),
+        material.appGuid(),
+        material.cookieHeader(),
+        material.refererUri());
+  }
+
+  /** Captures current cookies too, including rotations received by the HTTP client. */
+  public VulcanSessionMaterial snapshotMaterial() {
+    String cookieHeader =
+        cookieManager.getCookieStore().getCookies().stream()
+            .map(cookie -> cookie.getName() + "=" + cookie.getValue())
+            .collect(Collectors.joining("; "));
+    return new VulcanSessionMaterial(
+        applicationBaseUri,
+        refererUri,
+        requestVerificationToken.value(),
+        appGuid.value(),
+        cookieHeader);
   }
 
   public static VulcanSession fromBrowserSession(

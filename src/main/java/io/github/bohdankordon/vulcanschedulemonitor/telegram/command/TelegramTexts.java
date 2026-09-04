@@ -4,7 +4,8 @@ public final class TelegramTexts {
 
   public static final String START =
       "Welcome to Vulcan Schedule Monitor. Schedule notifications are supported. "
-          + "Secure VULCAN account connection and class selection are not available in this build. "
+          + "Use /connect when secure VULCAN connection is enabled. Class selection is not yet "
+          + "available. "
           + "Never send VULCAN credentials through Telegram.";
 
   public static final String HELP =
@@ -13,11 +14,11 @@ public final class TelegramTexts {
           + "/help - show supported commands\n"
           + "/status - show connection and monitoring status\n"
           + "/subscriptions - list monitored schedule references\n"
-          + "/connect - explain the planned secure connection flow";
+          + "/connect - obtain a short-lived secure connection link";
 
-  public static final String CONNECT =
-      "Secure VULCAN connection is not available yet. When implemented, credentials will be "
-          + "entered on our HTTPS web page. Never send credentials through Telegram.";
+  public static final String CONNECT_DISABLED =
+      "Secure VULCAN connection is disabled by the operator. Credentials belong only on the "
+          + "HTTPS web page when enabled. Never send credentials through Telegram.";
 
   private TelegramTexts() {}
 }
