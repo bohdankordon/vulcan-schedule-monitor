@@ -27,6 +27,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.annotation.Transactional;
 
 @SpringBootTest
 @Import(ScheduleChangeTrackerPostgresTests.TestClockConfiguration.class)
@@ -39,10 +40,10 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
   private static final Instant SECOND_FETCH = Instant.parse("2026-09-04T09:00:00Z");
   private static final Instant THIRD_FETCH = Instant.parse("2026-09-04T10:00:00Z");
 
-  @Autowired private ActiveChangeStore store;
   @Autowired private JdbcTemplate jdbc;
   @Autowired private ScheduleChangeTracker tracker;
   @Autowired private MutableClock clock;
+  @Autowired private PersistenceRollbackProbe rollbackProbe;
 
   private final SemanticChangeHasher hasher = new SemanticChangeHasher();
 
@@ -211,6 +212,25 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
   }
 
   @Test
+  void persistenceFailureAfterFlushedReplacementWorkRollsBackEntireTransaction() {
+    ScheduleChange existing = substitution(10L, 20L, 30L, 40L, "T2", "S2");
+    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(snapshot(existing));
+    Map<String, Object> before = databaseState();
+
+    assertThatThrownBy(() -> rollbackProbe.replaceWithInvalidFingerprint(scope(), SECOND_FETCH))
+        .isInstanceOf(DataIntegrityViolationException.class);
+
+    assertThat(databaseState()).isEqualTo(before);
+    assertThat(jdbc.queryForObject("SELECT count(*) FROM schedule_change_state", Integer.class))
+        .isOne();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT count(*) FROM schedule_change_state WHERE length(fingerprint) > 64",
+                Integer.class))
+        .isZero();
+  }
+
+  @Test
   void failedFetchNeverInvokesSuccessfulReconciliationOrResolvesActiveState() {
     ScheduleChange existing = substitution(10L, 20L, 30L, 40L, "T2", "S2");
     trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(snapshot(existing));
@@ -261,6 +281,36 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
                            lesson_period_id, group_id, subject_id, first_seen_at, last_seen_at
                     FROM schedule_change_state
                     """))
+        .isInstanceOf(DataIntegrityViolationException.class);
+  }
+
+  @Test
+  void databaseEnforcesBaselineSuccessTimestampInvariant() {
+    assertThatThrownBy(
+            () ->
+                jdbc.update(
+                    """
+                    INSERT INTO tracking_scope
+                      (journal_id, week_start, week_end, baseline_established, last_success_at)
+                    VALUES (?, ?, ?, TRUE, NULL)
+                    """,
+                    1001L,
+                    WEEK_START,
+                    WEEK_END))
+        .isInstanceOf(DataIntegrityViolationException.class);
+
+    assertThatThrownBy(
+            () ->
+                jdbc.update(
+                    """
+                    INSERT INTO tracking_scope
+                      (journal_id, week_start, week_end, baseline_established, last_success_at)
+                    VALUES (?, ?, ?, FALSE, ?)
+                    """,
+                    1002L,
+                    WEEK_START,
+                    WEEK_END,
+                    Timestamp.from(FIRST_FETCH)))
         .isInstanceOf(DataIntegrityViolationException.class);
   }
 
@@ -343,6 +393,34 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
     @Primary
     MutableClock mutableClock() {
       return new MutableClock(FIRST_FETCH);
+    }
+
+    @Bean
+    PersistenceRollbackProbe persistenceRollbackProbe(ActiveChangeStore store) {
+      return new PersistenceRollbackProbe(store);
+    }
+  }
+
+  static class PersistenceRollbackProbe {
+
+    private final ActiveChangeStore store;
+
+    PersistenceRollbackProbe(ActiveChangeStore store) {
+      this.store = store;
+    }
+
+    @Transactional
+    public void replaceWithInvalidFingerprint(TrackingScope scope, Instant attemptedAt) {
+      TrackingState previous = store.lockOrCreate(scope);
+      ActiveChangeState active = previous.activeChanges().getFirst();
+      ActiveChangeState invalidReplacement =
+          new ActiveChangeState(
+              active.changeKey(),
+              "f".repeat(65),
+              active.metadata(),
+              active.firstSeenAt(),
+              attemptedAt);
+      store.save(new TrackingState(scope, true, attemptedAt, List.of(invalidReplacement)));
     }
   }
 

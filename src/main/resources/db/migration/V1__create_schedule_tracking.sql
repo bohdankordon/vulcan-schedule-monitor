@@ -7,7 +7,9 @@ CREATE TABLE tracking_scope (
     last_success_at TIMESTAMPTZ,
     version BIGINT NOT NULL DEFAULT 0,
     CONSTRAINT uq_tracking_scope_journal_week UNIQUE (journal_id, week_start),
-    CONSTRAINT ck_tracking_scope_week_range CHECK (week_end = week_start + 6)
+    CONSTRAINT ck_tracking_scope_week_range CHECK (week_end = week_start + 6),
+    CONSTRAINT ck_tracking_scope_baseline_success
+        CHECK (baseline_established = (last_success_at IS NOT NULL))
 );
 
 CREATE TABLE schedule_change_state (
