@@ -17,6 +17,7 @@ import io.github.bohdankordon.vulcanschedulemonitor.schedule.model.LessonOccurre
 import io.github.bohdankordon.vulcanschedulemonitor.schedule.model.ScheduleSnapshot;
 import io.github.bohdankordon.vulcanschedulemonitor.testsupport.PostgresIntegrationTestSupport;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanHttpException;
+import java.sql.Date;
 import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Duration;
@@ -29,6 +30,7 @@ import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
@@ -53,12 +55,15 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
   @Autowired private ScheduleChangeTracker tracker;
   @Autowired private MutableClock clock;
   @Autowired private PersistenceRollbackProbe rollbackProbe;
+  @Autowired private FailingTrackingEventOutbox failingOutbox;
 
   private final SemanticChangeHasher hasher = new SemanticChangeHasher();
 
   @BeforeEach
   void clearDatabase() {
+    jdbc.update("DELETE FROM notification_outbox");
     jdbc.update("DELETE FROM tracking_scope");
+    failingOutbox.reset();
   }
 
   @Test
@@ -72,6 +77,12 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
             jdbc.queryForObject("SELECT baseline_established FROM tracking_scope", Boolean.class))
         .isTrue();
     assertThat(timestamp("SELECT last_success_at FROM tracking_scope")).isEqualTo(FIRST_FETCH);
+    assertThat(
+            jdbc.queryForMap(
+                "SELECT event_type, active_change_count, created_at FROM notification_outbox"))
+        .containsEntry("event_type", "BASELINE_ESTABLISHED")
+        .containsEntry("active_change_count", 0)
+        .containsEntry("created_at", Timestamp.from(FIRST_FETCH));
   }
 
   @Test
@@ -84,6 +95,12 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
     assertThat(result.activeChangeCount()).isOne();
     assertThat(result.transitions()).isEmpty();
     assertThat(jdbc.queryForObject("SELECT count(*) FROM schedule_change_state", Integer.class))
+        .isOne();
+    assertThat(jdbc.queryForList("SELECT event_type FROM notification_outbox", String.class))
+        .containsExactly("BASELINE_ESTABLISHED");
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT active_change_count FROM notification_outbox", Integer.class))
         .isOne();
   }
 
@@ -98,6 +115,8 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
     assertThat(result.transitions()).isEmpty();
     assertThat(timestamp("SELECT first_seen_at FROM schedule_change_state")).isEqualTo(FIRST_FETCH);
     assertThat(timestamp("SELECT last_seen_at FROM schedule_change_state")).isEqualTo(SECOND_FETCH);
+    assertThat(jdbc.queryForObject("SELECT count(*) FROM notification_outbox", Integer.class))
+        .isOne();
   }
 
   @Test
@@ -116,6 +135,7 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
             });
     assertThat(jdbc.queryForObject("SELECT count(*) FROM schedule_change_state", Integer.class))
         .isOne();
+    assertLatestOutboxEvent("CHANGE_NEW", SECOND_FETCH);
   }
 
   @Test
@@ -135,6 +155,7 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
     assertThat(jdbc.queryForObject("SELECT fingerprint FROM schedule_change_state", String.class))
         .isEqualTo(hasher.fingerprint(updated));
     assertThat(timestamp("SELECT first_seen_at FROM schedule_change_state")).isEqualTo(FIRST_FETCH);
+    assertLatestOutboxEvent("CHANGE_UPDATED", SECOND_FETCH);
   }
 
   @Test
@@ -154,6 +175,7 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
             });
     assertThat(jdbc.queryForObject("SELECT count(*) FROM schedule_change_state", Integer.class))
         .isZero();
+    assertLatestOutboxEvent("CHANGE_RESOLVED", SECOND_FETCH);
 
     TrackingResult reappeared =
         trackerAt(THIRD_FETCH).reconcileSuccessfulSnapshot(snapshot(change));
@@ -180,6 +202,11 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
             jdbc.queryForList(
                 "SELECT group_id FROM schedule_change_state ORDER BY group_id", Long.class))
         .containsExactly(40L, 41L);
+    assertThat(
+            jdbc.queryForList(
+                "SELECT event_type FROM notification_outbox WHERE event_type <> 'BASELINE_ESTABLISHED' ORDER BY id",
+                String.class))
+        .containsExactly("CHANGE_NEW", "CHANGE_NEW");
   }
 
   @Test
@@ -202,6 +229,11 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
                 "SELECT group_id FROM schedule_change_state ORDER BY group_id", Long.class))
         .containsExactly(40L, 41L, 43L);
     assertThat(timestamp("SELECT last_success_at FROM tracking_scope")).isEqualTo(SECOND_FETCH);
+    assertThat(
+            jdbc.queryForList(
+                "SELECT event_type FROM notification_outbox WHERE event_type <> 'BASELINE_ESTABLISHED' ORDER BY id",
+                String.class))
+        .containsExactly("CHANGE_UPDATED", "CHANGE_NEW", "CHANGE_RESOLVED");
   }
 
   @Test
@@ -218,6 +250,8 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
         .hasMessageNotContaining("S2");
 
     assertThat(databaseState()).isEqualTo(before);
+    assertThat(jdbc.queryForObject("SELECT count(*) FROM notification_outbox", Integer.class))
+        .isOne();
   }
 
   @Test
@@ -240,6 +274,24 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
   }
 
   @Test
+  void outboxFailureAfterRealInsertRollsBackTrackingAndNotificationIntentTogether() {
+    ScheduleChange original = substitution(10L, 20L, 30L, 40L, "T2", "S2");
+    ScheduleChange updated = substitution(10L, 20L, 30L, 40L, "T3", "S3");
+    trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(snapshot(original));
+    Map<String, Object> before = databaseState();
+    failingOutbox.failAfterNextDelegate();
+
+    assertThatThrownBy(() -> trackerAt(SECOND_FETCH).reconcileSuccessfulSnapshot(snapshot(updated)))
+        .isInstanceOf(SyntheticOutboxFailure.class);
+
+    assertThat(databaseState()).isEqualTo(before);
+    assertThat(
+            jdbc.queryForList(
+                "SELECT event_type FROM notification_outbox ORDER BY id", String.class))
+        .containsExactly("BASELINE_ESTABLISHED");
+  }
+
+  @Test
   void failedFetchNeverInvokesSuccessfulReconciliationOrResolvesActiveState() {
     ScheduleChange existing = substitution(10L, 20L, 30L, 40L, "T2", "S2");
     trackerAt(FIRST_FETCH).reconcileSuccessfulSnapshot(snapshot(existing));
@@ -257,6 +309,8 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
 
     assertThat(databaseState()).isEqualTo(before);
     assertThat(jdbc.queryForObject("SELECT count(*) FROM schedule_change_state", Integer.class))
+        .isOne();
+    assertThat(jdbc.queryForObject("SELECT count(*) FROM notification_outbox", Integer.class))
         .isOne();
   }
 
@@ -299,6 +353,8 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
         .containsOnly(0);
     assertThat(databaseState()).isEqualTo(before);
     assertThat(jdbc.queryForObject("SELECT count(*) FROM schedule_change_state", Integer.class))
+        .isOne();
+    assertThat(jdbc.queryForObject("SELECT count(*) FROM notification_outbox", Integer.class))
         .isOne();
   }
 
@@ -393,6 +449,46 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
             "first_seen_at",
             "last_seen_at")
         .noneMatch(name -> name.contains("annotation") || name.contains("teacher"));
+
+    List<String> outboxColumns =
+        jdbc.queryForList(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'notification_outbox'
+            ORDER BY ordinal_position
+            """,
+            String.class);
+    assertThat(outboxColumns)
+        .containsExactly(
+            "id",
+            "event_type",
+            "journal_id",
+            "week_start",
+            "week_end",
+            "active_change_count",
+            "change_key",
+            "change_type",
+            "lesson_date",
+            "lesson_period_id",
+            "group_id",
+            "subject_id",
+            "status",
+            "attempt_count",
+            "next_attempt_at",
+            "lease_until",
+            "claim_token",
+            "created_at",
+            "delivered_at",
+            "last_failure_category")
+        .doesNotContain(
+            "raw_annotation",
+            "teacher_id",
+            "teacher_name",
+            "cookies",
+            "token",
+            "response_body",
+            "snapshot_json");
   }
 
   private ScheduleChangeTracker trackerAt(Instant instant) {
@@ -402,6 +498,25 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
 
   private Instant timestamp(String sql) {
     return jdbc.queryForObject(sql, Timestamp.class).toInstant();
+  }
+
+  private void assertLatestOutboxEvent(String eventType, Instant createdAt) {
+    assertThat(
+            jdbc.queryForMap(
+                """
+                SELECT event_type, journal_id, week_start, week_end, change_key, change_type,
+                       lesson_date, lesson_period_id, group_id, subject_id, created_at
+                FROM notification_outbox ORDER BY id DESC LIMIT 1
+                """))
+        .containsEntry("event_type", eventType)
+        .containsEntry("journal_id", JOURNAL_ID)
+        .containsEntry("week_start", Date.valueOf(WEEK_START))
+        .containsEntry("week_end", Date.valueOf(WEEK_END))
+        .containsEntry("change_type", "TEACHER_SUBSTITUTION")
+        .containsEntry("lesson_period_id", 3L)
+        .containsEntry("group_id", 40L)
+        .containsEntry("subject_id", 10L)
+        .containsEntry("created_at", Timestamp.from(createdAt));
   }
 
   private Map<String, Object> databaseState() {
@@ -450,7 +565,44 @@ class ScheduleChangeTrackerPostgresTests extends PostgresIntegrationTestSupport 
     PersistenceRollbackProbe persistenceRollbackProbe(ActiveChangeStore store) {
       return new PersistenceRollbackProbe(store);
     }
+
+    @Bean
+    @Primary
+    FailingTrackingEventOutbox failingTrackingEventOutbox(
+        @Qualifier("jpaTrackingEventOutbox") TrackingEventOutbox delegate) {
+      return new FailingTrackingEventOutbox(delegate);
+    }
   }
+
+  static final class FailingTrackingEventOutbox implements TrackingEventOutbox {
+
+    private final TrackingEventOutbox delegate;
+    private boolean failAfterDelegate;
+
+    FailingTrackingEventOutbox(TrackingEventOutbox delegate) {
+      this.delegate = delegate;
+    }
+
+    void failAfterNextDelegate() {
+      failAfterDelegate = true;
+    }
+
+    void reset() {
+      failAfterDelegate = false;
+    }
+
+    @Override
+    public void recordReconciliation(
+        TrackingScope scope, TrackingResult result, Instant occurredAt) {
+      delegate.recordReconciliation(scope, result, occurredAt);
+      if (failAfterDelegate) {
+        failAfterDelegate = false;
+        throw new SyntheticOutboxFailure();
+      }
+    }
+  }
+
+  static final class SyntheticOutboxFailure extends RuntimeException {}
 
   static class PersistenceRollbackProbe {
 
