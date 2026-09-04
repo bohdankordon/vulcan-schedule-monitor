@@ -1,3 +1,7 @@
 spring:
   application:
     name: vulcan-schedule-monitor
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
