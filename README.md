@@ -10,7 +10,7 @@ An unofficial Java service for monitoring school schedule changes available thro
 
 ## Status
 
-The project is in early development. Its read-only integration slice can use an already authenticated browser session to discover journals and retrieve a synthetic-tested weekly schedule. Successful weekly snapshots can now establish a PostgreSQL-backed baseline and reconcile current schedule changes as `NEW`, `UPDATED`, or `RESOLVED`. Automated authentication, scheduled polling, APIs, and notifications are not implemented yet.
+The project is in early development. Its read-only integration slice can use an already authenticated browser session to discover journals and retrieve a synthetic-tested weekly schedule. Successful weekly snapshots establish a PostgreSQL-backed baseline and reconcile current schedule changes as `NEW`, `UPDATED`, or `RESOLVED`. A disabled-by-default monitoring foundation can plan and safely execute current- and next-week refreshes when application code explicitly supplies both a target provider and an authorized weekly source. Automated authentication, production subscriptions, APIs, and notifications are not implemented yet.
 
 ## Purpose and planned capabilities
 
@@ -27,7 +27,7 @@ The project aims to provide a privacy-conscious service that can:
 
 Vulcan Schedule Monitor is a modular monolith with feature-oriented packages. Its VULCAN adapter translates browser-observed payloads into small internal schedule and change models. Tracking logic uses a persistence port; JPA entities remain internal to the PostgreSQL adapter.
 
-See [Architecture](docs/architecture.md), [Persistent change tracking](docs/change-tracking.md), [Unofficial VULCAN protocol notes](docs/vulcan-protocol.md), and [Manual session setup](docs/manual-session.md).
+See [Architecture](docs/architecture.md), [Monitoring orchestration](docs/monitoring.md), [Persistent change tracking](docs/change-tracking.md), [Unofficial VULCAN protocol notes](docs/vulcan-protocol.md), and [Manual session setup](docs/manual-session.md).
 
 ## Technology
 
@@ -58,6 +58,8 @@ SPRING_DATASOURCE_PASSWORD=<password>
 ```
 
 No database credentials or environment-specific URLs are stored in the repository. Docker is required only to run the PostgreSQL integration tests locally.
+
+Monitoring is off unless `vulcan.monitoring.enabled=true` is set. Enabling it also requires application-provided `MonitoringTargetProvider` and `WeeklyScheduleSource` beans; the repository deliberately provides neither a production subscription provider nor an automatically constructed VULCAN session. The default polling interval is `PT5M`.
 
 ## Build and test
 
