@@ -16,7 +16,9 @@ Observed browser behavior uses week-sized date ranges for schedule requests. Lon
 
 Observed as a bootstrap/configuration request that supplies lesson-period definitions and configuration related to the current school year.
 
-`IdPoraLekcji` is an opaque external identifier. It must be resolved through returned lesson-period data; a lesson number must never be calculated arithmetically from this identifier.
+**Implemented now:** the read-only adapter supplies the observed cache-buster, validates the response envelope, and maps the current school year plus lesson period `Id`, `Numer`, `Poczatek`, and `Koniec` fields. The synthetic legacy date portion of the time values is discarded.
+
+`Numer` is not required to be positive: `0` is an observed valid lesson number for a pre-first-lesson slot. `IdPoraLekcji` remains an opaque external identifier and must be resolved through returned lesson-period data; `Numer` must never be calculated arithmetically from this identifier.
 
 ### `Dziennik.mvc/GetTree`
 
@@ -30,6 +32,10 @@ Observed as discovery of journals and classes available to the authenticated acc
 
 `IdDziennik` must be discovered for the current account context and must never be hard-coded.
 
+The observed response is the tree object itself, with `children` at its direct root; this endpoint is not treated as a generic `success`/`data` envelope. Its `zadanaData` request parameter contains the current local date and time rather than local midnight.
+
+**Implemented now:** recursive traversal starts at that direct root and handles objects, dictionary-like children, and arrays. Only nodes explicitly reporting an existing journal are mapped into the protocol-independent class model. The cache-buster and Warsaw-local `zadanaData` timestamp come from the same injected clock.
+
 ### `PlanLekcji.mvc/GetContext`
 
 Observed as a full schedule context containing schedule entries, changed or effective entries, and lookup/reference data. Its intended future role is bootstrap or full-context synchronization, not frequent polling.
@@ -37,6 +43,8 @@ Observed as a full schedule context containing schedule entries, changed or effe
 ### `PlanLekcji.mvc/GetPlanLekcjiContext`
 
 Observed as a lighter schedule response containing the base schedule, schedule with changes, and days off. Its intended future role is regular schedule monitoring using the week-sized ranges observed in the browser.
+
+**Implemented now:** callers provide a journal discovered from `GetTree` and a date within the requested week. The adapter derives Monday and Sunday boundaries, sends all date form values at local midnight, and preserves the supplied date as the browser-style `data` anchor inside that week. This is response retrieval only, not scheduled polling.
 
 ### `Home.mvc/RefreshSession`
 
@@ -48,7 +56,7 @@ Observed responses distinguish a base schedule from an effective schedule that i
 
 - `CzyZmiana`, indicating change-related presentation or state;
 - `IdPozycjiPlanu`, which can correlate an effective entry with a base-plan entry within the response;
-- `ChangeAnnotation`, carrying human-readable change context;
+- `ChangeAnnotation`, an array containing zero or more human-readable annotation strings;
 - `Bolded`, a presentation cue; and
 - `Striked`, a presentation cue for replaced or inactive information.
 
@@ -56,6 +64,12 @@ Substitution annotations may describe that one teacher or lesson replaces anothe
 
 External identifiers are protocol-level values. No internal VULCAN identifier should be assumed to be a stable business identifier across weeks without additional evidence and an explicit design decision.
 
+**Implemented now:** base `Id` and effective `IdPozycjiPlanu` values are used only inside the adapter for correlation within one response. Multiple effective rows are retained. Empty, single-entry, and multiple-entry `ChangeAnnotation` arrays are supported, and every non-empty annotation is considered. A recognized synthetic `zastępstwo: [TEACHER_CODE], subject_code` annotation becomes a teacher-substitution change; unknown annotations and marker-only changes become explicit unknown changes rather than being discarded.
+
+Each extracted change retains protocol-independent planned and effective lesson occurrences when available. This context distinguishes group or subject occurrences that share a date and lesson period without exposing the response's correlation row IDs. Unparsed annotations are retained transiently for investigation through an explicit accessor, but their raw content is redacted from diagnostics and must not automatically be logged or persisted.
+
 ## Intended integration posture
 
-Future integration will keep browser-observed DTOs at the system boundary and translate them into internal models. Full context retrieval and lighter monitoring retrieval have different observed responsibilities and should be used accordingly. Any implementation must fail safely when an endpoint or payload changes, avoid unnecessary requests, and avoid logging sensitive response content.
+The integration keeps browser-observed fields at the system boundary and translates them into internal models. Full context retrieval and lighter monitoring retrieval have different observed responsibilities and should be used accordingly. The current implementation fails safely when an expected envelope or mapped field changes and does not place response bodies in exceptions.
+
+`PlanLekcji.mvc/GetContext` and `Home.mvc/RefreshSession` remain documented observations only. Automated login/re-login, session touching, scheduled monitoring, cross-poll change detection, persistence, and notifications are still planned.

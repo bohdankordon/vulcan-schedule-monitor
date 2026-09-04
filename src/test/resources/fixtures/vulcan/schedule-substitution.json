@@ -1,0 +1,38 @@
+{
+  "success": true,
+  "data": {
+    "oddzialInfo": {},
+    "planLekcji": [
+      {
+        "Id": 7201,
+        "IdOddzial": 4301,
+        "Dzien": "2099-09-08T00:00:00",
+        "IdPoraLekcji": 850,
+        "IdPodzial": null,
+        "IdPrzedmiot": 9003,
+        "IdPracownik": 9103,
+        "IdSala": 9203,
+        "CzyZmiana": true
+      }
+    ],
+    "planLekcjiZeZmianami": [
+      {
+        "Id": 7301,
+        "IdPozycjiPlanu": 7201,
+        "IdOddzial": 4301,
+        "Dzien": "2099-09-08T00:00:00",
+        "IdPoraLekcji": 850,
+        "IdPodzial": null,
+        "IdPrzedmiot": 9003,
+        "IdPracownik": 9103,
+        "IdSala": 9203,
+        "ChangeAnnotation": [
+          "zastępstwo: [T1], SUBJ_A"
+        ],
+        "Striked": false,
+        "Bolded": true
+      }
+    ],
+    "dniWolne": []
+  }
+}
