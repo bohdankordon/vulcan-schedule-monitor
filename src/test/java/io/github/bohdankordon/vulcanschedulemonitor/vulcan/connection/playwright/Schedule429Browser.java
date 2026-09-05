@@ -52,6 +52,7 @@ public final class Schedule429Browser implements AutoCloseable {
 
   private final Schedule429Budget budget;
   private final Schedule429Report report;
+  private final Runnable unexpectedScheduleTraffic;
   private Playwright playwright;
   private Browser browser;
   private BrowserContext context;
@@ -71,6 +72,24 @@ public final class Schedule429Browser implements AutoCloseable {
 
   public Schedule429Browser(
       VulcanDiagnostics diagnostics, Schedule429Report report, Schedule429Budget budget) {
+    this(diagnostics, report, budget, null);
+  }
+
+  public static Schedule429Browser authenticationOnly(
+      VulcanDiagnostics diagnostics, Schedule429Report report, Runnable unexpectedScheduleTraffic) {
+    return new Schedule429Browser(
+        diagnostics,
+        report,
+        new Schedule429Budget(),
+        java.util.Objects.requireNonNull(unexpectedScheduleTraffic));
+  }
+
+  private Schedule429Browser(
+      VulcanDiagnostics diagnostics,
+      Schedule429Report report,
+      Schedule429Budget budget,
+      Runnable unexpectedScheduleTraffic) {
+    this.unexpectedScheduleTraffic = unexpectedScheduleTraffic;
     this.portalUrls = new PortalUrlValidator();
     this.headless = true;
     this.diagnostics = diagnostics;
@@ -246,11 +265,23 @@ public final class Schedule429Browser implements AutoCloseable {
       route.abort();
       return;
     }
+    if (unexpectedScheduleTraffic != null
+        && destination.getPath().toLowerCase(Locale.ROOT).endsWith("/getplanlekcjicontext")) {
+      unexpectedScheduleTraffic.run();
+      trafficStopped = true;
+      route.abort();
+      throw new Schedule429Failure(SECURITY_INVARIANT);
+    }
     if (!portalUrls.isAllowedRuntimeUri(destination)
         || trafficStopped
         || application != null
             && (!application.getScheme().equals(destination.getScheme())
                 || !application.getRawAuthority().equals(destination.getRawAuthority()))) {
+      if (unexpectedScheduleTraffic != null && !trafficStopped) {
+        trafficStopped = true;
+        route.abort();
+        throw new Schedule429Failure(SECURITY_INVARIANT);
+      }
       if (application != null && !trafficStopped) stopUnsafeControl();
       route.abort();
       return;
@@ -365,6 +396,15 @@ public final class Schedule429Browser implements AutoCloseable {
       // No response/header/body modification; Chromium continues its own request.
       redirectGuard.send("Fetch.continueRequest", parameters);
     }
+  }
+
+  /** Pump outstanding authentication callbacks before the authentication-only context is closed. */
+  public void finishAuthenticationOnly() {
+    if (unexpectedScheduleTraffic == null) throw new Schedule429Failure(INTERNAL_INVARIANT);
+    page.waitForTimeout(100);
+    requireAllowedPage(page);
+    rejectInteractiveSecurity(page);
+    report.throwIfFailed();
   }
 
   /** Compare from the existing authenticated Page; no navigation or assumed portal UI. */

@@ -164,3 +164,61 @@ occurred. No secrets, raw provider payloads, request dumps, HAR, screenshots, tr
 artifacts were persisted. No production compatibility fix, database mutation, PR or monitoring
 change was made. Across all three diagnostic invocations, schedule traffic totals one browser
 request and zero Java requests; this excludes the separately authorized earlier monitoring runs.
+
+
+## Independent Java-only baseline
+
+A separate `-InvestigateSchedule429JavaBaseline` mode excludes browser schedule traffic as a
+possible server-state/counter/cookie confounder. The existing `-Run` and `-InvestigateSchedule429`
+flows and output protocols retain their prior behavior.
+
+The new mode authenticates once using the reviewed browser flow and captures immutable `postLogin`
+material. An authentication-only route guard aborts every observed GetPlanLekcjiContext request,
+marks `UNEXPECTED_BROWSER_SCHEDULE_TRAFFIC`, and irrevocably blocks Java. Chromium is closed before
+catalog verification, so no late browser request can occur during the Java baseline.
+
+Production GetCache/GetTree verification reconstructs its own Java session solely to discover the
+authorized catalog. One journal is selected internally. Verifier material is used only for safe
+comparison: `applicationBaseChanged`, `refererChangedExact`, `verificationTokenChanged`,
+`appGuidChanged`, `cookieMaterialChanged`, `cookieCountChanged`, cookie counts and Referer categories.
+Exact cookie-material equality includes ordering/serialization differences; no values are emitted.
+
+One nonrenewable permit then calls production `VulcanClient(VulcanSession.fromMaterial(postLogin))`
+for the selected current week. It uses neither verifier-returned material nor persisted database
+material. No browser schedule call, retry wrapper, header change, monitoring or database operation
+is involved. All browser resources are closed before this call.
+
+**Server-state limitation:** GetCache/GetTree necessarily precede the schedule request. They may
+change server-side session state even when all reported client-material comparisons are unchanged.
+Closing the browser context is local cleanup, not a portal logout. This baseline excludes browser
+schedule traffic and persisted material; it is not a completely untouched server-side login session.
+
+For 429, `retryAfterPresent` reflects the existing exception's parsed optional Duration;
+`retryAfterSeconds` reports only its nonnegative whole seconds. No raw header is inspected/output
+by the diagnostic. An absent parsed duration cannot distinguish a missing header from one rejected
+by the existing parser. HTTP-date conversion is covered by a loopback production-transport test.
+
+| Case | Java outcome | Supported next investigation |
+|---|---|---|
+| J1 | RATE_LIMITED / 429 | Fresh Java reproduces gating without browser schedule, persisted database session or scheduler; investigate transport/page context later. |
+| J2 | SUCCESS | Java can call the endpoint; compare verified/persisted state and monitoring lifecycle later. |
+| J3 | HTML, redirect or authentication failure | Investigate session/page-context semantics; no fingerprint conclusion established. |
+| J4 | Other finite failure | Report the category only. |
+
+This mode has its own finite allowlist. `result=SUCCESS` means the Java call succeeded; a classified
+HTTP failure has `result=FAIL` and `category=BASELINE_COMPLETED`, with J1/J3/J4 identifying the result.
+Unexpected browser traffic or other harness/security failures stop before Java and remain outside
+J1–J4. No raw exception, response body, cookie name, secret value or provider identifier is output.
+DPAPI CurrentUser -> redirected binary stdin remains the sole real credential boundary.
+
+```powershell
+pwsh -NoProfile -File .\scripts\vulcan-real-smoke.ps1 -InvestigateSchedule429JavaBaseline
+```
+
+Java-only verification passed: 564 Maven tests reported, zero failures/errors, four optional
+Chromium methods skipped. All 12 explicit loopback Chromium cases passed, including the
+zero-dispatch baseline guard. The 22 new baseline test cases and PowerShell contract tests
+passed; formatting and whitespace checks passed. No test made a real VULCAN call.
+
+Java-only result: pending commit/push and completion of the 15-minute quiet window. This mode
+has not yet been invoked against VULCAN. No production compatibility fix is implemented.

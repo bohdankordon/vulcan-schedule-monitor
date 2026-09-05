@@ -142,7 +142,43 @@ browser.refererContext=PLAN_PAGE
         Assert-Contract $rejected
         Assert-Contract ($script:reportWrites -eq 0)
     }
-    # Exercise both modes with a synthetic bundle and a mocked child, never real network.
+    Assert-Contract ((Invoke-VulcanRealSmoke -Run -InvestigateSchedule429JavaBaseline) -eq 2)
+    Assert-Contract ((Invoke-VulcanRealSmoke -InvestigateSchedule429 -InvestigateSchedule429JavaBaseline) -eq 2)
+    $javaBaseline = @'
+REAL VULCAN SCHEDULE 429 JAVA BASELINE
+category=BASELINE_COMPLETED
+result=FAIL
+decisionCase=J1
+javaOutcome=RATE_LIMITED
+java.statusFamily=4xx
+java.status429=true
+retryAfterPresent=true
+retryAfterSeconds=120
+javaMaterialContext=PRE_VERIFICATION_POST_LOGIN
+browserScheduleRequests=0
+javaScheduleRequests=1
+retries=0
+unexpectedBrowserScheduleTraffic=false
+browserClosedBeforeVerification=true
+'@
+    Write-Schedule429JavaBaselineReport -Output $javaBaseline -ExitCode 1
+    foreach ($bad in @(
+        $javaBaseline + "`nrawUrl=https://private.example/secret",
+        $javaBaseline.Replace('retryAfterSeconds=120','retryAfterSeconds=Sat, 05 Sep 2026 18:00:00 GMT'),
+        $javaBaseline.Replace('retryAfterSeconds=120','retryAfterSeconds=-1'),
+        $javaBaseline.Replace('retryAfterPresent=true','retryAfterPresent=false'),
+        $javaBaseline.Replace('browserScheduleRequests=0','browserScheduleRequests=1'),
+        $javaBaseline.Replace('javaScheduleRequests=1','javaScheduleRequests=2'),
+        $javaBaseline.Replace('unexpectedBrowserScheduleTraffic=false','unexpectedBrowserScheduleTraffic=true'),
+        $javaBaseline.Replace('browserClosedBeforeVerification=true','browserClosedBeforeVerification=false'))) {
+        $rejected = $false; $script:reportWrites = 0
+        function Write-Host { $script:reportWrites++ }
+        try { Write-Schedule429JavaBaselineReport -Output $bad -ExitCode 1 } catch { $rejected = $true }
+        finally { Remove-Item Function:Write-Host }
+        Assert-Contract $rejected
+        Assert-Contract ($script:reportWrites -eq 0)
+    }
+    # Exercise all modes with a synthetic bundle and a mocked child, never real network.
     Assert-Contract ((Invoke-VulcanRealSmoke -Configure) -eq 0)
     [void][IO.Directory]::CreateDirectory((Join-Path $testRoot 'target'))
     [IO.File]::WriteAllText((Join-Path $testRoot 'target/vulcan-real-smoke-classpath.txt'), 'synthetic-classpath')
@@ -159,6 +195,10 @@ browser.refererContext=PLAN_PAGE
         [Array]::Clear($InputBytes, 0, $InputBytes.Length)
         $mode = $Info.ArgumentList[$Info.ArgumentList.Count - 1]
         $script:childModes.Add($mode)
+        if ($mode -ceq '--authorized-schedule-429-java-baseline') {
+            Assert-Contract ($Info.ArgumentList -contains 'io.github.bohdankordon.vulcanschedulemonitor.devsmoke.VulcanSchedule429JavaBaseline')
+            return [pscustomobject]@{ ExitCode = 1; Output = $javaBaseline }
+        }
         if ($mode -ceq '--authorized-schedule-429-investigation') {
             Assert-Contract ($Info.ArgumentList -contains 'io.github.bohdankordon.vulcanschedulemonitor.devsmoke.VulcanSchedule429Investigation')
             return [pscustomobject]@{ ExitCode = 1; Output = $investigation }
@@ -169,7 +209,8 @@ browser.refererContext=PLAN_PAGE
     }
     Assert-Contract ((Invoke-VulcanRealSmoke -InvestigateSchedule429) -eq 1)
     Assert-Contract ((Invoke-VulcanRealSmoke -Run) -eq 0)
-    Assert-Contract ($script:childModes.Count -eq 2)
+    Assert-Contract ((Invoke-VulcanRealSmoke -InvestigateSchedule429JavaBaseline) -eq 1)
+    Assert-Contract ($script:childModes.Count -eq 3)
     Write-Host 'Synthetic PowerShell smoke contracts passed.'
 }
 finally {

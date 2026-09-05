@@ -275,6 +275,67 @@ class Schedule429LocalBrowserTest {
     }
   }
 
+  @org.junit.jupiter.api.Test
+  void javaBaselineAbortsUnexpectedBrowserScheduleBeforeDispatchAndBlocksJava() throws Exception {
+    var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    URI base = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/synthetic/");
+    var schedules = new AtomicInteger();
+    server.createContext(
+        "/",
+        exchange -> {
+          try (exchange) {
+            if (exchange.getRequestURI().getPath().endsWith("GetPlanLekcjiContext"))
+              schedules.incrementAndGet();
+            byte[] html = "<html>Local fixture</html>".getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/html");
+            exchange.sendResponseHeaders(200, html.length);
+            exchange.getResponseBody().write(html);
+          }
+        });
+    server.start();
+    try (var playwright = Playwright.create();
+        var chromium = playwright.chromium().launch();
+        var context = chromium.newContext();
+        var page = context.newPage()) {
+      var baseline =
+          new io.github.bohdankordon.vulcanschedulemonitor.devsmoke.Schedule429JavaBaselineBudget();
+      var driver =
+          Schedule429Browser.authenticationOnly(
+              VulcanDiagnostics.NONE, new Schedule429Report(), baseline::unexpectedBrowserSchedule);
+      var urls = mock(PortalUrlValidator.class);
+      when(urls.isAllowedRuntimeUri(any()))
+          .thenAnswer(
+              call -> {
+                URI uri = call.getArgument(0);
+                return uri.getScheme().equals("http")
+                    && uri.getRawAuthority().equals(base.getRawAuthority());
+              });
+      set(driver, "portalUrls", urls);
+      set(driver, "page", page);
+      set(driver, "context", context);
+      context.route("**/*", route -> invoke(driver, "guardCredentialRequest", Route.class, route));
+      page.navigate(base.resolve("index").toString());
+      // Fixture deliberately attempts an unexpected request; the real baseline has no trigger.
+      catchThrowable(
+          () ->
+              page.evaluate(
+                  "() => { void fetch('PlanLekcji.mvc/GetPlanLekcjiContext', {method:'POST'}).catch(()=>{}); }"));
+      catchThrowable(
+          () ->
+              page.waitForCondition(
+                  baseline::unexpectedBrowser,
+                  new Page.WaitForConditionOptions().setTimeout(5000)));
+      assertThat(baseline.unexpectedBrowser()).isTrue();
+      assertThat(schedules).hasValue(0);
+      assertThatThrownBy(baseline::takeJavaPermit)
+          .isInstanceOf(
+              io.github.bohdankordon.vulcanschedulemonitor.devsmoke.Schedule429Failure.class);
+      assertThat(baseline.javaRequests()).isZero();
+    } finally {
+      server.stop(0);
+    }
+  }
+
   private static void set(Object target, String name, Object value) throws Exception {
     var field = Schedule429Browser.class.getDeclaredField(name);
     field.setAccessible(true);
