@@ -6,6 +6,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import java.net.URI;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class PortalUrlValidatorTest {
 
@@ -46,5 +48,49 @@ class PortalUrlValidatorTest {
           .isInstanceOf(IllegalArgumentException.class)
           .hasMessageNotContaining(candidate);
     }
+  }
+
+  @ParameterizedTest
+  @ValueSource(
+      strings = {
+        "https://vulcan.net.pl/",
+        "https://school.vulcan.net.pl:443/login?return=%2Fstart",
+        "https://SCHOOL.VULCAN.NET.PL/start?view=week#schedule",
+        "https://school.vulcan.net.pl/#https://external.example/"
+      })
+  void acceptsRuntimeQueriesAndFragmentsWithinTheHostBoundary(String url) {
+    assertThat(validator.isAllowedRuntimeUri(URI.create(url))).isTrue();
+  }
+
+  @Test
+  void onlyRuntimePolicyAcceptsFragmentsAndBothAcceptQueries() {
+    String query = "https://school.vulcan.net.pl/login?return=%2Fstart";
+    assertThat(validator.validate(query)).isEqualTo(URI.create(query));
+    assertThat(validator.isAllowedRuntimeUri(URI.create(query + "#schedule"))).isTrue();
+    assertThatThrownBy(() -> validator.validate(query + "#schedule"))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThat(validator.isAllowedRuntimeUri(null)).isFalse();
+  }
+
+  @ParameterizedTest
+  @ValueSource(
+      strings = {
+        "http://school.vulcan.net.pl/#schedule",
+        "https://external.example/?next=https://school.vulcan.net.pl/",
+        "https://vulcan.net.pl.attacker.example/#schedule",
+        "https://fakevulcan.net.pl/",
+        "https://127.0.0.1/",
+        "https://[::1]/",
+        "https://localhost/",
+        "https://user:password@school.vulcan.net.pl/",
+        "https://school.vulcan.net.pl:8443/",
+        "file:///login",
+        "javascript:alert(1)",
+        "//school.vulcan.net.pl/",
+        "/login"
+      })
+  void runtimePolicyRetainsNetworkDestinationRestrictions(String url) {
+    assertThat(validator.isAllowedRuntimeUri(URI.create(url))).isFalse();
+    assertThatThrownBy(() -> validator.validate(url)).isInstanceOf(IllegalArgumentException.class);
   }
 }

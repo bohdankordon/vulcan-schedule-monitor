@@ -14,29 +14,24 @@ public final class PortalUrlValidator {
     } catch (IllegalArgumentException exception) {
       throw invalid();
     }
-    String host = uri.getHost();
-    if (!uri.isAbsolute()
-        || !"https".equalsIgnoreCase(uri.getScheme())
-        || host == null
-        || uri.getUserInfo() != null
-        || uri.getFragment() != null
-        || (uri.getPort() != -1 && uri.getPort() != 443)) {
-      throw invalid();
-    }
-    String normalizedHost = host.toLowerCase(Locale.ROOT);
-    if (!(normalizedHost.equals("vulcan.net.pl") || normalizedHost.endsWith(".vulcan.net.pl"))) {
+    if (!isAllowedRuntimeUri(uri) || uri.getFragment() != null) {
       throw invalid();
     }
     return uri.normalize();
   }
 
-  public boolean isAllowed(URI uri) {
-    try {
-      validate(uri == null ? null : uri.toASCIIString());
-      return true;
-    } catch (IllegalArgumentException exception) {
+  /** Runtime queries and fragments do not change the approved network destination. */
+  public boolean isAllowedRuntimeUri(URI uri) {
+    if (uri == null
+        || !uri.isAbsolute()
+        || !"https".equalsIgnoreCase(uri.getScheme())
+        || uri.getHost() == null
+        || uri.getUserInfo() != null
+        || (uri.getPort() != -1 && uri.getPort() != 443)) {
       return false;
     }
+    String normalizedHost = uri.getHost().toLowerCase(Locale.ROOT);
+    return normalizedHost.equals("vulcan.net.pl") || normalizedHost.endsWith(".vulcan.net.pl");
   }
 
   private static IllegalArgumentException invalid() {

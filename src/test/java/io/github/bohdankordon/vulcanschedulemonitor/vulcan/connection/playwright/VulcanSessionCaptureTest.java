@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.PortalUrlValidator;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanAuthFailureCategory;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanAuthenticationException;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSessionMaterial;
 import java.net.URI;
@@ -65,7 +66,11 @@ class VulcanSessionCaptureTest {
             null);
 
     assertThatThrownBy(() -> capture.capture(List.of(foreign, missing), List.of()))
-        .isInstanceOf(VulcanAuthenticationException.class);
+        .isInstanceOfSatisfying(
+            VulcanAuthenticationException.class,
+            exception ->
+                assertThat(exception.category())
+                    .isEqualTo(VulcanAuthFailureCategory.PROTOCOL_FAILURE));
   }
 
   @Test
