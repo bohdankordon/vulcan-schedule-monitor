@@ -25,7 +25,7 @@ public final class VulcanSessionCapture {
       String verification = request.requestVerificationToken();
       String appGuid = request.appGuid();
       String referer = request.referer();
-      if (!portalUrls.isAllowed(request.uri())
+      if (!portalUrls.isAllowedRuntimeUri(request.uri())
           || isBlank(verification)
           || isBlank(appGuid)
           || isBlank(referer)) {

@@ -38,7 +38,7 @@ final class LoginFormSubmissionPolicy {
         submitterOverridesAction ? browserResolvedSubmitterAction : browserResolvedFormAction;
     try {
       URI target = documentUri.resolve(Objects.requireNonNullElse(effectiveAction, ""));
-      if (!portalUrls.isAllowed(target)) {
+      if (!portalUrls.isAllowedRuntimeUri(target)) {
         throw unsupported();
       }
       return target;

@@ -5,6 +5,8 @@ import static io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanJso
 import static io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanJson.requiredLong;
 import static io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanJson.requiredText;
 
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics.VulcanDiagnostics;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics.VulcanDiagnostics.Stage;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanHttpTransport;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanProtocolException;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSession;
@@ -29,14 +31,25 @@ public final class VulcanJournalAdapter {
   private final VulcanSession session;
   private final VulcanHttpTransport transport;
   private final Clock clock;
+  private final VulcanDiagnostics diagnostics;
 
   public VulcanJournalAdapter(VulcanSession session, VulcanHttpTransport transport, Clock clock) {
+    this(session, transport, clock, VulcanDiagnostics.NONE);
+  }
+
+  public VulcanJournalAdapter(
+      VulcanSession session,
+      VulcanHttpTransport transport,
+      Clock clock,
+      VulcanDiagnostics diagnostics) {
     this.session = Objects.requireNonNull(session, "session must not be null");
     this.transport = Objects.requireNonNull(transport, "transport must not be null");
     this.clock = Objects.requireNonNull(clock, "clock must not be null");
+    this.diagnostics = Objects.requireNonNull(diagnostics);
   }
 
   public List<SchoolClass> getTree(int schoolYear) {
+    diagnostics.begin(Stage.VERIFY_TREE_REQUEST);
     LocalDateTime requestedAt = LocalDateTime.now(clock);
     URI uri =
         UriComponentsBuilder.fromUri(session.resolve("Dziennik.mvc/GetTree"))
@@ -48,7 +61,12 @@ public final class VulcanJournalAdapter {
             .build()
             .encode()
             .toUri();
-    return mapResponse(transport.get(OPERATION, uri));
+    JsonNode response =
+        transport.get(
+            OPERATION, uri, diagnostics, Stage.VERIFY_TREE_REQUEST, Stage.VERIFY_TREE_PARSE);
+    List<SchoolClass> result = mapResponse(response);
+    diagnostics.pass(Stage.VERIFY_TREE_PARSE);
+    return result;
   }
 
   List<SchoolClass> mapResponse(JsonNode response) {

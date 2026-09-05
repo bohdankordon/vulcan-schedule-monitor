@@ -16,25 +16,40 @@ import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanAuth
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanAuthenticationException;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanBrowserAuthenticator;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanLoginRequest;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics.VulcanDiagnostics;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics.VulcanDiagnostics.Stage;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSessionMaterial;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowserAuthenticator {
 
+  private static final Logger logger =
+      LoggerFactory.getLogger(PlaywrightVulcanBrowserAuthenticator.class);
   private final PortalUrlValidator portalUrls;
   private final boolean headless;
+  private final VulcanDiagnostics diagnostics;
 
   public PlaywrightVulcanBrowserAuthenticator(PortalUrlValidator portalUrls, boolean headless) {
+    this(portalUrls, headless, VulcanDiagnostics.NONE);
+  }
+
+  public PlaywrightVulcanBrowserAuthenticator(
+      PortalUrlValidator portalUrls, boolean headless, VulcanDiagnostics diagnostics) {
     this.portalUrls = portalUrls;
     this.headless = headless;
+    this.diagnostics = java.util.Objects.requireNonNull(diagnostics);
   }
 
   @Override
   public VulcanSessionMaterial authenticate(VulcanLoginRequest request) {
+    diagnostics.begin(Stage.BROWSER_AUTH);
+    BrowserAuthStage stage = BrowserAuthStage.INITIAL_NAVIGATION;
     List<BrowserRequestObservation> observations = new CopyOnWriteArrayList<>();
     try (Playwright playwright = Playwright.create();
         Browser browser =
@@ -44,11 +59,24 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
       page.onRequest(observed -> observeAuthenticatedRequest(observed, observations));
       page.navigate(request.portalUri().toASCIIString());
       requireAllowedPage(page);
-      locateDirectLogin(page);
+      stage = BrowserAuthStage.COOKIE_CONSENT;
+      VulcanPrivacyConsent.dismissIfPresent(page, portalUrls);
+      stage = BrowserAuthStage.DIRECT_LOGIN_DISCOVERY;
+      Locator directLogin = locateDirectLogin(page);
+      if (directLogin != null) {
+        stage = BrowserAuthStage.DIRECT_LOGIN_NAVIGATION;
+        directLogin.click(new Locator.ClickOptions().setTimeout(30_000));
+        page.waitForLoadState(
+            LoadState.DOMCONTENTLOADED, new Page.WaitForLoadStateOptions().setTimeout(30_000));
+      }
       requireAllowedPage(page);
+      stage = BrowserAuthStage.COOKIE_CONSENT;
+      VulcanPrivacyConsent.dismissIfPresent(page, portalUrls);
+      stage = BrowserAuthStage.LOGIN_FORM_VALIDATION;
       rejectInteractiveSecurity(page);
 
       VerifiedLoginForm loginForm = requireSafeLoginForm(page);
+      stage = BrowserAuthStage.CREDENTIAL_SUBMISSION;
       context.route("**/*", this::guardCredentialRequest);
       char[] passwordChars = request.password();
       try {
@@ -60,14 +88,21 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
       } finally {
         Arrays.fill(passwordChars, '\0');
       }
+      stage = BrowserAuthStage.POST_LOGIN_VALIDATION;
       page.waitForLoadState(LoadState.DOMCONTENTLOADED);
       page.waitForTimeout(2_000);
       requireAllowedPage(page);
       rejectInteractiveSecurity(page);
 
+      stage = BrowserAuthStage.SESSION_CAPTURE;
+      diagnostics.pass(Stage.BROWSER_AUTH);
+      diagnostics.begin(Stage.SESSION_CAPTURE);
       VulcanSessionCapture capture = new VulcanSessionCapture(portalUrls);
       try {
-        return capture.capture(observations, cookiesForObservedApplication(context, observations));
+        VulcanSessionMaterial material =
+            capture.capture(observations, cookiesForObservedApplication(context, observations));
+        diagnostics.pass(Stage.SESSION_CAPTURE);
+        return material;
       } catch (VulcanAuthenticationException exception) {
         if (isVisible(
             page.locator("input[autocomplete='current-password'], input[type='password']"))) {
@@ -76,12 +111,19 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
         throw exception;
       }
     } catch (VulcanAuthenticationException exception) {
+      logFailure(stage, exception.category());
       throw exception;
     } catch (PlaywrightException exception) {
+      logFailure(stage, VulcanAuthFailureCategory.TRANSIENT);
       throw new VulcanAuthenticationException(VulcanAuthFailureCategory.TRANSIENT);
     } catch (RuntimeException exception) {
+      logFailure(stage, VulcanAuthFailureCategory.PROTOCOL_FAILURE);
       throw new VulcanAuthenticationException(VulcanAuthFailureCategory.PROTOCOL_FAILURE);
     }
+  }
+
+  private static void logFailure(BrowserAuthStage stage, VulcanAuthFailureCategory category) {
+    logger.warn("VULCAN browser authentication failed: stage={} category={}", stage, category);
   }
 
   private VerifiedLoginForm requireSafeLoginForm(Page page) {
@@ -138,7 +180,7 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
       Request observed, List<BrowserRequestObservation> observations) {
     try {
       URI uri = URI.create(observed.url());
-      if (!portalUrls.isAllowed(uri)) {
+      if (!portalUrls.isAllowedRuntimeUri(uri)) {
         return;
       }
       BrowserRequestObservation observation =
@@ -163,7 +205,7 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
       route.abort();
       return;
     }
-    if (portalUrls.isAllowed(destination)) {
+    if (portalUrls.isAllowedRuntimeUri(destination)) {
       route.resume();
     } else {
       route.abort();
@@ -182,9 +224,9 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
     return new VulcanAuthenticationException(VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
   }
 
-  private void locateDirectLogin(Page page) {
+  private Locator locateDirectLogin(Page page) {
     if (page.locator("input[autocomplete='username'], input[name='LoginName']").count() > 0) {
-      return;
+      return null;
     }
     Locator direct =
         page.locator("a[title*='nauczyciel'], a[title*='pracownik'], a[href*='LoginEndpoint.aspx']")
@@ -192,8 +234,7 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
     if (direct.count() == 0) {
       throw new VulcanAuthenticationException(VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
     }
-    direct.click();
-    page.waitForLoadState(LoadState.DOMCONTENTLOADED);
+    return direct;
   }
 
   private void requireAllowedPage(Page page) {
@@ -203,12 +244,12 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
     } catch (IllegalArgumentException exception) {
       throw new VulcanAuthenticationException(VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
     }
-    if (!portalUrls.isAllowed(current)) {
+    if (!portalUrls.isAllowedRuntimeUri(current)) {
       throw new VulcanAuthenticationException(VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
     }
   }
 
-  private static void rejectInteractiveSecurity(Page page) {
+  static void rejectInteractiveSecurity(Page page) {
     if (isVisible(page.locator("iframe[src*='captcha'], [class*='captcha'], [id*='captcha']"))) {
       throw new VulcanAuthenticationException(VulcanAuthFailureCategory.CAPTCHA_REQUIRED);
     }
@@ -218,7 +259,14 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
   }
 
   private static boolean isVisible(Locator locator) {
-    return locator.count() > 0 && locator.first().isVisible();
+    for (int index = 0; index < locator.count(); index++) {
+      Locator candidate = locator.nth(index);
+      if (candidate.isVisible()
+          && candidate.locator("xpath=ancestor-or-self::*[@inert]").count() == 0) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private static List<BrowserCookieObservation> cookiesForObservedApplication(

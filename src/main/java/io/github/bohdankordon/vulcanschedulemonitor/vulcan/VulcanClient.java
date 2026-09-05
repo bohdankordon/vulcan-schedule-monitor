@@ -3,6 +3,7 @@ package io.github.bohdankordon.vulcanschedulemonitor.vulcan;
 import io.github.bohdankordon.vulcanschedulemonitor.schedule.model.ScheduleSnapshot;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.bootstrap.SchoolBootstrap;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.bootstrap.VulcanBootstrapAdapter;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics.VulcanDiagnostics;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanHttpTransport;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.journal.SchoolClass;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.journal.VulcanJournalAdapter;
@@ -31,12 +32,20 @@ public final class VulcanClient {
   }
 
   public VulcanClient(VulcanSession session, Clock clock) {
+    this(session, clock, VulcanDiagnostics.NONE);
+  }
+
+  public VulcanClient(VulcanSession session, VulcanDiagnostics diagnostics) {
+    this(session, Clock.system(WARSAW), diagnostics);
+  }
+
+  private VulcanClient(VulcanSession session, Clock clock, VulcanDiagnostics diagnostics) {
     Objects.requireNonNull(session, "session must not be null");
     Objects.requireNonNull(clock, "clock must not be null");
     VulcanHttpTransport transport =
         new VulcanHttpTransport(session, CONNECT_TIMEOUT, READ_TIMEOUT, clock);
-    this.bootstrapAdapter = new VulcanBootstrapAdapter(session, transport, clock);
-    this.journalAdapter = new VulcanJournalAdapter(session, transport, clock);
+    this.bootstrapAdapter = new VulcanBootstrapAdapter(session, transport, clock, diagnostics);
+    this.journalAdapter = new VulcanJournalAdapter(session, transport, clock, diagnostics);
     this.scheduleAdapter = new VulcanScheduleAdapter(session, transport);
   }
 

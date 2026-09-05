@@ -55,6 +55,22 @@ Public inspection identified a tenant landing page with a teacher/employee `Logi
 
 Once credential entry begins, a temporary Playwright request route aborts requests to every non-allowlisted destination before network transmission without inspecting a request body or recording a destination URL. Off-domain identity providers, external form actions, MFA, CAPTCHA, interactive verification, missing form semantics, or a session that never produces the required authenticated request values fail with a sanitized category. The implementation does not bypass or weaken any security control.
 
+Before credential entry and before installing that request guard, the authenticator checks the landing page and discovered login page for the known ordinary VULCAN privacy screen. It may appear in the top-level document or inside a visible VULCAN iframe. Each frame's current URL and every ancestor's URL must pass the runtime VULCAN allowlist before frame DOM inspection. Detached, hidden, external, HTTP, malformed, and opaque-URL frames are excluded from DOM inspection; an allowed child beneath an untrusted ancestor is also excluded. External frame content is never inspected. Frame consent does not broaden the credential destination boundary.
+
+One shared policy matches the visible `Szanujemy Twoją prywatność` heading, its nearest semantic dialog (or container shared with the known settings action), and exactly one whitespace/NBSP-normalized `Zgadzam się` action. Native buttons, button/submit inputs, role buttons, and ordinary exact text elements remain supported. Settings, hyperlinks, inert/unsafe actions, and credential-bearing consent forms are rejected. Safe consent form actions are compared against the actual document URI: the frame URL for iframe consent. No credentials are entered or authentication forms submitted in frames.
+
+Consent discovery uses a two-second Playwright condition window before concluding that no known privacy surface exists. Each condition evaluation enumerates the current frames and rechecks URI/ancestor trust, handling late attachment, initially empty/opaque frame URLs that later commit to VULCAN, and delayed heading/action rendering. Opaque frames are observed only through browser lifecycle metadata until eligible. There is no arbitrary sleep or early exit based on a momentarily actionable login link. Ready consent proceeds immediately; at the deadline a final scan permits absence but rejects any still-unresolved known privacy context. Multiple known surfaces, ambiguous/unsafe actions, and observed loss of trust fail closed at `COOKIE_CONSENT`. Navigation listeners and retained owner handles are always released.
+
+The existing click and dismissal bounds remain three seconds each. Top-level dismissal requires the original container to disappear. Frame dismissal requires detachment or a hidden enclosing iframe owner, including a zero-sized owner, so an empty but visible iframe cannot continue intercepting login clicks. Normal detachment after clicking succeeds without stale DOM inspection. Frame and ancestor trust are rechecked during handling, and observed unsafe navigation cannot be erased by subsequent detachment. No force-click, CSS manipulation, or DOM-removal bypass is used.
+
+After consent dismissal, direct login uses an ordinary click on the original Page followed by `DOMContentLoaded`, since the new document can still be loading when the click returns. Both navigation bounds remain 30 seconds. No popup/new Page handling is needed. MFA and CAPTCHA are never automated.
+
+Submitted portal URLs still reject fragments. Runtime page, form-target, and request validation permits query strings and fragments because they do not change the network destination. The boundary remains HTTPS, `vulcan.net.pl` or its subdomains, default port or 443, and no userinfo. Visible CAPTCHA and one-time-code controls are rejected; hidden or inert matching elements do not count as interactive challenges or hide later visible matches.
+
+Browser-auth failures produce one sanitized warning, for example `VULCAN browser authentication failed: stage=POST_LOGIN_VALIDATION category=UNSUPPORTED_AUTH_FLOW`. Stages are `INITIAL_NAVIGATION`, `DIRECT_LOGIN_DISCOVERY`, `DIRECT_LOGIN_NAVIGATION`, `COOKIE_CONSENT`, `LOGIN_FORM_VALIDATION`, `CREDENTIAL_SUBMISSION`, `POST_LOGIN_VALIDATION`, and `SESSION_CAPTURE`. Logs include only finite stage/category values, never exception details, URLs, credentials, or session metadata. An unsupported post-login page does not itself establish that MFA or CAPTCHA occurred; the category distinguishes those challenges from unsafe navigation. Missing complete session material remains a protocol failure (or invalid credentials when the password form is still visible), and persistence still requires full protocol verification.
+
+Separate follow-up: the current `TRANSIENT` UI wording can imply VULCAN is unavailable even when a local Playwright interaction timed out. This consent fix does not change that presentation; such a timeout is not evidence of a provider outage.
+
 Every attempt owns fresh Playwright, Browser, BrowserContext, and Page instances. Persistent profiles, storage-state files, screenshots, video, traces, HAR, DOM dumps, and provider response text are not produced. Resources close on success and every failure path.
 
 ## Encryption and persistence
@@ -76,5 +92,54 @@ Ordinary weekly transport/server retries run inside the authentication-recovery 
 Without remembered credentials, or for invalid credentials, MFA, CAPTCHA, unsupported authentication, or protocol authentication failure, the account becomes `RECONNECT_REQUIRED` and is excluded from future target queries. Transient recovery failure does not destructively reset account state; it blocks that account's remaining scopes only for the current cycle, allowing a later cycle to try once again while other accounts continue. Reconnection state is visible through `/status`, `/classes`, and `/connect`; the scheduler does not bypass the durable notification model with a direct Telegram alert.
 
 ## Manual validation
+
+An authorized real normal Telegram `/connect` validation completed successfully with 26 discovered classes and Remember credentials disabled. `/status` reported VULCAN connected with zero monitored classes, and `/classes` displayed the persisted catalog with pagination. This validates the token/controller, verified encrypted session/account completion, catalog persistence, and Telegram catalog read path. Monitoring validation is separate.
+
+### Opt-in local real-VULCAN smoke harness (developers only)
+
+Use only an account you are authorized to test. **`-Run` makes real VULCAN requests: one invocation is one connection attempt.** Configure manually in Windows PowerShell 7 with Java 21 available and Playwright Chromium already installed:
+
+```powershell
+.\scripts\vulcan-real-smoke.ps1 -Configure
+```
+
+The prompts collect the portal URL, login, and password; login and password use secure input. A versioned `VSM1` binary payload contains three length-prefixed UTF-8 fields and is protected with Windows DPAPI `DataProtectionScope.CurrentUser`. Only Base64 ciphertext is written to `.dev/vulcan-real-smoke.dpapi`; no plaintext intermediate file is created. This bundle is separate from the application master key and Telegram token. **DPAPI CurrentUser is development convenience and does not isolate credentials from arbitrary code running as the same Windows user. Never commit or share `.dev` contents, or supply credentials through an agent prompt.**
+
+After explicitly authorizing one attempt:
+
+```powershell
+.\scripts\vulcan-real-smoke.ps1 -Run
+```
+
+The script first compiles the test-source diagnostic main and resolves its existing Maven classpath without credentials. It then decrypts only the smoke bundle in memory and sends the binary payload to Java's redirected stdin. Credentials are never command-line arguments, environment variables, build inputs, or saved browser state. Transient byte/char arrays and BSTR buffers are cleared where practical; immutable JVM/.NET strings and browser-process memory cannot be reliably wiped. The child inherits only a small runtime environment allowlist, with monitoring and Telegram explicitly disabled. Third-party stdout/stderr are suppressed; the parent displays only a strictly validated finite diagnostic protocol.
+
+The main is opt-in, excluded from the production jar, and starts no Spring context, database, scheduler, token controller, recovery loop, or Telegram component. It reuses `PortalUrlValidator`, the default-headless `PlaywrightVulcanBrowserAuthenticator` (including `VulcanSessionCapture`), `VulcanSession.fromMaterial`, `DefaultVulcanSessionVerifier`, and `VulcanClient.getCache/getTree` with the real transport/adapters. It stops after verified session reconstruction/snapshot and production class conversion. No account, session, catalog row, or password is persisted; no remembered-credential slot is touched. One browser authentication and one verifier invocation occur, without harness retries. Each child has a five-minute process deadline; timeout/cancellation closes its process tree. Chromium is never installed by this runner.
+
+Diagnostics report these finite stages: `PORTAL_VALIDATION`, `BROWSER_AUTH`, `SESSION_CAPTURE`, `SESSION_MATERIAL_RECONSTRUCTION`, `VERIFY_CACHE_REQUEST`, `VERIFY_CACHE_PARSE`, `VERIFY_SCHOOL_YEAR`, `VERIFY_TREE_REQUEST`, `VERIFY_TREE_PARSE`, `SESSION_SNAPSHOT`, and `VERIFIED`. A stage can be `PASS`, `FAIL`, `INCOMPLETE`, or `NOT_REACHED`; `PASS` for an intermediate stage is not overall authentication success. The two parse stages cover JSON decoding and schema/domain conversion; school-year extraction has its own stage. Optional HTTP facts contain only status family, content family, and a redirect boolean. The smoke-only category `SESSION_AUTHENTICATION` distinguishes redirects, 401/403, and unexpected HTML from parser failures without exposing destinations or bodies. Normal production constructors use a no-op observer and retain existing public error mapping/logging.
+
+Cache lesson-period failures can additionally report a fixed `cacheFailure` enum: periods/ID/number/start/end schema, start/end time format, number range, or duplicate period ID. A rejected start/end value that parses as an ISO local time receives the more specific `PERIOD_START_TIME_ONLY` / `PERIOD_END_TIME_ONLY` label. This is diagnostic classification only: it does not accept a new time representation or change the protocol failure. No field values, IDs, or response text are included. The PowerShell report allowlist rejects unknown enum values and duplicate diagnostic fields before displaying any output.
+
+GetCache lesson-period start/end timestamps accept exactly the legacy `yyyy-MM-dd HH:mm:ss` shape and the existing `yyyy-MM-dd'T'HH:mm:ss` shape after the shared text-field trimming. Parsing validates the complete date and time strictly with a fixed locale before extracting the local time. Time-only values, fractions, offsets, other separators, malformed dates, and embedded timestamp fragments are not accepted.
+
+For example, a synthetic parse failure could end with:
+
+```text
+stage.VERIFY_CACHE_REQUEST=PASS
+stage.VERIFY_CACHE_PARSE=FAIL
+http.VERIFY_CACHE_REQUEST=SUCCESS,JSON,false
+category=PROTOCOL_FAILURE
+result=FAIL
+```
+
+`SUCCESS` in HTTP metadata means 2xx; other status families are `INFORMATIONAL`, `REDIRECT`, `CLIENT_ERROR`, `SERVER_ERROR`, and `OTHER`. Content is `JSON`, `HTML`, or `OTHER`. Successful verification also reports only `classCount`, never names. Exit codes are 0 for successful verification, 1 for a connection failure, and 2 for harness/input/setup failure. No raw exceptions, URLs, paths, headers, cookies, tokens, names, HTML/JSON, screenshots, HAR, traces, video, or storage state are emitted or persisted. MFA, CAPTCHA, and unsupported authentication stop the attempt; there is no bypass.
+
+Remove only this bundle, or view side-effect-free help:
+
+```powershell
+.\scripts\vulcan-real-smoke.ps1 -Clear
+.\scripts\vulcan-real-smoke.ps1 -Help
+```
+
+Normal Maven verification never invokes real mode or contacts VULCAN. Tests use mocked browsers, loopback synthetic HTTP, and an isolated temporary DPAPI bundle on Windows (the DPAPI test is skipped on non-Windows CI). No real credentials or existing `.dev` secrets are needed. For future provider compatibility changes, core smoke and normal Telegram `/connect` validation are complementary: the harness does not exercise the token/controller or persistence/catalog completion path.
 
 CI tests the security and orchestration boundaries with synthetic encrypted sessions, a fake browser authenticator, local WireMock VULCAN responses, MockMvc, AES-GCM tests, and PostgreSQL/Testcontainers. It never contacts a real VULCAN tenant and never requires Chromium. Real tenant login details can vary and must be validated manually with an authorized test account. Do not record or publish credentials, URLs, request headers, cookies, screenshots, traces, class data, or browser state during that validation.
