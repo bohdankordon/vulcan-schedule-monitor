@@ -318,10 +318,9 @@ finite results and never parser messages or paths. No raw intermediate file is
 created. Do not enable PowerShell transcription/debug logging while handling a
 raw capture; it is outside the sanitizer's output boundary.
 
-The optional Java projection is intentionally not invoked: the existing production
-request measurement uses a loopback HTTP listener, while this sanitizer performs
-zero network operations. Compare the reduced native evidence with the previously
-recorded synthetic Java measurements separately, without claiming causality.
+The sanitizer never invokes the Java measurement: the production request profiler
+uses a loopback HTTP listener, while the sanitizer performs zero network operations.
+Schema v2 below supports comparison with a separately saved, validated Java profile.
 
 Tests generate synthetic HAR data in memory and isolated temporary files. Coverage
 includes JSON/HTML/429, missing/ambiguous/wrong-method targets, malformed structures,
@@ -334,3 +333,90 @@ Validation: all 47 standalone PowerShell synthetic cases passed. Maven verificat
 reported 566 tests, zero failures/errors and four optional Chromium tests skipped;
 two new JUnit contracts integrate the sanitizer checks. Spotless and
 `git diff --check` passed. No Chromium execution is needed for this offline tool.
+
+### Native control and schema v2 fingerprint comparison
+
+The developer supplied a sanitized result from a manually generated native UI
+control: **2xx JSON**, with the expected schedule envelope and arrays. Its four-field
+form, ISO-T timestamp shapes and Monday–Sunday week semantics match the known
+request semantics. Its referer category was `OTHER_ALLOWED`. This is a successful
+native control; it does not identify which transport/session difference caused the
+earlier Java 429. A richer safe fingerprint comparison is now needed. This update
+uses only the supplied sanitized evidence; no raw HAR was inspected or reprocessed.
+
+All sanitizer results now carry fixed integer `schemaVersion=2`, including finite
+failures. Existing structural fields remain, with these additions:
+
+- `headers.userAgent.family`: browser family, Java client, other, or absent.
+- Client hints: presence only for UA brands; finite mobile and platform categories.
+- `headers.accept.profile`: a strict small allowlist of generic, JSON, jQuery JSON,
+  and HTML navigation profiles; unknown variants become `OTHER`.
+- Leading Accept-Language family and a multiple-language boolean, without regions
+  or quality values; Sec-Fetch-Dest category with existing fetch metadata fields.
+- Accept-Encoding presence and gzip/br/deflate/zstd/other flags. Flags mean coding
+  tokens were listed, even with q=0; they do not describe negotiated compression.
+- Priority, Cache-Control, Pragma and DNT presence only, plus bounded header count.
+
+No UA literals, versions, client-hint brands, language lists or unknown header names
+are emitted. Java and PowerShell classifiers have shared synthetic conformance
+tests. Header count is the captured header-map count, not an HTTP/2 pseudo-header or
+wire-frame count. Category equality does not establish equality of original values.
+
+`Schedule429JavaShape` still sends one synthetic request through the untouched
+production client/session/adapter/transport to its own loopback server. Its safe
+stdout profile adds the same fingerprint facts, form booleans, and separately:
+`actualObservedHttpVersion` from the server exchange, and `clientPreferredVersion`
+read from the actual configured JDK client used for that request. The diagnostic
+reads configuration through test-only reflection; unavailable configuration becomes
+`UNKNOWN`. No HTTP configuration is changed. Loopback HTTP/1.1 observation must
+never be presented as production TLS/ALPN negotiation.
+
+To create a fresh synthetic Java profile (no credentials or provider input), build
+the test classpath, then run the diagnostic main. Only the latter makes one loopback
+request; Maven dependency resolution may use the normal dependency cache/repository.
+Keep the safe profile under ignored `.dev/` using a new filename:
+
+```powershell
+.\mvnw.cmd -B -ntp -DskipTests test-compile dependency:build-classpath `
+    '-Dmdep.includeScope=test' '-Dmdep.outputFile=target/schedule-fingerprint-classpath.txt'
+if ($LASTEXITCODE -ne 0) { throw 'Synthetic profiler build failed' }
+$fingerprintClasspath = 'target/test-classes;target/classes;' + `
+    (Get-Content -Raw target/schedule-fingerprint-classpath.txt).Trim()
+java -cp $fingerprintClasspath `
+    io.github.bohdankordon.vulcanschedulemonitor.devsmoke.Schedule429JavaShape `
+    > .dev/vulcan-schedule-java-v2.json
+```
+
+The developer can later generate a v2 native reduction using the existing sanitizer
+command with a new output filename. An old v1 report cannot supply the new fields;
+the tool rejects it rather than guessing. This task does not run that native step.
+Compare already-sanitized v2 profiles with no network or raw HAR access:
+
+```powershell
+pwsh -NoProfile -File .\scripts\sanitize-vulcan-schedule-har.ps1 `
+    -InputPath .\.dev\vulcan-schedule-native-v2.sanitized.json -SanitizedInput `
+    -JavaProfilePath .\.dev\vulcan-schedule-java-v2.json `
+    -OutputPath .\.dev\vulcan-schedule-comparison-v2.json
+```
+
+`-JavaProfilePath` also works with a raw-input reduction when the developer chooses
+to run it later. The sanitizer does not launch Java. Both profiles must pass exact
+key/type/enum guards; partial or arbitrary extension fields fail closed. The output
+retains native facts, prefixes the finite Java profile with `java.`, and adds ten
+`comparison.*` booleans plus `comparison.mismatchCount` (0–10). Comparison covers UA
+family, Accept profile, language/fetch/client-hint presence, encoding flags, HTTP
+preference and form structure. `httpVersionPreferenceCompatible=true` means a known
+native protocol equals the configured preference; false also covers unknown data.
+Neither value proves production negotiation or server acceptance. Mismatch count
+counts these ten comparisons, not individual differing headers or causal factors.
+
+No new real request, authentication, monitoring, protected credential use, or
+production compatibility change is part of this update. The sanitizer/comparer
+opens no network connections; synthetic Java measurements use loopback only.
+
+Validation: 605 Maven tests reported, zero failures/errors, four optional Chromium
+tests skipped. The 39 new Java cases include classifier conformance, untouched
+transport measurement, configuration observation, safe CLI output and profile
+interoperability. All 87 standalone PowerShell synthetic cases passed, including
+comparison counts, schema rejection and leak checks. Spotless and whitespace
+checks passed. Only synthetic fixtures and loopback test infrastructure were used.

@@ -103,6 +103,101 @@ Run-Case 'base64 JSON' { param($h) $c = $h.log.entries[0].response.content; $c.e
 Run-Case 'wrong envelope' { param($h) $h.log.entries[0].response.content.text = '{"success":false,"data":{"planLekcji":[]}}' } { param($r) Assert-Synthetic ($r['response.jsonParseable'] -and !$r['response.expectedEnvelopePresent']) }
 Run-Case 'array root' { param($h) $h.log.entries[0].response.content.text = '["SUPER_SECRET_TOKEN"]' } { param($r) Assert-Synthetic ($r['response.rootKind'] -eq 'ARRAY' -and !$r['response.expectedEnvelopePresent']) }
 
+# Each table row adds one deterministic fingerprint classification case.
+foreach ($row in @(
+    @('User-Agent', 'Mozilla/5.0 Chrome/123.0.0.0 Safari/537.36', 'headers.userAgent.family', 'CHROMIUM_BROWSER'),
+    @('User-Agent', 'Java-http-client/21.0.1', 'headers.userAgent.family', 'JAVA_HTTP_CLIENT'),
+    @('User-Agent', 'Mozilla/5.0 Firefox/125.0', 'headers.userAgent.family', 'FIREFOX_BROWSER'),
+    @('User-Agent', 'Mozilla/5.0 Version/17.0 Safari/605.1', 'headers.userAgent.family', 'SAFARI_BROWSER'),
+    @('User-Agent', 'SUPER_SECRET_TOKEN', 'headers.userAgent.family', 'OTHER'),
+    @('Sec-CH-UA-Mobile', '?0', 'headers.secChUaMobile.category', 'NOT_MOBILE'),
+    @('Sec-CH-UA-Mobile', '?1', 'headers.secChUaMobile.category', 'MOBILE'),
+    @('Sec-CH-UA-Mobile', 'SUPER_SECRET_TOKEN', 'headers.secChUaMobile.category', 'OTHER'),
+    @('Sec-CH-UA-Platform', '"Windows"', 'headers.secChUaPlatform.category', 'WINDOWS'),
+    @('Sec-CH-UA-Platform', '"macOS"', 'headers.secChUaPlatform.category', 'MACOS'),
+    @('Sec-CH-UA-Platform', '"Linux"', 'headers.secChUaPlatform.category', 'LINUX'),
+    @('Sec-CH-UA-Platform', '"Android"', 'headers.secChUaPlatform.category', 'ANDROID'),
+    @('Sec-CH-UA-Platform', '"iOS"', 'headers.secChUaPlatform.category', 'IOS'),
+    @('Sec-CH-UA-Platform', '"Windows SUPER_SECRET_TOKEN"', 'headers.secChUaPlatform.category', 'OTHER'),
+    @('Accept', '*/*', 'headers.accept.profile', 'STAR_STAR_ONLY'),
+    @('Accept', 'application/json', 'headers.accept.profile', 'JSON_EXPLICIT'),
+    @('Accept', 'application/json, text/javascript, */*; q=0.01', 'headers.accept.profile', 'JQUERY_JSON'),
+    @('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'headers.accept.profile', 'HTML_NAVIGATION'),
+    @('Accept', 'application/json,SUPER_SECRET_TOKEN', 'headers.accept.profile', 'OTHER'),
+    @('Accept', '*/*;q=0.8', 'headers.accept.profile', 'OTHER'),
+    @('Accept-Language', 'en-US,en;q=0.9', 'headers.acceptLanguage.family', 'EN'),
+    @('Accept-Language', 'pl-PL', 'headers.acceptLanguage.family', 'PL'),
+    @('Accept-Language', 'uk-UA,pl;q=0.5', 'headers.acceptLanguage.family', 'UK'),
+    @('Accept-Language', 'ru-RU', 'headers.acceptLanguage.family', 'RU'),
+    @('Accept-Language', 'fr-FR', 'headers.acceptLanguage.family', 'OTHER'),
+    @('Accept-Language', 'pl-PL SUPER_SECRET_TOKEN', 'headers.acceptLanguage.family', 'OTHER'),
+    @('Sec-Fetch-Dest', 'empty', 'headers.secFetchDest.category', 'empty'),
+    @('Sec-Fetch-Dest', 'document', 'headers.secFetchDest.category', 'document'),
+    @('Sec-Fetch-Dest', 'iframe', 'headers.secFetchDest.category', 'iframe'),
+    @('Sec-Fetch-Dest', 'script', 'headers.secFetchDest.category', 'script'),
+    @('Sec-Fetch-Dest', 'style', 'headers.secFetchDest.category', 'style'),
+    @('Sec-Fetch-Dest', 'image', 'headers.secFetchDest.category', 'image'),
+    @('Sec-Fetch-Dest', 'SUPER_SECRET_TOKEN', 'headers.secFetchDest.category', 'other')
+)) {
+    Run-Case 'finite fingerprint table' { param($h) Set-SyntheticHeader $h $row[0] $row[1] } { param($r) Assert-Synthetic ($r[$row[2]] -ceq $row[3] -and $r.schemaVersion -eq 2) }
+}
+Run-Case 'client hints and unknown values stay private' {
+    param($h)
+    foreach ($header in @('Sec-CH-UA', 'Priority', 'Cache-Control', 'Pragma', 'DNT', 'Unknown-SUPER_SECRET_TOKEN')) { Set-SyntheticHeader $h $header 'SUPER_SECRET_TOKEN' }
+} { param($r) foreach ($key in @('secChUa', 'priority', 'cacheControl', 'pragma', 'dnt')) { Assert-Synthetic $r["headers.$key.present"] }; Assert-Synthetic ($r.requestHeaderCount -eq 19) }
+Run-Case 'multiple languages and encoding tokens' {
+    param($h)
+    Set-SyntheticHeader $h 'Accept-Language' 'pl-PL,en;q=0.8'
+    Set-SyntheticHeader $h 'Accept-Encoding' 'gzip, deflate, br, zstd;q=0, SUPER_SECRET_TOKEN'
+} { param($r) Assert-Synthetic $r['headers.acceptLanguage.multipleLanguages']; foreach ($key in @('gzip', 'deflate', 'br', 'zstd', 'other')) { Assert-Synthetic $r["headers.acceptEncoding.$key"] } }
+Run-Case 'absent fingerprint fields' { param($h) $h.log.entries[0].request.headers = @() } {
+    param($r)
+    foreach ($key in @('userAgent.family', 'secChUaMobile.category', 'secChUaPlatform.category', 'accept.profile', 'acceptLanguage.family')) { Assert-Synthetic ($r["headers.$key"] -ceq 'ABSENT') }
+    Assert-Synthetic (!$r['headers.acceptLanguage.multipleLanguages'] -and !$r['headers.acceptEncoding.other'] -and $r.requestHeaderCount -eq 0)
+}
+
+function New-SyntheticJavaProfile($Native) {
+    $profile = [ordered]@{}
+    foreach ($key in (Get-FingerprintSchema).Keys) { $profile[$key] = $Native[$key] }
+    $profile['schemaVersion'] = 2; $profile['profileSource'] = 'JAVA_LOOPBACK'
+    $profile['actualObservedHttpVersion'] = 'HTTP_1_1'; $profile['clientPreferredVersion'] = 'HTTP_2'
+    foreach ($key in @('exactExpectedFieldSet', 'weekIsMondayToSunday', 'dataWithinWeek')) { $profile["form.$key"] = $Native["form.$key"] }
+    foreach ($key in @('dataOd', 'dataDo', 'data')) { $profile["form.${key}Shape"] = $Native["form.${key}Shape"] }
+    $profile['form.urlEncoded'] = $true
+    return $profile
+}
+$script:caseName = 'offline comparison booleans and mismatch count'
+$native = ConvertTo-HarSafeReport (ConvertTo-Json -InputObject (New-SyntheticHar) -Depth 20)
+$projection = New-SyntheticJavaProfile $native
+$comparison = Add-HarJavaComparison $native $projection
+Assert-Synthetic ($comparison['comparison.mismatchCount'] -eq 0 -and $comparison['comparison.httpVersionPreferenceCompatible'])
+Assert-Synthetic ($comparison['java.actualObservedHttpVersion'] -eq 'HTTP_1_1')
+$projection['headers.userAgent.family'] = 'JAVA_HTTP_CLIENT'
+$projection['headers.accept.profile'] = 'ABSENT'
+$projection['headers.acceptLanguage.present'] = $false
+$projection['headers.acceptEncoding.gzip'] = $true
+$comparison = Add-HarJavaComparison $native $projection
+Assert-Synthetic ($comparison['comparison.mismatchCount'] -eq 4 -and !$comparison['comparison.userAgentFamilyMatches'] -and !$comparison['comparison.acceptEncodingProfileMatches'])
+Assert-NoLeak (ConvertTo-Json -InputObject $comparison)
+$script:caseCount++
+$script:caseName = 'unknown protocol and invalid form do not claim compatibility'
+$projection['clientPreferredVersion'] = 'UNKNOWN'; $projection['form.dataWithinWeek'] = $false
+$comparison = Add-HarJavaComparison $native $projection
+Assert-Synthetic (!$comparison['comparison.httpVersionPreferenceCompatible'] -and !$comparison['comparison.formStructureMatches'] -and $comparison['comparison.mismatchCount'] -eq 6)
+$script:caseCount++
+$script:caseName = 'schema v2 rejects v1 extension keys and raw projection values'
+foreach ($badVersion in @(1, 3, '2', 2.0)) {
+    $projection['schemaVersion'] = $badVersion
+    $caught = $false
+    try { Add-HarJavaComparison $native $projection } catch { $caught = $true; Assert-NoLeak $_.Exception.Message }
+    Assert-Synthetic $caught
+}
+$projection['schemaVersion'] = 2; $projection['headers.userAgent.family'] = 'SUPER_SECRET_TOKEN'
+$caught = $false
+try { Add-HarJavaComparison $native $projection } catch { $caught = $true; Assert-NoLeak $_.Exception.Message }
+Assert-Synthetic $caught
+$script:caseCount++
+
 $script:caseName = 'malformed input and exception reduction'
 foreach ($raw in @('{SUPER_SECRET_TOKEN', '', '{"log":"https://native.invalid/SCHOOL_IDENTIFIER_123"}',
     '{"log":{"entries":[],"entries":[]}}', '/*SUPER_SECRET_TOKEN*/{"log":{"entries":[]}}', '[{"log":{"entries":[]}}]')) {
@@ -115,6 +210,7 @@ $script:caseName = 'output guard rejects unknown keys values and types'
 foreach ($bad in @(@{ result = 'SUCCESS'; secret = 'SUPER_SECRET_TOKEN' }, @{ result = 'SUPER_SECRET_TOKEN' },
     @{ result = 'AMBIGUOUS'; matchingRequestCount = -1 }, @{ result = 'AMBIGUOUS'; matchingRequestCount = 1000001 },
     @{ result = 'AMBIGUOUS'; matchingRequestCount = '2' }, @{ result = 'NOT_FOUND'; cookieCount = 2 }, @{ RESULT = 'NOT_FOUND' })) {
+    $bad['schemaVersion'] = 2
     $caught = $false
     try { Assert-HarSafeOutput $bad } catch { $caught = $true; Assert-NoLeak $_.Exception.Message; Assert-Synthetic ($_.Exception.Message -eq 'UNSAFE_OUTPUT_GUARD') }
     Assert-Synthetic $caught
@@ -135,7 +231,7 @@ $script:caseCount++
 # Exercise real CLI stdout, stderr, exit code and optional JSON using synthetic files only.
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('VulcanHarSynthetic-' + [guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($testRoot)
-function Run-SyntheticCli([string]$Source, [string]$Destination) {
+function Run-SyntheticCli([string]$Source, [string]$Destination, [string]$JavaPath = '', [bool]$Reduced = $false) {
     $start = [Diagnostics.ProcessStartInfo]::new('pwsh')
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
@@ -143,6 +239,8 @@ function Run-SyntheticCli([string]$Source, [string]$Destination) {
     $start.RedirectStandardError = $true
     foreach ($argument in @('-NoProfile', '-File', $scriptFile, '-InputPath', $Source)) { $start.ArgumentList.Add($argument) }
     if ($Destination) { $start.ArgumentList.Add('-OutputPath'); $start.ArgumentList.Add($Destination) }
+    if ($JavaPath) { $start.ArgumentList.Add('-JavaProfilePath'); $start.ArgumentList.Add($JavaPath) }
+    if ($Reduced) { $start.ArgumentList.Add('-SanitizedInput') }
     $process = [Diagnostics.Process]::Start($start)
     try {
         $stdout = $process.StandardOutput.ReadToEndAsync(); $stderr = $process.StandardError.ReadToEndAsync()
@@ -165,6 +263,17 @@ try {
     Assert-NoLeak $safeFile
     Assert-Synthetic ($safeFile.Trim() -eq $r.stdout.Trim())
     Assert-Synthetic ([IO.File]::ReadAllText($inputFile) -ceq $syntheticRaw)
+    $script:caseCount++
+    $script:caseName = 'CLI accepts only validated v2 profiles for offline comparison'
+    $profileFile = Join-Path $testRoot 'java.sanitized.json'
+    $projection = New-SyntheticJavaProfile $r.report
+    [IO.File]::WriteAllText($profileFile, (ConvertTo-Json -InputObject $projection))
+    $compared = Run-SyntheticCli $outputFile '' $profileFile $true
+    Assert-Synthetic ($compared.code -eq 0 -and $compared.report['comparison.mismatchCount'] -eq 0)
+    $projection['unknown'] = 'SUPER_SECRET_TOKEN'
+    [IO.File]::WriteAllText($profileFile, (ConvertTo-Json -InputObject $projection))
+    $compared = Run-SyntheticCli $outputFile '' $profileFile $true
+    Assert-Synthetic ($compared.code -eq 1 -and $compared.report.result -eq 'UNSAFE_OUTPUT_GUARD')
     $script:caseCount++
     $script:caseName = 'CLI malformed input does not leak parsing exception'
     [IO.File]::WriteAllText($inputFile, '{SUPER_SECRET_TOKEN https://native.invalid')
