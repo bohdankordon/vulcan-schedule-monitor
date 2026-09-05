@@ -5,6 +5,7 @@ import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.PlaywrightException;
+import com.microsoft.playwright.TimeoutError;
 import com.microsoft.playwright.options.ElementState;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.PortalUrlValidator;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanAuthFailureCategory;
@@ -12,6 +13,7 @@ import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanAuth
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -24,6 +26,7 @@ final class VulcanPrivacyConsent {
       Pattern.compile(
           "^[\\s\\u00a0]*Szanujemy[\\s\\u00a0]+Twoją[\\s\\u00a0]+prywatność[\\s\\u00a0]*$");
   static final double DISMISS_TIMEOUT_MS = 3_000;
+  static final double DISCOVERY_TIMEOUT_MS = 2_000;
   static final String DIALOG =
       "xpath=ancestor::*[self::dialog or @role='dialog' or @aria-modal='true'][1]";
   private static final String NORMAL_TEXT = "normalize-space(translate(., '\u00a0', ' '))";
@@ -68,7 +71,6 @@ final class VulcanPrivacyConsent {
 
   static void dismissIfPresent(Page page, PortalUrlValidator portalUrls) {
     requireAllowedPage(page, portalUrls);
-    List<ConsentSurface> surfaces = new ArrayList<>();
     Set<Frame> monitoredFrames = new HashSet<>();
     monitoredFrames.add(page.mainFrame());
     Set<Frame> unsafeNavigations = new HashSet<>();
@@ -79,22 +81,125 @@ final class VulcanPrivacyConsent {
           }
         };
     page.onFrameNavigated(navigation);
-    try {
+    try (ConsentReadiness readiness =
+        new ConsentReadiness(page, portalUrls, monitoredFrames, unsafeNavigations)) {
+      try {
+        // Playwright pumps browser events and re-evaluates the condition without a fixed sleep.
+        // Every evaluation takes a fresh frame snapshot: an opaque or not-yet-attached frame
+        // can become eligible later, and an allowed document can finish rendering its controls.
+        page.waitForCondition(
+            readiness::poll, new Page.WaitForConditionOptions().setTimeout(DISCOVERY_TIMEOUT_MS));
+      } catch (TimeoutError deadline) {
+        // Only the discovery wait's deadline is handled here. Callback failures are retained
+        // separately so a browser/DOM timeout cannot be mistaken for absent consent.
+      }
+      readiness.finish();
+      if (readiness.action != null) {
+        dismissTrustedSurface(
+            page, readiness.surface, readiness.action, portalUrls, unsafeNavigations);
+      }
+    } finally {
+      page.offFrameNavigated(navigation);
+    }
+  }
+
+  /** Per-attempt state only; tests drive the Playwright condition without wall-clock sleeps. */
+  private static final class ConsentReadiness implements AutoCloseable {
+    private final Page page;
+    private final PortalUrlValidator portalUrls;
+    private final Set<Frame> monitoredFrames;
+    private final Set<Frame> unsafeNavigations;
+    // Keep positively identified consent contexts until hidden/detached or resolved. Removing
+    // just a heading must not turn a still-blocking known privacy iframe into "no consent".
+    private final Map<Frame, ConsentSurface> known = new LinkedHashMap<>();
+    private ConsentSurface surface;
+    private ConsentAction action;
+    private RuntimeException failure;
+
+    private ConsentReadiness(
+        Page page,
+        PortalUrlValidator portalUrls,
+        Set<Frame> monitoredFrames,
+        Set<Frame> unsafeNavigations) {
+      this.page = page;
+      this.portalUrls = portalUrls;
+      this.monitoredFrames = monitoredFrames;
+      this.unsafeNavigations = unsafeNavigations;
+    }
+
+    private boolean poll() {
+      try {
+        return scan();
+      } catch (RuntimeException exception) {
+        failure = exception;
+        return true;
+      }
+    }
+
+    private boolean scan() {
+      requireAllowedPage(page, portalUrls);
+      if (unsafeNavigations.contains(page.mainFrame())) throw unsupported();
+      action = null;
+      surface = null;
+      var previous = known.entrySet().iterator();
+      while (previous.hasNext()) {
+        ConsentSurface pending = previous.next().getValue();
+        requireTrustedSurface(page, pending, portalUrls, unsafeNavigations);
+        if (pending.frame() != null
+            && noLongerBlocking(page, pending, portalUrls, unsafeNavigations)) {
+          pending.owners().forEach(VulcanPrivacyConsent::dispose);
+          previous.remove();
+        }
+      }
       Locator headings = visibleHeadings(page.getByText(HEADING));
       if (headings.count() > 0) {
-        surfaces.add(new ConsentSurface(null, List.of(), List.of(), headings));
+        remember(page.mainFrame(), new ConsentSurface(null, List.of(), List.of(), headings));
       }
       for (Frame frame : page.frames()) {
         if (frame == page.mainFrame()) continue;
-        ConsentSurface surface = findFrameConsent(page, frame, portalUrls, monitoredFrames);
-        if (surface != null) surfaces.add(surface);
+        ConsentSurface found = findFrameConsent(page, frame, portalUrls, monitoredFrames);
+        if (found != null) remember(frame, found);
       }
-      if (surfaces.isEmpty()) return;
-      if (surfaces.size() != 1) throw unsupported();
-      dismissTrustedSurface(page, surfaces.getFirst(), portalUrls, unsafeNavigations);
-    } finally {
-      page.offFrameNavigated(navigation);
-      surfaces.forEach(surface -> surface.owners().forEach(VulcanPrivacyConsent::dispose));
+      if (unsafeNavigations.contains(page.mainFrame()) || known.size() > 1) throw unsupported();
+      for (ConsentSurface pending : known.values()) {
+        requireTrustedSurface(page, pending, portalUrls, unsafeNavigations);
+      }
+      if (known.isEmpty()) return false;
+      surface = known.values().iterator().next();
+      try {
+        action = resolveConsentAction(page, surface, portalUrls, unsafeNavigations);
+      } catch (PlaywrightException exception) {
+        requireTrustedSurface(page, surface, portalUrls, unsafeNavigations);
+        if (!surface.detached()) throw exception;
+      }
+      // Detachment can occur during action resolution, including the final deadline scan.
+      // That context no longer blocks; do not misclassify its stale entry as unresolved consent.
+      if (surface.detached()) {
+        known.remove(surface.frame());
+        surface.owners().forEach(VulcanPrivacyConsent::dispose);
+        action = null;
+        surface = null;
+      }
+      return action != null;
+    }
+
+    private void remember(Frame frame, ConsentSurface found) {
+      ConsentSurface replaced = known.put(frame, found);
+      if (replaced != null) replaced.owners().forEach(VulcanPrivacyConsent::dispose);
+    }
+
+    private void finish() {
+      if (failure != null) throw failure;
+      if (action != null) return;
+      // Re-evaluate once at the deadline, including newly attached/committed frames. Unknown
+      // external/opaque contexts remain excluded, but a known unresolved blocker fails closed.
+      if (!scan() && !known.isEmpty()) throw unsupported();
+    }
+
+    @Override
+    public void close() {
+      known.values().forEach(value -> value.owners().forEach(VulcanPrivacyConsent::dispose));
+      known.clear();
     }
   }
 
@@ -170,28 +275,36 @@ final class VulcanPrivacyConsent {
     return URI.create(surface.frame().url());
   }
 
-  private static void dismissTrustedSurface(
+  private static ConsentAction resolveConsentAction(
       Page page,
       ConsentSurface surface,
       PortalUrlValidator portalUrls,
       Set<Frame> unsafeNavigations) {
     requireTrustedSurface(page, surface, portalUrls, unsafeNavigations);
-    if (surface.detached()) return;
+    if (surface.detached()) return null;
     Locator headings = surface.headings();
-    if (headings.count() != 1) throw unsupported();
+    int headingCount = headings.count();
+    if (headingCount == 0) return null;
+    if (headingCount != 1) throw unsupported();
     requireTrustedSurface(page, surface, portalUrls, unsafeNavigations);
     Locator heading = headings.first();
     Locator container = heading.locator(DIALOG);
     if (container.count() == 0) container = heading.locator(FALLBACK_CONTAINER);
-    if (container.count() != 1 || !container.isVisible()) throw unsupported();
+    int containerCount = container.count();
+    if (containerCount == 0) return null;
+    if (containerCount != 1) throw unsupported();
+    if (!container.isVisible()) return null;
 
     requireTrustedSurface(page, surface, portalUrls, unsafeNavigations);
     Locator candidates =
         container.locator(ACCEPT_CANDIDATES).filter(new Locator.FilterOptions().setVisible(true));
     // Fail closed on duplicate labels, even if only one of them would pass the safety checks.
-    if (candidates.count() != 1) throw unsupported();
+    int candidateCount = candidates.count();
+    if (candidateCount == 0) return null;
+    if (candidateCount != 1) throw unsupported();
     Locator accept = candidates.first();
-    if (!accept.isVisible() || accept.locator(UNSAFE_ANCESTOR).count() > 0) throw unsupported();
+    if (!accept.isVisible()) return null;
+    if (accept.locator(UNSAFE_ANCESTOR).count() > 0) throw unsupported();
     requireTrustedSurface(page, surface, portalUrls, unsafeNavigations);
     Object formBehavior = accept.evaluate(FORM_BEHAVIOR);
     if (formBehavior != null) {
@@ -202,6 +315,22 @@ final class VulcanPrivacyConsent {
               portalUrls)) throw unsupported();
     }
     requireTrustedSurface(page, surface, portalUrls, unsafeNavigations);
+    return new ConsentAction(container, accept);
+  }
+
+  private record ConsentAction(Locator container, Locator accept) {}
+
+  private static void dismissTrustedSurface(
+      Page page,
+      ConsentSurface surface,
+      ConsentAction action,
+      PortalUrlValidator portalUrls,
+      Set<Frame> unsafeNavigations) {
+    requireTrustedSurface(page, surface, portalUrls, unsafeNavigations);
+    if (surface.detached()) return;
+    Locator container = action.container();
+    Locator accept = action.accept();
+    Locator headings = surface.headings();
     // Pin the original container: removing only the heading/action must not make a live overlay
     // appear dismissed through re-resolution of the heading-relative locator.
     ElementHandle originalContainer =

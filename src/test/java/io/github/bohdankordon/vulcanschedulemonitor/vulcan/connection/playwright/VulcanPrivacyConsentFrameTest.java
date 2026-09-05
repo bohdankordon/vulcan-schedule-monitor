@@ -40,6 +40,8 @@ class VulcanPrivacyConsentFrameTest {
     verify(consent.accept()).evaluate(VulcanPrivacyConsent.FORM_BEHAVIOR);
     verify(consent.accept())
         .click(argThat(options -> options.timeout == 3_000 && !Boolean.TRUE.equals(options.force)));
+    verify(page, times(2))
+        .waitForCondition(any(BooleanSupplier.class), any(Page.WaitForConditionOptions.class));
     verify(page)
         .waitForCondition(any(BooleanSupplier.class), argThat(options -> options.timeout == 3_000));
     verify(consent.owner()).dispose();
@@ -71,8 +73,8 @@ class VulcanPrivacyConsentFrameTest {
     verify(external, never()).frameElement();
     verify(external, never()).getByText(any(Pattern.class));
     verify(external, never()).locator(anyString());
-    verify(page, never())
-        .waitForCondition(any(BooleanSupplier.class), any(Page.WaitForConditionOptions.class));
+    verify(page)
+        .waitForCondition(any(BooleanSupplier.class), argThat(options -> options.timeout == 2_000));
   }
 
   @Test
@@ -274,15 +276,15 @@ class VulcanPrivacyConsentFrameTest {
   }
 
   @Test
-  void noKnownPrivacyInAllowedDocumentsIsANoWaitNoOp() {
+  void noKnownPrivacyInAllowedDocumentsCompletesAfterBoundedObservation() {
     Frame frame = mock(Frame.class, RETURNS_DEEP_STUBS);
     when(frame.url()).thenReturn(FRAME_URL);
     when(frame.parentFrame()).thenReturn(main);
     when(frame.frameElement().isVisible()).thenReturn(true);
     when(page.frames()).thenReturn(List.of(main, frame));
     VulcanPrivacyConsent.dismissIfPresent(page, urls);
-    verify(page, never())
-        .waitForCondition(any(BooleanSupplier.class), any(Page.WaitForConditionOptions.class));
+    verify(page)
+        .waitForCondition(any(BooleanSupplier.class), argThat(options -> options.timeout == 2_000));
     verify(page, never()).waitForTimeout(anyDouble());
   }
 

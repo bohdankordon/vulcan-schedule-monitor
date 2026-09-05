@@ -116,12 +116,13 @@ class VulcanPrivacyConsentTest {
   }
 
   @Test
-  void absentConsentIsAnImmediateNoOp() {
+  void absentConsentUsesOnlyTheBoundedReadinessWait() {
     when(page.url()).thenReturn(URL);
     VulcanPrivacyConsent.dismissIfPresent(page, urls);
     verify(page, never()).locator(anyString());
     verify(page, never()).waitForTimeout(anyDouble());
     verify(page, never()).getByRole(any(), any(Page.GetByRoleOptions.class));
+    verify(page).waitForCondition(any(), argThat(options -> options.timeout == 2_000));
   }
 
   @Test

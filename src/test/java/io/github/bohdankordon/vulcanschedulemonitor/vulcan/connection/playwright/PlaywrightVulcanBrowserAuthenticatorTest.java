@@ -254,6 +254,71 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
   }
 
   @Test
+  void delayedConsentReadinessCompletesBeforeDirectClickLoadWaitAndCredentialGuard() {
+    var consent = VulcanPrivacyConsentFrameTest.knownFrameConsent(page);
+    when(consent.frame().url()).thenReturn("");
+    when(page.locator(USERNAME_SELECTOR).count()).thenReturn(0);
+    Locator direct =
+        page.locator("a[title*='nauczyciel'], a[title*='pracownik'], a[href*='LoginEndpoint.aspx']")
+            .first();
+    when(direct.count()).thenReturn(1);
+    var firstObservation = new java.util.concurrent.atomic.AtomicBoolean(true);
+    doAnswer(
+            invocation -> {
+              java.util.function.BooleanSupplier condition = invocation.getArgument(0);
+              Page.WaitForConditionOptions options = invocation.getArgument(1);
+              if (options.timeout == 2_000 && firstObservation.getAndSet(false)) {
+                assertThat(condition.getAsBoolean()).isFalse();
+                verify(direct, never()).click(any(Locator.ClickOptions.class));
+                verify(context, never()).route(anyString(), any());
+                verify(username, never()).fill(anyString());
+                verify(password, never()).fill(anyString());
+                when(consent.frame().url()).thenReturn(VulcanPrivacyConsentFrameTest.FRAME_URL);
+              }
+              if (!condition.getAsBoolean()) throw new TimeoutError("synthetic deadline");
+              return null;
+            })
+        .when(page)
+        .waitForCondition(any(), any(Page.WaitForConditionOptions.class));
+    authenticateExpecting(VulcanAuthFailureCategory.PROTOCOL_FAILURE);
+    var order = inOrder(page, consent.accept(), direct, context, username, password);
+    order.verify(page).waitForCondition(any(), argThat(options -> options.timeout == 2_000));
+    order.verify(consent.accept()).click(any(Locator.ClickOptions.class));
+    order.verify(page).waitForCondition(any(), argThat(options -> options.timeout == 3_000));
+    order
+        .verify(direct)
+        .click(
+            argThat(options -> options.timeout == 30_000 && !Boolean.TRUE.equals(options.force)));
+    order
+        .verify(page)
+        .waitForLoadState(
+            eq(com.microsoft.playwright.options.LoadState.DOMCONTENTLOADED),
+            argThat(options -> options.timeout == 30_000));
+    order.verify(page).waitForCondition(any(), argThat(options -> options.timeout == 2_000));
+    order.verify(context).route(eq("**/*"), any());
+    order.verify(username).fill(USERNAME);
+    order.verify(password).fill(PASSWORD);
+    verify(context).newPage();
+    verify(page, never()).onPopup(any());
+  }
+
+  @Test
+  void readinessDomTimeoutLogsOnlyConsentStageAndCategory() {
+    var consent = VulcanPrivacyConsentFrameTest.knownFrameConsent(page);
+    when(consent
+            .frame()
+            .getByText(VulcanPrivacyConsent.HEADING)
+            .filter(any(Locator.FilterOptions.class))
+            .count())
+        .thenThrow(new TimeoutError(VulcanPrivacyConsentFrameTest.FRAME_URL + " " + PASSWORD));
+    authenticateExpecting(VulcanAuthFailureCategory.TRANSIENT);
+    assertFailureLog(BrowserAuthStage.COOKIE_CONSENT, VulcanAuthFailureCategory.TRANSIENT);
+    verify(context, never()).route(anyString(), any());
+    verify(username, never()).fill(anyString());
+    verify(password, never()).fill(anyString());
+  }
+
+  @Test
   void unresolvedFrameConsentLogsOnlyCookieStageAndCategoryBeforeCredentialHandling() {
     var consent = VulcanPrivacyConsentFrameTest.knownFrameConsent(page);
     when(consent.candidates().count()).thenReturn(0);
