@@ -90,6 +90,86 @@ try {
         try { Write-SmokeReport -Output $invalid -ExitCode 0 } catch { $rejected = $true }
         Assert-Contract $rejected
     }
+    # The new mode remains independently opt-in; invalid combinations never decrypt or launch.
+    Assert-Contract ((Invoke-VulcanRealSmoke) -eq 2)
+    Assert-Contract ((Invoke-VulcanRealSmoke -Run -InvestigateSchedule429) -eq 2)
+    Assert-Contract ((Invoke-VulcanRealSmoke -Configure -InvestigateSchedule429) -eq 2)
+    $investigation = @'
+REAL VULCAN SCHEDULE 429 INVESTIGATION
+category=BROWSER_RATE_LIMITED
+result=FAIL
+browserSource=NATIVE_UI_REQUEST
+browserScheduleRequests=1
+javaScheduleRequests=0
+blockedExtraScheduleRequests=0
+javaPermitted=false
+decisionCase=1
+persistedMonitoringRefererContext=UNAVAILABLE
+retries=0
+javaHeaderEvidence=SYNTHETIC_PRODUCTION_TRANSPORT
+browser.statusFamily=4xx
+browser.status429=true
+browser.refererContext=PLAN_PAGE
+'@
+    Write-Schedule429Report -Output $investigation -ExitCode 1
+    $harnessFailure = $investigation.Replace('category=BROWSER_RATE_LIMITED','category=HARNESS_FAILURE') + "`nstage=PLAN_CONTEXT_NAVIGATION`nfailureCategory=NOT_FOUND"
+    Write-Schedule429Report -Output $harnessFailure -ExitCode 1
+    foreach ($badFailure in @(
+        $harnessFailure.Replace('PLAN_CONTEXT_NAVIGATION','https://private.example/secret'),
+        $harnessFailure.Replace('NOT_FOUND','NOT_FOUND private-value'),
+        $harnessFailure.Replace("`nfailureCategory=NOT_FOUND",''),
+        $harnessFailure.Replace("`nstage=PLAN_CONTEXT_NAVIGATION",''))) {
+        $rejected = $false; $script:reportWrites = 0
+        function Write-Host { $script:reportWrites++ }
+        try { Write-Schedule429Report -Output $badFailure -ExitCode 1 } catch { $rejected = $true }
+        finally { Remove-Item Function:Write-Host }
+        Assert-Contract $rejected
+        Assert-Contract ($script:reportWrites -eq 0)
+    }
+
+    foreach ($invalid in @(
+        $investigation + "`nrawUrl=https://private.example/secret",
+        $investigation + "`nbrowser.cookieCount=PrivateCookie=secret",
+        $investigation + "`nbrowser.refererContext=PLAN_PAGE",
+        $investigation.Replace('browserScheduleRequests=1','browserScheduleRequests=2'),
+        $investigation.Replace('javaScheduleRequests=0','javaScheduleRequests=1'),
+        $investigation.Replace('PLAN_PAGE','PLAN_PAGE private-value'),
+        $investigation.Replace('retries=0','retries=1'))) {
+        $rejected = $false; $script:reportWrites = 0
+        function Write-Host { $script:reportWrites++ }
+        try { Write-Schedule429Report -Output $invalid -ExitCode 1 } catch { $rejected = $true }
+        finally { Remove-Item Function:Write-Host }
+        Assert-Contract $rejected
+        Assert-Contract ($script:reportWrites -eq 0)
+    }
+    # Exercise both modes with a synthetic bundle and a mocked child, never real network.
+    Assert-Contract ((Invoke-VulcanRealSmoke -Configure) -eq 0)
+    [void][IO.Directory]::CreateDirectory((Join-Path $testRoot 'target'))
+    [IO.File]::WriteAllText((Join-Path $testRoot 'target/vulcan-real-smoke-classpath.txt'), 'synthetic-classpath')
+    $script:childModes = [Collections.Generic.List[string]]::new()
+    function Invoke-SmokeChild {
+        param([Diagnostics.ProcessStartInfo]$Info, [byte[]]$InputBytes = @())
+        if ($Info.Arguments.Contains('test-compile')) {
+            Assert-Contract ($InputBytes.Length -eq 0)
+            return [pscustomobject]@{ ExitCode = 0; Output = '' }
+        }
+        Assert-Contract ([Text.Encoding]::ASCII.GetString($InputBytes[0..3]) -ceq 'VSM1')
+        Assert-Contract (-not (($Info.ArgumentList -join ' ').Contains('synthetic-password')))
+        Assert-Contract (-not $Info.Environment.ContainsKey('VULCAN_MASTER_KEY'))
+        [Array]::Clear($InputBytes, 0, $InputBytes.Length)
+        $mode = $Info.ArgumentList[$Info.ArgumentList.Count - 1]
+        $script:childModes.Add($mode)
+        if ($mode -ceq '--authorized-schedule-429-investigation') {
+            Assert-Contract ($Info.ArgumentList -contains 'io.github.bohdankordon.vulcanschedulemonitor.devsmoke.VulcanSchedule429Investigation')
+            return [pscustomobject]@{ ExitCode = 1; Output = $investigation }
+        }
+        Assert-Contract ($mode -ceq '--authorized-local-smoke')
+        Assert-Contract ($Info.ArgumentList -contains 'io.github.bohdankordon.vulcanschedulemonitor.devsmoke.VulcanRealSmoke')
+        return [pscustomobject]@{ ExitCode = 0; Output = $valid }
+    }
+    Assert-Contract ((Invoke-VulcanRealSmoke -InvestigateSchedule429) -eq 1)
+    Assert-Contract ((Invoke-VulcanRealSmoke -Run) -eq 0)
+    Assert-Contract ($script:childModes.Count -eq 2)
     Write-Host 'Synthetic PowerShell smoke contracts passed.'
 }
 finally {
