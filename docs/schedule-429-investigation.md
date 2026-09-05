@@ -100,5 +100,67 @@ the production jar contains no diagnostic classes. No real VULCAN calls occurred
 
 ## Current result
 
-Pending commit, push and completion of the quiet window. No real invocation has occurred
-in this revision yet. No production compatibility fix is implemented.
+Harness commit `9fe7972783f7744e9b0e5b8907eebf27dd4d9376` was verified and pushed before
+exactly one authorized invocation on 2026-09-05. A controlled quiet window ran from 20:10:14
+until after 20:25:14 local time. No VULCAN Java application was running at the boundary checks;
+no preliminary provider probe occurred.
+
+Authentication and catalog discovery succeeded (`classCount=26`). The schedule request reached
+the endpoint from the existing page, without PlanLekcji navigation, and returned **2xx HTML**:
+
+```text
+category=BROWSER_OTHER_FAILURE
+result=FAIL
+browserSource=BROWSER_CONTEXT_FETCH
+browser.statusFamily=2xx
+browser.status429=false
+browser.contentFamily=html
+browserScheduleRequests=1
+javaScheduleRequests=0
+blockedExtraScheduleRequests=0
+javaPermitted=false
+javaOutcome=NOT_RUN
+decisionCase=NOT_REACHED
+retries=0
+postLoginCookieCount=4
+verifiedCookieCount=4
+verificationChangedCookieCount=false
+verificationChangedCookieMaterial=false
+postLoginRefererContext=OTHER_ALLOWED
+verifiedRefererContext=OTHER_ALLOWED
+verificationChangedRefererContext=false
+browserPageContext=OTHER_ALLOWED
+browserRefererMatchesCapturedReferer=true
+```
+
+| Header presence | Browser observed | Java synthetic projection |
+|---|---|---|
+| Verification token | true | true |
+| AppGuid | true | true |
+| X-Requested-With | true | true |
+| Origin | true | true |
+| Referer | true | true |
+| Content-Type | true | true |
+| User-Agent | true | true |
+| Accept | true | false |
+| Accept-Language | false | false |
+| Fetch metadata | false | false |
+| Cookie | true | true |
+| Cookie count | 4 | 4 |
+
+Browser field-set, timestamp-shape, week-boundary, week-start anchor and URL-encoding booleans
+were all true. Java form evidence is synthetic calibration only; no real Java request occurred.
+The tested Java path is wired to pre-request `postLogin`, but was not exercised against VULCAN.
+Persisted monitoring Referer remains unavailable; the development database was not opened.
+
+The browser control did not obtain the expected schedule JSON. Thus none of cases 1–4 was reached,
+and the intended transport comparison is inconclusive. No HTTP 429 occurred on this invocation.
+HTML content alone does not identify an authentication page, missing initialization, or another
+server response. The HTML body was not inspected or dumped. Required AJAX-header presence and
+unchanged observed verification drift do not establish the cause of the prior monitoring 429s.
+
+The invocation exited, no diagnostic Java process remained, and no second invocation or retry
+occurred. No secrets, raw provider payloads, request dumps, HAR, screenshots, traces or storage-state
+artifacts were persisted. No production compatibility fix, database mutation, PR or monitoring
+change was made. Across all three diagnostic invocations, schedule traffic totals one browser
+request and zero Java requests; this excludes the separately authorized earlier monitoring runs.
