@@ -67,6 +67,24 @@ try {
     }
     $valid += "classCount=1`ncategory=SUCCESS`nresult=SUCCESS`n"
     Write-SmokeReport -Output $valid -ExitCode 0
+    $failed = $valid.Replace('stage.VERIFY_CACHE_PARSE=PASS', 'stage.VERIFY_CACHE_PARSE=FAIL').Replace('category=SUCCESS', 'category=PROTOCOL_FAILURE').Replace('result=SUCCESS', 'result=FAIL')
+    foreach ($failure in @('PERIODS_SCHEMA', 'PERIOD_ID_SCHEMA', 'PERIOD_NUMBER_SCHEMA', 'PERIOD_START_SCHEMA',
+            'PERIOD_END_SCHEMA', 'PERIOD_START_TIME_FORMAT', 'PERIOD_END_TIME_FORMAT', 'PERIOD_START_TIME_ONLY', 'PERIOD_END_TIME_ONLY', 'PERIOD_NUMBER_RANGE', 'DUPLICATE_PERIOD_ID')) {
+        Write-SmokeReport -Output ($failed + "cacheFailure=$failure`n") -ExitCode 1 6>$null
+    }
+    foreach ($extra in @("cacheFailure=UNKNOWN`n", "cacheFailure=https://private.example/secret`n",
+            "cacheFailure=PERIODS_SCHEMA private-value`n", "cacheFailure=periods_schema`n",
+            "cacheFailure=PERIODS_SCHEMA`ncacheFailure=PERIOD_ID_SCHEMA`n",
+            "cacheFailure=PERIODS_SCHEMA`nprivate-value`n")) {
+        $rejected = $false
+        $script:reportWrites = 0
+        # Assert the entire report is rejected before even its safe prefix is printed.
+        function Write-Host { $script:reportWrites++ }
+        try { Write-SmokeReport -Output ($failed + $extra) -ExitCode 1 } catch { $rejected = $true }
+        finally { Remove-Item Function:Write-Host }
+        Assert-Contract $rejected
+        Assert-Contract ($script:reportWrites -eq 0)
+    }
     foreach ($invalid in @($valid + "https://private.example/secret`n", $valid.Replace('PASS', 'private-value'), $valid + "result=SUCCESS`n")) {
         $rejected = $false
         try { Write-SmokeReport -Output $invalid -ExitCode 0 } catch { $rejected = $true }

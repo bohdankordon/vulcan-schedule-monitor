@@ -36,6 +36,7 @@ final class SmokeDiagnostics implements VulcanDiagnostics {
   private final EnumMap<Stage, Response> responses = new EnumMap<>(Stage.class);
   private Stage active = Stage.PORTAL_VALIDATION;
   private VulcanFailureCategory httpFailure;
+  private CacheFailure cacheFailure;
   private Category category = Category.HARNESS_FAILURE;
   private Integer classCount;
 
@@ -58,6 +59,11 @@ final class SmokeDiagnostics implements VulcanDiagnostics {
   @Override
   public void httpFailure(VulcanFailureCategory failure) {
     httpFailure = failure;
+  }
+
+  @Override
+  public void cacheFailure(CacheFailure failure) {
+    cacheFailure = failure;
   }
 
   void failed(VulcanAuthFailureCategory failure) {
@@ -94,6 +100,7 @@ final class SmokeDiagnostics implements VulcanDiagnostics {
                     + ","
                     + (response.status() == StatusFamily.REDIRECT)));
     if (httpFailure != null) output.println("httpFailure=" + httpFailure);
+    if (cacheFailure != null) output.println("cacheFailure=" + cacheFailure);
     if (classCount != null) output.println("classCount=" + classCount);
     output.println("category=" + category);
     output.println("result=" + (category == Category.SUCCESS ? "SUCCESS" : "FAIL"));

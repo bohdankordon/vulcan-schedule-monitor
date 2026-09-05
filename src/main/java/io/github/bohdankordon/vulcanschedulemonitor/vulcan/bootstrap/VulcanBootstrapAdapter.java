@@ -7,6 +7,7 @@ import static io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanJso
 import static io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanJson.requiredText;
 
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics.VulcanDiagnostics;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics.VulcanDiagnostics.CacheFailure;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics.VulcanDiagnostics.Stage;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanHttpTransport;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanProtocolException;
@@ -67,15 +68,35 @@ public final class VulcanBootstrapAdapter {
             Stage.VERIFY_SCHOOL_YEAR, () -> requiredInt(data, "currentSchoolYear", OPERATION));
     diagnostics.begin(Stage.VERIFY_CACHE_PARSE);
     List<LessonPeriod> lessonPeriods = new ArrayList<>();
-    for (JsonNode period : requiredArray(data, "poryLekcji", OPERATION)) {
+    for (JsonNode period :
+        diagnostics.observeCache(
+            CacheFailure.PERIODS_SCHEMA, () -> requiredArray(data, "poryLekcji", OPERATION))) {
+      long id =
+          diagnostics.observeCache(
+              CacheFailure.PERIOD_ID_SCHEMA, () -> requiredLong(period, "Id", OPERATION));
+      int number =
+          diagnostics.observeCache(
+              CacheFailure.PERIOD_NUMBER_SCHEMA, () -> requiredInt(period, "Numer", OPERATION));
+      String startText =
+          diagnostics.observeCache(
+              CacheFailure.PERIOD_START_SCHEMA, () -> requiredText(period, "Poczatek", OPERATION));
+      LocalTime start =
+          parseObservedTime(
+              startText,
+              CacheFailure.PERIOD_START_TIME_FORMAT,
+              CacheFailure.PERIOD_START_TIME_ONLY);
+      String endText =
+          diagnostics.observeCache(
+              CacheFailure.PERIOD_END_SCHEMA, () -> requiredText(period, "Koniec", OPERATION));
+      LocalTime end =
+          parseObservedTime(
+              endText, CacheFailure.PERIOD_END_TIME_FORMAT, CacheFailure.PERIOD_END_TIME_ONLY);
       lessonPeriods.add(
-          new LessonPeriod(
-              requiredLong(period, "Id", OPERATION),
-              requiredInt(period, "Numer", OPERATION),
-              parseLegacyTime(requiredText(period, "Poczatek", OPERATION)),
-              parseLegacyTime(requiredText(period, "Koniec", OPERATION))));
+          diagnostics.observeCache(
+              CacheFailure.PERIOD_NUMBER_RANGE, () -> new LessonPeriod(id, number, start, end)));
     }
-    return new SchoolBootstrap(schoolYear, lessonPeriods);
+    return diagnostics.observeCache(
+        CacheFailure.DUPLICATE_PERIOD_ID, () -> new SchoolBootstrap(schoolYear, lessonPeriods));
   }
 
   private static LocalTime parseLegacyTime(String value) {
@@ -87,6 +108,22 @@ public final class VulcanBootstrapAdapter {
       return LocalTime.parse(value.substring(separator + 1, separator + 9));
     } catch (RuntimeException exception) {
       throw new VulcanProtocolException(OPERATION);
+    }
+  }
+
+  private LocalTime parseObservedTime(String value, CacheFailure invalid, CacheFailure timeOnly) {
+    try {
+      return parseLegacyTime(value);
+    } catch (VulcanProtocolException exception) {
+      CacheFailure failure = invalid;
+      try {
+        LocalTime.parse(value);
+        failure = timeOnly;
+      } catch (java.time.format.DateTimeParseException ignored) {
+        // Inspect only format in memory; neither the value nor the exception reaches diagnostics.
+      }
+      diagnostics.cacheFailure(failure);
+      throw exception;
     }
   }
 }

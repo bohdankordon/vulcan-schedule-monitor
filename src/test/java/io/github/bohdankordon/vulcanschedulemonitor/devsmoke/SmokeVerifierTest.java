@@ -7,12 +7,14 @@ import static org.assertj.core.api.Assertions.*;
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.github.tomakehurst.wiremock.core.WireMockConfiguration;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.*;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics.VulcanDiagnostics.CacheFailure;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics.VulcanDiagnostics.Stage;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSessionMaterial;
 import java.net.URI;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
@@ -64,7 +66,8 @@ class SmokeVerifierTest {
     }
     assertThat(report)
         .contains(
-            "classCount=1", "category=SUCCESS", "http.VERIFY_CACHE_REQUEST=SUCCESS,JSON,false");
+            "classCount=1", "category=SUCCESS", "http.VERIFY_CACHE_REQUEST=SUCCESS,JSON,false")
+        .doesNotContain("cacheFailure=");
     server.verify(1, getRequestedFor(urlPathEqualTo(CACHE)));
     server.verify(1, getRequestedFor(urlPathEqualTo(TREE)));
   }
@@ -146,6 +149,44 @@ class SmokeVerifierTest {
     json(CACHE, "{\"success\":true,\"data\":{\"currentSchoolYear\":\"private-value\"}}");
     failure(Stage.VERIFY_SCHOOL_YEAR, "PROTOCOL_FAILURE");
     assertThat(report()).contains("stage.VERIFY_TREE_REQUEST=NOT_REACHED");
+  }
+
+  @ParameterizedTest
+  @EnumSource(CacheFailure.class)
+  void periodFailuresReportOnlyTheFixedClassificationAndDoNotRequestTree(CacheFailure expected) {
+    var mapper = new tools.jackson.databind.ObjectMapper();
+    var period = mapper.createObjectNode();
+    period.put("Id", 501);
+    period.put("Numer", 1);
+    period.put("Poczatek", "2000-01-01T08:00:00");
+    period.put("Koniec", "2000-01-01T08:45:00");
+    var periods = mapper.createArrayNode().add(period);
+    var data = mapper.createObjectNode().put("currentSchoolYear", 2099);
+    data.set("poryLekcji", periods);
+    switch (expected) {
+      case PERIODS_SCHEMA -> data.put("poryLekcji", "private schema value");
+      case PERIOD_ID_SCHEMA -> period.put("Id", "private ID value");
+      case PERIOD_NUMBER_SCHEMA -> period.put("Numer", "private number value");
+      case PERIOD_START_SCHEMA -> period.remove("Poczatek");
+      case PERIOD_END_SCHEMA -> period.remove("Koniec");
+      case PERIOD_START_TIME_FORMAT -> period.put("Poczatek", "https://private.example/secret");
+      case PERIOD_END_TIME_FORMAT -> period.put("Koniec", "private time value");
+      case PERIOD_START_TIME_ONLY -> period.put("Poczatek", "08:00:00");
+      case PERIOD_END_TIME_ONLY -> period.put("Koniec", "08:45:00");
+      case PERIOD_NUMBER_RANGE -> period.put("Numer", -1);
+      case DUPLICATE_PERIOD_ID -> periods.add(period.deepCopy());
+    }
+    var response = mapper.createObjectNode().put("success", true);
+    response.set("data", data);
+    json(CACHE, response.toString());
+
+    failure(Stage.VERIFY_CACHE_PARSE, "PROTOCOL_FAILURE");
+
+    assertThat(report())
+        .contains("cacheFailure=" + expected, "stage.VERIFY_SCHOOL_YEAR=PASS")
+        .doesNotContain("501", "2099", "08:00:00", "08:45:00");
+    server.verify(1, getRequestedFor(urlPathEqualTo(CACHE)));
+    server.verify(0, getRequestedFor(urlPathEqualTo(TREE)));
   }
 
   @Test

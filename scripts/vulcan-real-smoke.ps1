@@ -165,6 +165,7 @@ function Write-SmokeReport {
             $line -cmatch "^stage\.($stages)=(PASS|FAIL|INCOMPLETE|NOT_REACHED)$" -or
             $line -cmatch '^http\.(VERIFY_CACHE_REQUEST|VERIFY_TREE_REQUEST)=(INFORMATIONAL|SUCCESS|REDIRECT|CLIENT_ERROR|SERVER_ERROR|OTHER),(JSON|HTML|OTHER),(true|false)$' -or
             $line -cmatch '^httpFailure=(AUTHENTICATION_REQUIRED|RATE_LIMITED|SERVER_ERROR|PERMANENT_HTTP|TRANSPORT_ERROR|SESSION_REDIRECT|UNEXPECTED_HTML)$' -or
+            $line -cmatch '^cacheFailure=(PERIODS_SCHEMA|PERIOD_ID_SCHEMA|PERIOD_NUMBER_SCHEMA|PERIOD_START_SCHEMA|PERIOD_END_SCHEMA|PERIOD_START_TIME_FORMAT|PERIOD_END_TIME_FORMAT|PERIOD_START_TIME_ONLY|PERIOD_END_TIME_ONLY|PERIOD_NUMBER_RANGE|DUPLICATE_PERIOD_ID)$' -or
             $line -cmatch '^classCount=[0-9]{1,10}$' -or
             $line -cmatch "^category=($categories)$" -or
             $line -cmatch '^result=(SUCCESS|FAIL)$'

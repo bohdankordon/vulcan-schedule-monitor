@@ -117,6 +117,8 @@ The main is opt-in, excluded from the production jar, and starts no Spring conte
 
 Diagnostics report these finite stages: `PORTAL_VALIDATION`, `BROWSER_AUTH`, `SESSION_CAPTURE`, `SESSION_MATERIAL_RECONSTRUCTION`, `VERIFY_CACHE_REQUEST`, `VERIFY_CACHE_PARSE`, `VERIFY_SCHOOL_YEAR`, `VERIFY_TREE_REQUEST`, `VERIFY_TREE_PARSE`, `SESSION_SNAPSHOT`, and `VERIFIED`. A stage can be `PASS`, `FAIL`, `INCOMPLETE`, or `NOT_REACHED`; `PASS` for an intermediate stage is not overall authentication success. The two parse stages cover JSON decoding and schema/domain conversion; school-year extraction has its own stage. Optional HTTP facts contain only status family, content family, and a redirect boolean. The smoke-only category `SESSION_AUTHENTICATION` distinguishes redirects, 401/403, and unexpected HTML from parser failures without exposing destinations or bodies. Normal production constructors use a no-op observer and retain existing public error mapping/logging.
 
+Cache lesson-period failures can additionally report a fixed `cacheFailure` enum: periods/ID/number/start/end schema, start/end time format, number range, or duplicate period ID. A rejected start/end value that parses as an ISO local time receives the more specific `PERIOD_START_TIME_ONLY` / `PERIOD_END_TIME_ONLY` label. This is diagnostic classification only: it does not accept a new time representation or change the protocol failure. No field values, IDs, or response text are included. The PowerShell report allowlist rejects unknown enum values and duplicate diagnostic fields before displaying any output.
+
 For example, a synthetic parse failure could end with:
 
 ```text

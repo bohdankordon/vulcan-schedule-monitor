@@ -10,6 +10,22 @@ import org.junit.jupiter.api.Test;
 
 class SmokeScriptTest {
   @Test
+  void cacheFailureAllowlistExactlyMatchesTheJavaEnumOnEveryPlatform() throws Exception {
+    String script = Files.readString(Path.of("scripts/vulcan-real-smoke.ps1"));
+    var matcher =
+        java.util.regex.Pattern.compile("\\^cacheFailure=\\(([^)]*)\\)\\$").matcher(script);
+    assertThat(matcher.find()).isTrue();
+    assertThat(matcher.group(1).split("\\|"))
+        .containsExactly(
+            java.util.Arrays.stream(
+                    io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics
+                        .VulcanDiagnostics.CacheFailure.values())
+                .map(Enum::name)
+                .toArray(String[]::new));
+    assertThat(matcher.find()).isFalse();
+  }
+
+  @Test
   void helpAndSyntheticDpapiContractsUseOnlyAnIsolatedTemporaryRoot() throws Exception {
     assumeTrue(System.getProperty("os.name").startsWith("Windows"), "DPAPI requires Windows");
     Process process =
