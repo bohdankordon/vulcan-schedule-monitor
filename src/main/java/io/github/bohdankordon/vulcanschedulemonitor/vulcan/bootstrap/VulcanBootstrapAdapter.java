@@ -14,9 +14,16 @@ import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanProtocolEx
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSession;
 import java.net.URI;
 import java.time.Clock;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
+import java.time.format.DateTimeParseException;
+import java.time.format.ResolverStyle;
+import java.time.temporal.ChronoField;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import org.springframework.web.util.UriComponentsBuilder;
 import tools.jackson.databind.JsonNode;
@@ -24,6 +31,8 @@ import tools.jackson.databind.JsonNode;
 public final class VulcanBootstrapAdapter {
 
   private static final String OPERATION = "GetCache";
+  private static final List<DateTimeFormatter> PERIOD_TIMESTAMP_FORMATTERS =
+      List.of(periodTimestampFormatter(' '), periodTimestampFormatter('T'));
 
   private final VulcanSession session;
   private final VulcanHttpTransport transport;
@@ -99,27 +108,36 @@ public final class VulcanBootstrapAdapter {
         CacheFailure.DUPLICATE_PERIOD_ID, () -> new SchoolBootstrap(schoolYear, lessonPeriods));
   }
 
-  private static LocalTime parseLegacyTime(String value) {
-    int separator = value.indexOf('T');
-    if (separator < 0 || value.length() < separator + 9) {
-      throw new VulcanProtocolException(OPERATION);
+  private static DateTimeFormatter periodTimestampFormatter(char separator) {
+    return new DateTimeFormatterBuilder()
+        .appendValue(ChronoField.YEAR, 4)
+        .appendPattern("-MM-dd")
+        .appendLiteral(separator)
+        .appendPattern("HH:mm:ss")
+        .toFormatter(Locale.ROOT)
+        .withResolverStyle(ResolverStyle.STRICT);
+  }
+
+  private static LocalTime parsePeriodTimestamp(String value) {
+    for (DateTimeFormatter formatter : PERIOD_TIMESTAMP_FORMATTERS) {
+      try {
+        return LocalDateTime.parse(value, formatter).toLocalTime();
+      } catch (DateTimeParseException ignored) {
+        // Try only the two supported whole-timestamp shapes; never expose the parsed input.
+      }
     }
-    try {
-      return LocalTime.parse(value.substring(separator + 1, separator + 9));
-    } catch (RuntimeException exception) {
-      throw new VulcanProtocolException(OPERATION);
-    }
+    throw new VulcanProtocolException(OPERATION);
   }
 
   private LocalTime parseObservedTime(String value, CacheFailure invalid, CacheFailure timeOnly) {
     try {
-      return parseLegacyTime(value);
+      return parsePeriodTimestamp(value);
     } catch (VulcanProtocolException exception) {
       CacheFailure failure = invalid;
       try {
         LocalTime.parse(value);
         failure = timeOnly;
-      } catch (java.time.format.DateTimeParseException ignored) {
+      } catch (DateTimeParseException ignored) {
         // Inspect only format in memory; neither the value nor the exception reaches diagnostics.
       }
       diagnostics.cacheFailure(failure);

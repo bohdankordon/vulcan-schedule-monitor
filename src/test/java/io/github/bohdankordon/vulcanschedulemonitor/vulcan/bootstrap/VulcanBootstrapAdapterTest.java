@@ -15,6 +15,15 @@ import org.junit.jupiter.api.Test;
 class VulcanBootstrapAdapterTest {
 
   @Test
+  void mapsPublicLegacySpaceSeparatedTimestampsToLocalLessonTimes() {
+    SchoolBootstrap bootstrap = adapter().mapResponse(json("get-cache-legacy-space"));
+
+    assertThat(bootstrap.currentSchoolYear()).isEqualTo(2099);
+    assertThat(bootstrap.lessonPeriods())
+        .containsExactly(new LessonPeriod(501, 1, LocalTime.of(8, 0), LocalTime.of(8, 45)));
+  }
+
+  @Test
   void mapsOpaquePeriodIdentifiersToTheirDeclaredLessonNumbersAndTimes() {
     VulcanBootstrapAdapter adapter = adapter();
 

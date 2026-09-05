@@ -1,0 +1,14 @@
+{
+  "success": true,
+  "data": {
+    "currentSchoolYear": 2099,
+    "poryLekcji": [
+      {
+        "Id": 501,
+        "Numer": 1,
+        "Poczatek": "1900-01-01 08:00:00",
+        "Koniec": "1900-01-01 08:45:00"
+      }
+    ]
+  }
+}

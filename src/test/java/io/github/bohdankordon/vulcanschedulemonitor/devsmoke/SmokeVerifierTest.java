@@ -44,9 +44,10 @@ class SmokeVerifierTest {
     server.stop();
   }
 
-  @Test
-  void realProductionPipelineReportsBothRequestsParsersYearAndSnapshot() {
-    json(CACHE, text("get-cache"));
+  @ParameterizedTest
+  @ValueSource(strings = {"get-cache", "get-cache-legacy-space"})
+  void realProductionPipelineReportsBothRequestsParsersYearAndSnapshot(String cacheFixture) {
+    json(CACHE, text(cacheFixture));
     json(TREE, text("get-tree"));
     var verified = new DefaultVulcanSessionVerifier(diagnostics).verifyAndDiscover(material);
     diagnostics.success(verified.classes().size());
@@ -186,6 +187,59 @@ class SmokeVerifierTest {
         .contains("cacheFailure=" + expected, "stage.VERIFY_SCHOOL_YEAR=PASS")
         .doesNotContain("501", "2099", "08:00:00", "08:45:00");
     server.verify(1, getRequestedFor(urlPathEqualTo(CACHE)));
+    server.verify(0, getRequestedFor(urlPathEqualTo(TREE)));
+  }
+
+  @ParameterizedTest
+  @ValueSource(
+      strings = {
+        "1900-01-01X08:00:00",
+        "prefix 1900-01-01 08:00:00",
+        "1900-01-01 25:00:00",
+        "1900-01-01T25:00:00",
+        "1900-02-29 08:00:00",
+        "1900-02-29T08:00:00",
+        "1900-13-01 08:00:00",
+        "malformedT08:00:00",
+        "1900-01-01 08:00:00.123",
+        "1900-01-01T08:00:00.123",
+        "1900-01-01T08:00:00Z",
+        "1900-01-01T08:00:00+01:00",
+        "1900-01-01 08:00",
+        "1900-01-01\t08:00:00",
+        "1900-01-01  08:00:00",
+        "1900-1-01 08:00:00"
+      })
+  void bothPeriodTimestampsRequireOneCompleteStrictSupportedShape(String invalid) {
+    rejectPeriodFieldValues(
+        invalid, CacheFailure.PERIOD_START_TIME_FORMAT, CacheFailure.PERIOD_END_TIME_FORMAT);
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"", " ", "\t"})
+  void blankPeriodTimesRemainSchemaFailures(String blank) {
+    rejectPeriodFieldValues(
+        blank, CacheFailure.PERIOD_START_SCHEMA, CacheFailure.PERIOD_END_SCHEMA);
+  }
+
+  private void rejectPeriodFieldValues(
+      String value, CacheFailure startFailure, CacheFailure endFailure) {
+    for (String field : new String[] {"Poczatek", "Koniec"}) {
+      var response =
+          io.github.bohdankordon.vulcanschedulemonitor.testsupport.VulcanFixtures.json(
+              "get-cache-legacy-space");
+      var period =
+          (tools.jackson.databind.node.ObjectNode) response.path("data").path("poryLekcji").get(0);
+      period.put(field, value);
+      json(CACHE, response.toString());
+      diagnostics = new SmokeDiagnostics();
+
+      failure(Stage.VERIFY_CACHE_PARSE, "PROTOCOL_FAILURE");
+
+      assertThat(report())
+          .contains("cacheFailure=" + (field.equals("Poczatek") ? startFailure : endFailure))
+          .doesNotContain("1900-", "malformed", "prefix", "08:00");
+    }
     server.verify(0, getRequestedFor(urlPathEqualTo(TREE)));
   }
 

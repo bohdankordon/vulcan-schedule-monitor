@@ -119,6 +119,8 @@ Diagnostics report these finite stages: `PORTAL_VALIDATION`, `BROWSER_AUTH`, `SE
 
 Cache lesson-period failures can additionally report a fixed `cacheFailure` enum: periods/ID/number/start/end schema, start/end time format, number range, or duplicate period ID. A rejected start/end value that parses as an ISO local time receives the more specific `PERIOD_START_TIME_ONLY` / `PERIOD_END_TIME_ONLY` label. This is diagnostic classification only: it does not accept a new time representation or change the protocol failure. No field values, IDs, or response text are included. The PowerShell report allowlist rejects unknown enum values and duplicate diagnostic fields before displaying any output.
 
+GetCache lesson-period start/end timestamps accept exactly the legacy `yyyy-MM-dd HH:mm:ss` shape and the existing `yyyy-MM-dd'T'HH:mm:ss` shape after the shared text-field trimming. Parsing validates the complete date and time strictly with a fixed locale before extracting the local time. Time-only values, fractions, offsets, other separators, malformed dates, and embedded timestamp fragments are not accepted.
+
 For example, a synthetic parse failure could end with:
 
 ```text
