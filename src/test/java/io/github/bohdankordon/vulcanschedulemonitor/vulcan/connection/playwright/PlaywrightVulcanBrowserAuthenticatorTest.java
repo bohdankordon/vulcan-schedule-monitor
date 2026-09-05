@@ -10,6 +10,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.microsoft.playwright.*;
 import com.microsoft.playwright.options.Cookie;
+import com.microsoft.playwright.options.ElementState;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.*;
 import java.net.URI;
 import java.util.List;
@@ -86,9 +87,13 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
     var consent = VulcanPrivacyConsentTest.knownConsent(page);
     authenticateExpecting(VulcanAuthFailureCategory.PROTOCOL_FAILURE);
     var order =
-        inOrder(consent.accept(), consent.container(), context, username, password, submitter);
+        inOrder(
+            consent.accept(), consent.originalContainer(), context, username, password, submitter);
     order.verify(consent.accept()).click(any(Locator.ClickOptions.class));
-    order.verify(consent.container()).waitFor(any(Locator.WaitForOptions.class));
+    order
+        .verify(consent.originalContainer())
+        .waitForElementState(
+            eq(ElementState.HIDDEN), any(ElementHandle.WaitForElementStateOptions.class));
     order.verify(context).route(eq("**/*"), any());
     order.verify(username).fill(USERNAME);
     order.verify(password).fill(PASSWORD);
@@ -101,8 +106,9 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
   void blockedConsentStopsBeforeCredentialEntryAndLogsOnlyTheStageAndCategory() {
     var consent = VulcanPrivacyConsentTest.knownConsent(page);
     doThrow(new TimeoutError(URL + " " + USERNAME + " " + PASSWORD))
-        .when(consent.container())
-        .waitFor(any(Locator.WaitForOptions.class));
+        .when(consent.originalContainer())
+        .waitForElementState(
+            eq(ElementState.HIDDEN), any(ElementHandle.WaitForElementStateOptions.class));
     authenticateExpecting(VulcanAuthFailureCategory.TRANSIENT);
     verify(context, never()).route(anyString(), any());
     verify(username, never()).fill(anyString());
@@ -166,6 +172,54 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
     authenticateExpecting(VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
     assertFailureLog(
         BrowserAuthStage.DIRECT_LOGIN_DISCOVERY, VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
+  }
+
+  @Test
+  void unresolvedKnownConsentFailsAtConsentWithoutAttemptingDirectLogin() {
+    var consent = VulcanPrivacyConsentTest.knownConsent(page);
+    when(consent.candidates().count()).thenReturn(0);
+    clearInvocations(page);
+    authenticateExpecting(VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
+    verify(page, never()).locator(USERNAME_SELECTOR);
+    verify(context, never()).route(anyString(), any());
+    verify(username, never()).fill(anyString());
+    verify(password, never()).fill(anyString());
+    assertFailureLog(
+        BrowserAuthStage.COOKIE_CONSENT, VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
+  }
+
+  @Test
+  void directLoginClickFailureHasASanitizedNavigationStageAndExplicitNormalTimeout() {
+    when(page.locator(USERNAME_SELECTOR).count()).thenReturn(0);
+    Locator direct =
+        page.locator("a[title*='nauczyciel'], a[title*='pracownik'], a[href*='LoginEndpoint.aspx']")
+            .first();
+    when(direct.count()).thenReturn(1);
+    doThrow(new PlaywrightException(URL + " " + USERNAME + " " + PASSWORD))
+        .when(direct)
+        .click(any(Locator.ClickOptions.class));
+    authenticateExpecting(VulcanAuthFailureCategory.TRANSIENT);
+    verify(direct).click(argThat(options -> options.timeout == 30_000));
+    assertFailureLog(BrowserAuthStage.DIRECT_LOGIN_NAVIGATION, VulcanAuthFailureCategory.TRANSIENT);
+  }
+
+  @Test
+  void consentDismissalPrecedesDirectLoginNavigationAndCredentials() {
+    var consent = VulcanPrivacyConsentTest.knownConsent(page);
+    when(page.locator(USERNAME_SELECTOR).count()).thenReturn(0);
+    Locator direct =
+        page.locator("a[title*='nauczyciel'], a[title*='pracownik'], a[href*='LoginEndpoint.aspx']")
+            .first();
+    when(direct.count()).thenReturn(1);
+    authenticateExpecting(VulcanAuthFailureCategory.PROTOCOL_FAILURE);
+    var order = inOrder(consent.originalContainer(), direct, username, password);
+    order
+        .verify(consent.originalContainer())
+        .waitForElementState(
+            eq(ElementState.HIDDEN), any(ElementHandle.WaitForElementStateOptions.class));
+    order.verify(direct).click(any(Locator.ClickOptions.class));
+    order.verify(username).fill(USERNAME);
+    order.verify(password).fill(PASSWORD);
   }
 
   @Test

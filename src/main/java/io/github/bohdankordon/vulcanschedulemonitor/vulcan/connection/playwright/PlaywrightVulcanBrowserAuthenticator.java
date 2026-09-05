@@ -52,7 +52,13 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
       stage = BrowserAuthStage.COOKIE_CONSENT;
       VulcanPrivacyConsent.dismissIfPresent(page, portalUrls);
       stage = BrowserAuthStage.DIRECT_LOGIN_DISCOVERY;
-      locateDirectLogin(page);
+      Locator directLogin = locateDirectLogin(page);
+      if (directLogin != null) {
+        stage = BrowserAuthStage.DIRECT_LOGIN_NAVIGATION;
+        directLogin.click(new Locator.ClickOptions().setTimeout(30_000));
+        page.waitForLoadState(
+            LoadState.DOMCONTENTLOADED, new Page.WaitForLoadStateOptions().setTimeout(30_000));
+      }
       requireAllowedPage(page);
       stage = BrowserAuthStage.COOKIE_CONSENT;
       VulcanPrivacyConsent.dismissIfPresent(page, portalUrls);
@@ -203,9 +209,9 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
     return new VulcanAuthenticationException(VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
   }
 
-  private void locateDirectLogin(Page page) {
+  private Locator locateDirectLogin(Page page) {
     if (page.locator("input[autocomplete='username'], input[name='LoginName']").count() > 0) {
-      return;
+      return null;
     }
     Locator direct =
         page.locator("a[title*='nauczyciel'], a[title*='pracownik'], a[href*='LoginEndpoint.aspx']")
@@ -213,8 +219,7 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
     if (direct.count() == 0) {
       throw new VulcanAuthenticationException(VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
     }
-    direct.click();
-    page.waitForLoadState(LoadState.DOMCONTENTLOADED);
+    return direct;
   }
 
   private void requireAllowedPage(Page page) {
