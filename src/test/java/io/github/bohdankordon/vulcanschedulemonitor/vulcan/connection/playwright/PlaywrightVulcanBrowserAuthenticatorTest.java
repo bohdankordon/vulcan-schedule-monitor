@@ -223,6 +223,59 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
   }
 
   @Test
+  void frameConsentResolvesBeforeOriginalPageNavigationLoadWaitAndCredentials() {
+    var consent = VulcanPrivacyConsentFrameTest.knownFrameConsent(page);
+    when(page.locator(USERNAME_SELECTOR).count()).thenReturn(0);
+    Locator direct =
+        page.locator("a[title*='nauczyciel'], a[title*='pracownik'], a[href*='LoginEndpoint.aspx']")
+            .first();
+    when(direct.count()).thenReturn(1);
+    authenticateExpecting(VulcanAuthFailureCategory.PROTOCOL_FAILURE);
+    var order = inOrder(consent.accept(), page, direct, context, username, password);
+    order.verify(consent.accept()).click(any(Locator.ClickOptions.class));
+    order
+        .verify(page)
+        .waitForCondition(
+            any(java.util.function.BooleanSupplier.class), any(Page.WaitForConditionOptions.class));
+    order
+        .verify(direct)
+        .click(
+            argThat(options -> options.timeout == 30_000 && !Boolean.TRUE.equals(options.force)));
+    order
+        .verify(page)
+        .waitForLoadState(
+            eq(com.microsoft.playwright.options.LoadState.DOMCONTENTLOADED),
+            any(Page.WaitForLoadStateOptions.class));
+    order.verify(context).route(eq("**/*"), any());
+    order.verify(username).fill(USERNAME);
+    order.verify(password).fill(PASSWORD);
+    verify(context, times(1)).newPage();
+    verify(page, never()).onPopup(any());
+  }
+
+  @Test
+  void unresolvedFrameConsentLogsOnlyCookieStageAndCategoryBeforeCredentialHandling() {
+    var consent = VulcanPrivacyConsentFrameTest.knownFrameConsent(page);
+    when(consent.candidates().count()).thenReturn(0);
+    authenticateExpecting(VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
+    assertFailureLog(
+        BrowserAuthStage.COOKIE_CONSENT, VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
+    verify(context, never()).route(anyString(), any());
+    verify(username, never()).fill(anyString());
+    verify(password, never()).fill(anyString());
+  }
+
+  @Test
+  void frameStillBlockingLogsSanitizedConsentFailureWithoutFillingCredentials() {
+    var consent = VulcanPrivacyConsentFrameTest.knownFrameConsent(page);
+    doNothing().when(consent.accept()).click(any(Locator.ClickOptions.class));
+    authenticateExpecting(VulcanAuthFailureCategory.TRANSIENT);
+    assertFailureLog(BrowserAuthStage.COOKIE_CONSENT, VulcanAuthFailureCategory.TRANSIENT);
+    verify(context, never()).route(anyString(), any());
+    verify(password, never()).fill(anyString());
+  }
+
+  @Test
   void unsafeLoginFormFailsBeforeCredentialEntryWithItsOwnStage() {
     when(page.locator(PASSWORD_SELECTOR).count()).thenReturn(0);
     authenticateExpecting(VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);

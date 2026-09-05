@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 import com.microsoft.playwright.ElementHandle;
+import com.microsoft.playwright.Frame;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.TimeoutError;
@@ -264,14 +265,21 @@ class VulcanPrivacyConsentTest {
 
   static ConsentLocators knownConsent(Page page) {
     when(page.url()).thenReturn(URL);
+    return knownConsent(page.getByText(VulcanPrivacyConsent.HEADING));
+  }
+
+  static ConsentLocators knownConsent(Frame frame) {
+    return knownConsent(frame.getByText(VulcanPrivacyConsent.HEADING));
+  }
+
+  private static ConsentLocators knownConsent(Locator unfilteredHeadings) {
     Locator headings = mock(Locator.class);
     Locator heading = mock(Locator.class, RETURNS_DEEP_STUBS);
     Locator container = mock(Locator.class, RETURNS_DEEP_STUBS);
     Locator candidates = mock(Locator.class);
     Locator accept = mock(Locator.class, RETURNS_DEEP_STUBS);
     ElementHandle original = mock(ElementHandle.class);
-    when(page.getByText(VulcanPrivacyConsent.HEADING).filter(any(Locator.FilterOptions.class)))
-        .thenReturn(headings);
+    when(unfilteredHeadings.filter(any(Locator.FilterOptions.class))).thenReturn(headings);
     when(headings.count()).thenReturn(1);
     when(headings.first()).thenReturn(heading);
     when(heading.locator(VulcanPrivacyConsent.DIALOG)).thenReturn(container);
