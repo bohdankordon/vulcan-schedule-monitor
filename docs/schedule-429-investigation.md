@@ -593,3 +593,86 @@ stdin-boundary cases); full `verify` passed with 660 tests, zero failures/errors
 and four optional Chromium cases skipped. The 37 existing and 11 new standalone
 PowerShell cases passed. Spotless and `git diff --check` passed. No developer HAR
 was inspected, no VULCAN request occurred, and the real Accept variant was not run.
+
+## Fresh-session result and local cookie-mutation observation
+
+Subsequent authorized runs produced A2 (older captured material with Accept still
+returned 429) and then **F2**: a newly captured successful native Firefox request,
+followed promptly by untouched Java, produced valid 2xx JSON. F2 validated the
+native evidence, used `UNTOUCHED` with no Accept injection, and completed one
+schedule request with zero retries. Production Java transport can call the
+endpoint. This substantially weakens browser-fingerprint hypotheses; N1 and A2
+remain confounded by session age, server-side state and possible rate windows.
+Header experiments are no longer the leading direction.
+
+Code inspection confirms that `VulcanSession` owns the JDK CookieManager and
+`snapshotMaterial()` reads its current cookie store. The persisted schedule source
+loads a session, calls the fetcher, checks the returned scope, and only then calls
+`sessions.replace(...)`; replacement snapshots the session. A throwing fetch skips
+replacement. Thus a failed response **could** rotate in-memory cookies without
+those changes being persisted. Whether a real VULCAN 429 does this remains unproven.
+
+The diagnostic now snapshots locally immediately before the production call and
+again in `finally`, including classified failures. Both existing variants use the
+same observer. It adds only these finite fields to schema version 1:
+
+- `session.cookieCountBefore` and `session.cookieCountAfter`: bounded counts or
+  `UNAVAILABLE`.
+- `session.cookieCountChanged` and `session.cookieMaterialChanged`: booleans or
+  `UNAVAILABLE`.
+
+Cookie name/value pairs are compared as an in-memory sorted multiset. Pair order
+is ignored; additions, removals, value changes and duplicate multiplicity matter.
+No names, values, ordering, hashes, per-cookie lengths, tokens, or Set-Cookie
+details enter the report. The observation makes no network or persistence calls.
+It does not change the request, response classification, permit, or retry policy.
+The boolean describes a pair delta across the call; it does not identify the cause
+or distinguish a response update from cookie expiry during that interval.
+
+Preflight/permit rejection leaves observation fields unavailable. Transport errors
+do not establish whether dispatch occurred: the post snapshot is still taken, but
+post fields stay unavailable. This conservatively includes transport failures
+after possible dispatch; an unchanged local store is not evidence of no rotation.
+Snapshot/parse failures also leave unavailable facts without replacing the original
+schedule outcome. In particular, production snapshot material cannot represent an
+empty cookie header; complete cookie deletion may therefore be unavailable rather
+than reported as zero. A lost child report leaves all cookie observations unknown
+and its one-request budget spent, with no restart.
+
+Synthetic loopback tests use the real production session, client, adapter,
+transport, JDK request factory and CookieManager. A synthetic 429 with Set-Cookie
+rotation is detected after classification as `RATE_LIMITED`. This proves the JDK
+mechanism works locally; it does **not** prove the provider rotates cookies on 429.
+Coverage also includes unchanged cookies, addition/removal/reordering, HTML,
+redirects, auth, 5xx, malformed JSON, transport failure, snapshot failure, both
+variants, redaction and the one-request limit. No production source is changed.
+
+### Proposed controlled-idle experiment — not executed
+
+After separate review and authorization, capture another fresh successful native
+HAR, leave that captured session idle for approximately five minutes (the normal
+monitoring cadence), and invoke the untouched diagnostic exactly once:
+
+```powershell
+pwsh -NoProfile -File .\scripts\vulcan-native-session-java-baseline.ps1 `
+  -Run -HarPath .\.dev\vulcan-schedule-native.har
+```
+
+No preliminary probe, authentication, or Accept experiment belongs in that run.
+Report the finite schedule outcome and cookie observations, then stop.
+
+- **T1:** 429 with `cookieMaterialChanged=true` supports the mechanism whereby
+  failed-response rotation is discarded by the current persistence lifecycle.
+  It would not by itself prove that persisting those cookies fixes the failure.
+- **T2:** 429 with `cookieMaterialChanged=false` leaves age/server state implicated,
+  but does not support discarded cookie rotation.
+- **T3:** Valid 2xx JSON means five-minute idle alone is insufficient to reproduce;
+  investigate longer age or the normal verifier/capture/persistence lifecycle.
+
+This implementation task used only synthetic fixtures and loopback traffic. The
+developer's raw HAR was not inspected, and no real experiment was executed.
+
+Validation: 38 new Maven cases; full `verify` passed with 698 tests, zero
+failures/errors and four optional Chromium cases skipped. Standalone PowerShell
+suites passed 37 existing baseline, 11 Accept and nine cookie-observation cases.
+Spotless and whitespace checks passed. Real VULCAN requests remained zero.

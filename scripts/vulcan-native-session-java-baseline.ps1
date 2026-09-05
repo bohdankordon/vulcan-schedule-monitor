@@ -13,6 +13,8 @@ function New-NativeBaselineReport([string]$Category = 'NOT_AUTHORIZED', [string]
         variant = $Variant; acceptInjected = $false
         schemaVersion = 1; result = 'FAIL'; category = $Category
         nativeEvidenceValidated = $false; 'session.cookieCount' = 0; 'session.refererContext' = 'UNAVAILABLE'
+        'session.cookieCountBefore' = 'UNAVAILABLE'; 'session.cookieCountAfter' = 'UNAVAILABLE'
+        'session.cookieCountChanged' = 'UNAVAILABLE'; 'session.cookieMaterialChanged' = 'UNAVAILABLE'
         'form.exactFieldSet' = $false; 'form.timestampShapesMatch' = $false; 'form.weekSemanticsMatch' = $false
         javaRequestAttempted = $false; 'java.statusFamily' = 'UNAVAILABLE'; 'java.status429' = 'UNAVAILABLE'
         'java.contentFamily' = 'UNAVAILABLE'; javaOutcome = 'NOT_RUN'
@@ -26,6 +28,8 @@ function Assert-NativeBaselineReport($Report) {
         schemaVersion = 'one'; result = @('SUCCESS', 'FAIL')
         category = @('VALIDATION_ONLY', 'INVALID_INPUT', 'NOT_AUTHORIZED', 'INVALID_HAR', 'INVALID_NATIVE_EVIDENCE', 'INVALID_SESSION', 'FORM_MISMATCH', 'BUDGET_EXHAUSTED', 'BASELINE_COMPLETED', 'HARNESS_FAILURE', 'BUILD_FAILURE', 'UNSAFE_OUTPUT_GUARD', 'CHILD_FAILURE')
         nativeEvidenceValidated = 'bool'; 'session.cookieCount' = 'cookies'
+        'session.cookieCountBefore' = 'optionalCookies'; 'session.cookieCountAfter' = 'optionalCookies'
+        'session.cookieCountChanged' = 'optionalBool'; 'session.cookieMaterialChanged' = 'optionalBool'
         'session.refererContext' = @('PLAN_PAGE', 'JOURNAL_PAGE', 'HOME_OR_LANDING', 'OTHER_ALLOWED', 'UNAVAILABLE')
         'form.exactFieldSet' = 'bool'; 'form.timestampShapesMatch' = 'bool'; 'form.weekSemanticsMatch' = 'bool'
         javaRequestAttempted = 'optionalBool'; 'java.statusFamily' = @('2xx', '3xx', '4xx', '5xx', 'UNAVAILABLE')
@@ -42,9 +46,10 @@ function Assert-NativeBaselineReport($Report) {
         elseif ($rule -eq 'optionalBool') { if ($value -isnot [bool] -and $value -cne 'UNAVAILABLE') { throw 'UNSAFE_OUTPUT_GUARD' } }
         elseif ($rule -eq 'duration' -and $value -ceq 'UNAVAILABLE') { continue }
         elseif ($rule -eq 'permit' -and $value -ceq 'UNAVAILABLE') { continue }
+        elseif ($rule -eq 'optionalCookies' -and $value -ceq 'UNAVAILABLE') { continue }
         else {
             if ($value -isnot [int] -and $value -isnot [long]) { throw 'UNSAFE_OUTPUT_GUARD' }
-            $max = switch ($rule) { 'one' { 1 }; 'zero' { 0 }; 'permit' { 1 }; 'cookies' { 1000 }; 'duration' { 31536000 } }
+            $max = switch ($rule) { 'one' { 1 }; 'zero' { 0 }; 'permit' { 1 }; 'cookies' { 1000 }; 'optionalCookies' { 1000 }; 'duration' { 31536000 } }
             if ($value -lt 0 -or $value -gt $max -or ($rule -eq 'one' -and $value -ne 1)) { throw 'UNSAFE_OUTPUT_GUARD' }
         }
     }
@@ -160,6 +165,7 @@ function Invoke-NativeBaselineOnce([string]$Classpath, [byte[]]$Payload, $Report
     $Report.nativeEvidenceValidated = $true
     $Report.javaRequestAttempted = 'UNAVAILABLE'
     $Report.javaScheduleRequests = 'UNAVAILABLE'
+    foreach ($key in @('session.cookieCountBefore', 'session.cookieCountAfter', 'session.cookieCountChanged', 'session.cookieMaterialChanged')) { $Report[$key] = 'UNAVAILABLE' }
     if ($Report.variant -ceq 'ACCEPT_STAR_STAR') { $Report.acceptInjected = 'UNAVAILABLE' }
     try { return (Invoke-NativeBaselineChild $Classpath $Payload -Variant $Report.variant) }
     catch { return $Report }

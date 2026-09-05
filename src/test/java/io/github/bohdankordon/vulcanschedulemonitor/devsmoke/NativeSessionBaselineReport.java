@@ -26,6 +26,10 @@ final class NativeSessionBaselineReport {
     facts.put("category", "INVALID_INPUT");
     facts.put("nativeEvidenceValidated", false);
     facts.put("session.cookieCount", 0);
+    facts.put("session.cookieCountBefore", "UNAVAILABLE");
+    facts.put("session.cookieCountAfter", "UNAVAILABLE");
+    facts.put("session.cookieCountChanged", "UNAVAILABLE");
+    facts.put("session.cookieMaterialChanged", "UNAVAILABLE");
     facts.put("session.refererContext", "UNAVAILABLE");
     facts.put("form.exactFieldSet", false);
     facts.put("form.timestampShapesMatch", false);
@@ -108,6 +112,14 @@ final class NativeSessionBaselineReport {
     s.put(
         "session.cookieCount",
         value -> value instanceof Integer count && count >= 0 && count <= 1000);
+    for (String key : List.of("session.cookieCountBefore", "session.cookieCountAfter"))
+      s.put(
+          key,
+          value ->
+              "UNAVAILABLE".equals(value)
+                  || value instanceof Integer count && count >= 0 && count <= 1000);
+    for (String key : List.of("session.cookieCountChanged", "session.cookieMaterialChanged"))
+      s.put(key, value -> value instanceof Boolean || "UNAVAILABLE".equals(value));
     for (String key :
         List.of(
             "nativeEvidenceValidated",

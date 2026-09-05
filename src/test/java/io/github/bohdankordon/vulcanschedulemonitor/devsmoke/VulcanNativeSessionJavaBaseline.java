@@ -119,7 +119,13 @@ public final class VulcanNativeSessionJavaBaseline {
             : null;
     try {
       runOnce(
-          permit, report, () -> client.getWeekSchedule(material.journal(), material.dataDate()));
+          permit,
+          report,
+          () ->
+              NativeSessionCookieObservation.observe(
+                  material.session()::snapshotMaterial,
+                  report,
+                  () -> client.getWeekSchedule(material.journal(), material.dataDate())));
     } finally {
       if (decorator != null) report.put("acceptInjected", decorator.injected());
     }
