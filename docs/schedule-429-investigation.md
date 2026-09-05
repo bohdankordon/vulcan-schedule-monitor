@@ -420,3 +420,110 @@ transport measurement, configuration observation, safe CLI output and profile
 interoperability. All 87 standalone PowerShell synthetic cases passed, including
 comparison counts, schema rejection and leak checks. Spotless and whitespace
 checks passed. Only synthetic fixtures and loopback test infrastructure were used.
+
+### Native-session untouched-Java baseline harness (not run against VULCAN)
+
+The developer's native Firefox control succeeded with schedule JSON, and the
+offline comparison reported `mismatchCount=7`. Before changing Accept or other
+headers, the next proposed experiment uses the successful native request's captured
+session material with untouched production Java transport. This task only builds
+and tests that harness. It does not inspect the real HAR or execute the experiment.
+
+`scripts/vulcan-native-session-java-baseline.ps1` is separate from the offline
+sanitizer. It dot-sources the sanitizer's existing pure helpers; the sanitizer's
+CLI entrypoint does not execute and its offline contract is unchanged. The new
+script does nothing beyond a finite `NOT_AUTHORIZED` report without `-Run`.
+
+**Future invocation, only after separate explicit real-run authorization**, from
+the repository root using PowerShell 7.5+:
+
+```powershell
+pwsh -NoProfile -File .\scripts\vulcan-native-session-java-baseline.ps1 `
+    -Run -HarPath .\.dev\vulcan-schedule-native.har
+```
+
+The real entrypoint accepts only that exact repository-local HAR path. It rejects
+UNC/network/mapped drives and reparse points, caps the read at 32 MiB, and builds
+the test classpath before reading the HAR. The raw HAR remains local, ignored and
+secret; neither it nor its contents should be pasted into chat. No capture copy,
+request/response dump, trace, session persistence, or output artifact is created.
+Only the build classpath file is written under ignored `target/`.
+
+The source must independently prove exactly one POST to the exact schedule
+controller/action, captured 2xx JSON, a successful envelope and both schedule
+arrays. Strict JSON parsing rejects duplicate keys; duplicate request headers also
+fail closed. Extraction requires HTTPS on the production VULCAN host boundary,
+default/443 port, no userinfo, no target query/fragment, and a same-origin/application
+Referer. Ambiguous path encodings, traversal and doubled separators are rejected.
+Tokens must be nonblank printable header material; Cookie must be an unambiguous
+cookie-pair list with unique names. The journal is a canonical positive long.
+Exactly four form fields, ISO-T timestamps, Monday–Sunday bounds and an anchor
+within the week are required. Unsupported captures fail rather than being repaired.
+
+PowerShell holds the extracted values ephemerally and sends an NSJ1 binary packet
+through redirected stdin: fixed magic plus nine length-prefixed UTF-8 fields,
+bounded to 64 KiB. No session values enter arguments or environment variables.
+The child does not inherit Java agent/debug-option environment variables. Child
+output is captured and checked against an exact finite schema; stderr and raw
+exceptions are never forwarded. Mutable packet buffers are cleared after use;
+immutable runtime strings are not persisted.
+
+The test-source Java driver requires an explicit authorization flag for dispatch, validates
+the packet and URL/session/form boundaries again, then reconstructs
+`VulcanSession.fromBrowserSession(...)`. A **separate synthetic client** first runs
+the actual production form builder/encoder against an in-memory HTTP sink. No
+socket or mocking agent is used for that check. All four resulting form values
+must match exactly, including midnight timestamp and anchor semantics. A mismatch
+returns `FORM_MISMATCH` before a request permit is consumed.
+
+Only after preflight does a distinct, untouched production `VulcanClient` perform
+`getWeekSchedule(journalId, dataDate)` through the production adapter and transport.
+The real client receives no diagnostic headers, interceptors or HTTP configuration
+changes. The in-memory sink is attached only to the separate synthetic client.
+There is no browser, authentication, cache/tree lookup, recovery, scheduler, DB,
+Telegram, resilience wrapper, or application retry. A nonrenewable atomic permit
+allows at most **one raw Java schedule attempt per invocation**. Production redirect
+handling remains disabled; loopback tests verify one request for 429 and redirects.
+The JDK transport's existing internal behavior is unchanged.
+
+Stdin-boundary tests select the Java driver's validation-only flag, which has no
+dispatch path even if a preflight assertion regresses. Tests that exercise actual
+dispatch inject a literal loopback endpoint through a package-private test seam;
+the real CLI cannot select that seam. Validation-only mode is not exposed as a
+raw-HAR PowerShell CLI option and does not authorize any real request.
+
+Safe stdout is schema version 1 with fixed keys: result/category, native-evidence
+validation, cookie count/referer category, form-match booleans, attempted/request
+count, status/429/content families, Java outcome, Retry-After availability/duration,
+and `retries=0`. Unobserved status/content facts stay `UNAVAILABLE`; content type of
+non-2xx responses is not exposed by the production exception and is not inferred.
+Retry-After is reported only as a nonnegative duration, capped at 31,536,000 seconds
+(larger values are saturated). No raw header is emitted. If the supervisor loses
+the child's valid report, `CHILD_FAILURE` reports attempted/request count as
+`UNAVAILABLE`; the budget must be treated as spent, with no automatic restart.
+
+Future interpretation:
+
+- N1, Java 429: persisted monitoring material is not needed to reproduce the gating;
+  Java transport/request context becomes a leading hypothesis. A separate one-header
+  Accept experiment can follow, with new authorization.
+- N2, Java valid schedule JSON: production Java can call the endpoint with this
+  material; investigate connection capture/persistence and session lifecycle before
+  changing browser fingerprint headers.
+- N3, authentication/redirect/HTML: inconclusive; the captured session may have expired
+  or may depend on additional state.
+- N4, another failure: retain only its finite category; no compatibility fix follows.
+
+This is **same captured session material, different time**, not a simultaneous A/B.
+The source is the native request's cookies/tokens, not its response's rotated cookies.
+Server-side state can change after the successful capture. Neither N1 nor N2 alone
+proves causality; expired material leaves N3 inconclusive. No real invocation was
+performed while implementing this harness, and production request behavior is unchanged.
+
+Validation: 41 new Java test cases and 37 standalone PowerShell cases passed.
+Full Maven verification reported 646 tests, zero failures/errors and four optional
+Chromium tests skipped. Coverage includes strict HAR/material rejection, stdin
+redaction, exact-form preflight, one-shot permits, untouched loopback requests,
+HTTP/auth/HTML/transport/protocol outcomes, and Retry-After seconds/date/absence/
+malformed/bounded-duration handling. Formatting and whitespace checks passed.
+All fixtures were synthetic; VULCAN requests were zero. The real harness was not run.
