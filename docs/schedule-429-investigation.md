@@ -220,5 +220,43 @@ Chromium methods skipped. All 12 explicit loopback Chromium cases passed, includ
 zero-dispatch baseline guard. The 22 new baseline test cases and PowerShell contract tests
 passed; formatting and whitespace checks passed. No test made a real VULCAN call.
 
-Java-only result: pending commit/push and completion of the 15-minute quiet window. This mode
-has not yet been invoked against VULCAN. No production compatibility fix is implemented.
+### Java-only invocation result (2026-09-05)
+
+Harness `2a30ac2f4efa5f17220060e5d4ae80278a80b525` was verified, committed and pushed first.
+The development quiet window ran from 20:31:39 until after 20:46:39 local time, with no VULCAN
+Java process running at the boundary checks and no preliminary provider probe. Exactly one
+new `-InvestigateSchedule429JavaBaseline` invocation then ran and stopped during authentication:
+
+```text
+category=TRANSIENT
+result=FAIL
+stage=AUTHENTICATION
+failureCategory=AUTHENTICATION_FAILURE
+decisionCase=NOT_REACHED
+browserScheduleRequests=0
+javaScheduleRequests=0
+retries=0
+unexpectedBrowserScheduleTraffic=false
+browserClosedBeforeVerification=false
+javaOutcome=NOT_RUN
+java.statusFamily=UNAVAILABLE
+java.status429=UNAVAILABLE
+retryAfterPresent=UNAVAILABLE
+javaMaterialContext=NOT_USED
+```
+
+Authentication did not complete, so catalog discovery, session-drift reporting and Java schedule
+traffic were not reached. All cookie counts and material-change booleans for this invocation are
+unavailable; earlier experiments' values must not be reused. `browserClosedBeforeVerification=false`
+means that the pre-verification checkpoint was not reached, not that Chromium was intentionally
+left running. The diagnostic exited, managed browser cleanup ran, and no diagnostic Java process
+remained.
+
+No J1–J4 case was established. `TRANSIENT` is the finite authentication outcome; no raw exception
+was retained, and this evidence does not identify its underlying cause or change the assessment
+of the original schedule 429. Retry-After data is unavailable because no Java schedule exception
+occurred. No second invocation or retry was made.
+
+Total real schedule requests in this Java-only invocation: zero. No secrets or raw provider
+payload/capture artifacts were persisted. No production compatibility fix or PR was created.
+The previous experiments above remain the historical record.
