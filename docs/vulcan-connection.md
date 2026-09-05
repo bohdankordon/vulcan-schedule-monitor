@@ -63,9 +63,7 @@ Consent discovery uses a two-second Playwright condition window before concludin
 
 The existing click and dismissal bounds remain three seconds each. Top-level dismissal requires the original container to disappear. Frame dismissal requires detachment or a hidden enclosing iframe owner, including a zero-sized owner, so an empty but visible iframe cannot continue intercepting login clicks. Normal detachment after clicking succeeds without stale DOM inspection. Frame and ancestor trust are rechecked during handling, and observed unsafe navigation cannot be erased by subsequent detachment. No force-click, CSS manipulation, or DOM-removal bypass is used.
 
-Credential-free public-page investigation established the compatibility issue: the known privacy UI was inside a same-origin VULCAN iframe, which top-level-only handling missed. The iframe intercepted the direct-login link. Dismissing its native acceptance button made ordinary login navigation work in both headless and headed modes, on the original Page through allowed VULCAN redirects. There was no popup/new Page or meaningful mode difference. Click could return while the new document was loading, so the explicit subsequent `DOMContentLoaded` wait remains appropriate. The original-Page click/load sequence and its 30-second limits remain unchanged. MFA and CAPTCHA are never automated.
-
-A second credential-free investigation confirmed the remaining lifecycle race: the consent iframe was already attached when navigation returned, but its current URL was still empty/opaque. A one-shot trust filter skipped it and returned just before the URL became allowed; the privacy DOM appeared afterward and blocked direct login. Waiting for readiness let the unchanged consent action and owner-visibility dismissal succeed. The two-second discovery window addresses this race without changing the empirically validated dismissal or navigation sequence.
+After consent dismissal, direct login uses an ordinary click on the original Page followed by `DOMContentLoaded`, since the new document can still be loading when the click returns. Both navigation bounds remain 30 seconds. No popup/new Page handling is needed. MFA and CAPTCHA are never automated.
 
 Submitted portal URLs still reject fragments. Runtime page, form-target, and request validation permits query strings and fragments because they do not change the network destination. The boundary remains HTTPS, `vulcan.net.pl` or its subdomains, default port or 443, and no userinfo. Visible CAPTCHA and one-time-code controls are rejected; hidden or inert matching elements do not count as interactive challenges or hide later visible matches.
 
@@ -94,6 +92,8 @@ Ordinary weekly transport/server retries run inside the authentication-recovery 
 Without remembered credentials, or for invalid credentials, MFA, CAPTCHA, unsupported authentication, or protocol authentication failure, the account becomes `RECONNECT_REQUIRED` and is excluded from future target queries. Transient recovery failure does not destructively reset account state; it blocks that account's remaining scopes only for the current cycle, allowing a later cycle to try once again while other accounts continue. Reconnection state is visible through `/status`, `/classes`, and `/connect`; the scheduler does not bypass the durable notification model with a direct Telegram alert.
 
 ## Manual validation
+
+An authorized real normal Telegram `/connect` validation completed successfully with 26 discovered classes and Remember credentials disabled. `/status` reported VULCAN connected with zero monitored classes, and `/classes` displayed the persisted catalog with pagination. This validates the token/controller, verified encrypted session/account completion, catalog persistence, and Telegram catalog read path. Monitoring validation is separate.
 
 ### Opt-in local real-VULCAN smoke harness (developers only)
 
@@ -140,6 +140,6 @@ Remove only this bundle, or view side-effect-free help:
 .\scripts\vulcan-real-smoke.ps1 -Help
 ```
 
-Normal Maven verification never invokes real mode or contacts VULCAN. Tests use mocked browsers, loopback synthetic HTTP, and an isolated temporary DPAPI bundle on Windows (the DPAPI test is skipped on non-Windows CI). No real credentials or existing `.dev` secrets are needed. Once the real core smoke succeeds, perform one final normal Telegram `/connect` test to cover the token/controller and persistence/catalog completion path. The harness itself makes no claim that this final user-facing validation has succeeded.
+Normal Maven verification never invokes real mode or contacts VULCAN. Tests use mocked browsers, loopback synthetic HTTP, and an isolated temporary DPAPI bundle on Windows (the DPAPI test is skipped on non-Windows CI). No real credentials or existing `.dev` secrets are needed. For future provider compatibility changes, core smoke and normal Telegram `/connect` validation are complementary: the harness does not exercise the token/controller or persistence/catalog completion path.
 
 CI tests the security and orchestration boundaries with synthetic encrypted sessions, a fake browser authenticator, local WireMock VULCAN responses, MockMvc, AES-GCM tests, and PostgreSQL/Testcontainers. It never contacts a real VULCAN tenant and never requires Chromium. Real tenant login details can vary and must be validated manually with an authorized test account. Do not record or publish credentials, URLs, request headers, cookies, screenshots, traces, class data, or browser state during that validation.
