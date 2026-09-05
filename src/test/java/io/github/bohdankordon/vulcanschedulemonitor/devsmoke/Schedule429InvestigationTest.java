@@ -140,7 +140,7 @@ class Schedule429InvestigationTest {
             "browser.cookieCount=2",
             "browser.appGuidHeaderPresent=true",
             "browser.verificationHeaderPresent=false",
-            "browser.secFetchHeadersPresent=true",
+            "browser.fetchMetadataPresent=true",
             "browser.refererContext=PLAN_PAGE")
         .doesNotContain(
             "PrivateCookie",
@@ -159,22 +159,21 @@ class Schedule429InvestigationTest {
             "rotated-token",
             "secret-guid",
             "PrivateCookie=two");
-    Schedule429Structure.cookies(report, before, rotated);
+    Schedule429Structure.verificationDrift(report, before, rotated);
     assertThat(render(report))
         .contains(
             "postLoginCookieCount=1",
-            "postPlanCookieCount=1",
-            "cookieSetChanged=true",
-            "cookieNameSetChanged=false",
-            "verificationTokenChanged=true",
-            "appGuidChanged=false")
+            "verifiedCookieCount=1",
+            "verificationChangedCookieMaterial=true",
+            "verificationChangedCookieCount=false",
+            "verificationChangedRefererContext=true")
         .doesNotContain("rotated-token", "PrivateCookie");
     var added =
         new VulcanSessionMaterial(
             base, base, "secret-token", "secret-guid", "PrivateCookie=two; NewCookie=three");
-    Schedule429Structure.cookies(report, before, added);
+    Schedule429Structure.verificationDrift(report, before, added);
     assertThat(render(report))
-        .contains("postPlanCookieCount=2", "cookieNameSetChanged=true")
+        .contains("verifiedCookieCount=2", "verificationChangedCookieCount=true")
         .doesNotContain("NewCookie");
   }
 
@@ -239,7 +238,7 @@ class Schedule429InvestigationTest {
         .contains(
             "java.userAgentPresent=true",
             "java.acceptLanguagePresent=false",
-            "java.secFetchHeadersPresent=false",
+            "java.fetchMetadataPresent=false",
             "java.verificationHeaderPresent=true",
             "java.appGuidHeaderPresent=true",
             "java.originPresent=true",
@@ -284,7 +283,7 @@ class Schedule429InvestigationTest {
                 "src/test/java/io/github/bohdankordon/vulcanschedulemonitor/devsmoke/VulcanSchedule429Investigation.java"));
     assertThat(driver)
         .contains(
-            "new VulcanClient(VulcanSession.fromMaterial(postPlan))",
+            "new VulcanClient(VulcanSession.fromMaterial(postLogin))",
             "DefaultVulcanSessionVerifier")
         .doesNotContain("SpringApplication.run", "sessions.replace", "secrets.", "System.getenv");
   }
@@ -326,7 +325,7 @@ class Schedule429InvestigationTest {
         .contains("failureCategory=REQUEST_NOT_OBSERVED")
         .doesNotContain("selector");
     report = new Schedule429Report();
-    report.stage(Schedule429Failure.Stage.PLAN_CONTEXT_NAVIGATION);
+    report.stage(Schedule429Failure.Stage.AUTHENTICATED_BROWSER_READY);
     report.fail(new com.microsoft.playwright.TimeoutError("private URL"));
     assertThat(render(report))
         .contains("failureCategory=NAVIGATION_TIMEOUT")
@@ -343,6 +342,133 @@ class Schedule429InvestigationTest {
     String script = Files.readString(Path.of("scripts/vulcan-real-smoke.ps1"));
     for (String key : new String[] {"stage", "failureCategory"})
       assertThat(script).contains(key + " = '" + Schedule429Report.SCHEMA.get(key) + "'");
+  }
+
+  @Test
+  void javaProductionRequestUsesImmutablePreRequestMaterialExactlyOnce() throws Exception {
+    var server =
+        com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+    URI base = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/synthetic/");
+    final var postLogin =
+        new VulcanSessionMaterial(base, base, "original-token", "original-guid", "Original=before");
+    var verified =
+        new VulcanSessionMaterial(
+            base, base.resolve("Other.mvc"), "verified-token", "verified-guid", "Rotated=after");
+    var calls = new AtomicInteger();
+    var originalUsed = new java.util.concurrent.atomic.AtomicBoolean();
+    server.createContext(
+        "/synthetic/PlanLekcji.mvc/GetPlanLekcjiContext",
+        exchange -> {
+          try (exchange) {
+            calls.incrementAndGet();
+            var headers = exchange.getRequestHeaders();
+            originalUsed.set(
+                postLogin.cookieHeader().equals(headers.getFirst("Cookie"))
+                    && postLogin
+                        .requestVerificationToken()
+                        .equals(headers.getFirst("X-V-RequestVerificationToken"))
+                    && postLogin.appGuid().equals(headers.getFirst("X-V-AppGuid"))
+                    && postLogin.refererUri().toString().equals(headers.getFirst("Referer")));
+            exchange.getRequestBody().readAllBytes();
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.getResponseHeaders().set("Set-Cookie", "Original=after-request; Path=/");
+            byte[] body =
+                "{\"success\":true,\"data\":{\"planLekcji\":[],\"planLekcjiZeZmianami\":[]}}"
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+          }
+        });
+    server.start();
+    try {
+      var budget = new Schedule429Budget();
+      budget.arm();
+      budget.permitBrowser(true);
+      budget.browserResult(200, true);
+      var report = new Schedule429Report();
+      Schedule429Structure.verificationDrift(report, postLogin, verified);
+      VulcanSchedule429Investigation.compareJavaFromPostLogin(
+          report, budget, postLogin, 1, LocalDate.of(2026, 8, 31));
+      assertThat(originalUsed).isTrue();
+      assertThat(calls).hasValue(1);
+      assertThat(postLogin.cookieHeader()).isEqualTo("Original=before");
+      assertThatThrownBy(
+              () ->
+                  VulcanSchedule429Investigation.compareJavaFromPostLogin(
+                      report, budget, postLogin, 1, LocalDate.of(2026, 8, 31)))
+          .isInstanceOf(IllegalStateException.class);
+      assertThat(calls).hasValue(1);
+      assertThat(render(report))
+          .contains("javaMaterialContext=PRE_REQUEST_POST_LOGIN", "decisionCase=2")
+          .doesNotContain("original-token", "Original", "Rotated", "after-request");
+    } finally {
+      server.stop(0);
+    }
+  }
+
+  @Test
+  void controlHasNoNavigationAndOnlyKnownAjaxHeadersAreExplicit() throws Exception {
+    String browser =
+        Files.readString(
+            Path.of(
+                "src/test/java/io/github/bohdankordon/vulcanschedulemonitor/vulcan/connection/playwright/Schedule429Browser.java"));
+    String control =
+        browser.substring(
+            browser.indexOf("  public void control("),
+            browser.indexOf("  public int scheduleStatus()"));
+    assertThat(control)
+        .doesNotContain(
+            ".navigate(",
+            ".click(",
+            "getByText",
+            "postPlan",
+            "jQuery",
+            "'Cookie'",
+            "'User-Agent'",
+            "'Origin'",
+            "'Referer'",
+            "'Accept-Language'",
+            "'Sec-Fetch-")
+        .contains(
+            "X-V-RequestVerificationToken",
+            "X-V-AppGuid",
+            "X-Requested-With",
+            "XMLHttpRequest",
+            "credentials: 'same-origin'",
+            "redirect: 'manual'",
+            "new URLSearchParams(form)");
+    String driver =
+        Files.readString(
+            Path.of(
+                "src/test/java/io/github/bohdankordon/vulcanschedulemonitor/devsmoke/VulcanSchedule429Investigation.java"));
+    assertThat(driver)
+        .contains(
+            "final var postLogin = browser.authenticate(request)",
+            "browser.control(postLogin, verified.classes(), week)",
+            "compareJavaFromPostLogin(report, budget, postLogin, browser.journal(), week)");
+    assertThat(driver.indexOf("final var postLogin"))
+        .isLessThan(driver.indexOf("verifyAndDiscover(postLogin)"));
+    assertThat(driver)
+        .doesNotContain("fromMaterial(verified", "fromMaterial(postPlan", "postPlanMaterial");
+  }
+
+  @Test
+  void unchangedAndReorderedCookiesDoNotImplyVerificationDrift() {
+    var base = URI.create("https://school.vulcan.net.pl/private/unit/");
+    var postLogin =
+        new VulcanSessionMaterial(
+            base, base, "secret-token", "secret-guid", "First=one; Second=two");
+    var verified =
+        new VulcanSessionMaterial(
+            base, base, "secret-token", "secret-guid", "Second=two; First=one");
+    var report = new Schedule429Report();
+    Schedule429Structure.verificationDrift(report, postLogin, verified);
+    assertThat(render(report))
+        .contains(
+            "verificationChangedCookieCount=false",
+            "verificationChangedCookieMaterial=false",
+            "verificationChangedRefererContext=false")
+        .doesNotContain("First", "Second", "secret-token", "one", "two");
   }
 
   static String render(Schedule429Report report) {

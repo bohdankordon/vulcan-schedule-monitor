@@ -185,30 +185,30 @@ function Write-Schedule429Report {
     $bool = 'true|false|UNAVAILABLE'
     $context = 'PLAN_PAGE|HOME_OR_LANDING|JOURNAL_PAGE|OTHER_ALLOWED|UNAVAILABLE'
     $schema = @{
-        category = 'COMPARED|BROWSER_RATE_LIMITED|BROWSER_OTHER_FAILURE|INVALID_INPUT|INVALID_CREDENTIALS|MFA_REQUIRED|CAPTCHA_REQUIRED|UNSUPPORTED_AUTH_FLOW|TRANSIENT|PROTOCOL_FAILURE|HARNESS_FAILURE|PLAN_CONTEXT_UNAVAILABLE|NATIVE_TARGET_MISMATCH|BROWSER_REQUEST_TIMEOUT|SCHEDULE_BUDGET_BLOCKED'
+        category = 'COMPARED|BROWSER_RATE_LIMITED|BROWSER_OTHER_FAILURE|INVALID_INPUT|INVALID_CREDENTIALS|MFA_REQUIRED|CAPTCHA_REQUIRED|UNSUPPORTED_AUTH_FLOW|TRANSIENT|PROTOCOL_FAILURE|HARNESS_FAILURE'
         result = 'SUCCESS|FAIL'
-        stage = 'INVESTIGATION_INPUT|JAVA_TRANSPORT_CALIBRATION|AUTHENTICATED_BROWSER_READY|CATALOG_READY|TARGET_SELECTION|PLAN_CONTEXT_DISCOVERY|PLAN_CONTEXT_NAVIGATION|BROWSER_REQUEST_OBSERVER_SETUP|BROWSER_CONTROL_TRIGGER|BROWSER_CONTROL_WAIT|POST_PLAN_SESSION_CAPTURE|JAVA_COMPARISON_SETUP|JAVA_COMPARISON|BROWSER_CLEANUP'
-        failureCategory = 'NOT_FOUND|AMBIGUOUS|NOT_ACTIONABLE|NAVIGATION_TIMEOUT|REQUEST_NOT_OBSERVED|UNEXPECTED_PAGE_STATE|INTERNAL_INVARIANT|PLAYWRIGHT_TRANSIENT'
+        stage = 'INVESTIGATION_INPUT|JAVA_TRANSPORT_CALIBRATION|AUTHENTICATED_BROWSER_READY|CATALOG_READY|TARGET_SELECTION|BROWSER_CONTROL_SETUP|BROWSER_REQUEST_OBSERVER_SETUP|BROWSER_CONTROL_TRIGGER|BROWSER_CONTROL_WAIT|JAVA_COMPARISON_SETUP|JAVA_COMPARISON|BROWSER_CLEANUP'
+        failureCategory = 'NOT_FOUND|AMBIGUOUS|NOT_ACTIONABLE|NAVIGATION_TIMEOUT|REQUEST_NOT_OBSERVED|UNEXPECTED_PAGE_STATE|INTERNAL_INVARIANT|SECURITY_INVARIANT|PLAYWRIGHT_TRANSIENT'
         browserSource = 'NATIVE_UI_REQUEST|BROWSER_CONTEXT_FETCH|NOT_REACHED'
         decisionCase = '1|2|3|4|NOT_REACHED'
         javaOutcome = 'SUCCESS|NOT_RUN|AUTHENTICATION_REQUIRED|RATE_LIMITED|SERVER_ERROR|PERMANENT_HTTP|TRANSPORT_ERROR|SESSION_REDIRECT|UNEXPECTED_HTML|PROTOCOL_FAILURE'
         javaHeaderEvidence = 'SYNTHETIC_PRODUCTION_TRANSPORT'
-        javaMaterialContext = 'POST_LOGIN_PROJECTION|POST_PLAN_ACTUAL'
+        javaMaterialContext = 'POST_LOGIN_PROJECTION|PRE_REQUEST_POST_LOGIN'
         browserScheduleRequests = '[01]'
         javaScheduleRequests = '[01]'
         retries = '0'
     }
-    foreach ($key in @('blockedExtraScheduleRequests','classCount','postLoginCookieCount','postPlanCookieCount','browser.cookieCount','java.cookieCount')) { $schema[$key] = '[0-9]{1,6}' }
-    foreach ($key in @('javaPermitted','cookieSetChanged','cookieNameSetChanged','verificationTokenChanged','appGuidChanged','sameFieldSet','sameTimestampShape','sameWeekBoundarySemantics','sameDataSemanticPosition','sameFormEncoding','planContextConfirmed','browser.jsonParseable','browser.envelopePresent','browser.scheduleArraysPresent')) { $schema[$key] = $bool }
-    foreach ($key in @('persistedMonitoringRefererContext','postLoginRefererContext','postPlanRefererContext','browser.refererContext','java.refererContext')) { $schema[$key] = $context }
+    foreach ($key in @('blockedExtraScheduleRequests','classCount','postLoginCookieCount','verifiedCookieCount','browser.cookieCount','java.cookieCount')) { $schema[$key] = '[0-9]{1,6}' }
+    foreach ($key in @('javaPermitted','verificationChangedCookieMaterial','verificationChangedCookieCount','verificationChangedRefererContext','sameFieldSet','sameTimestampShape','sameWeekBoundarySemantics','sameDataSemanticPosition','sameFormEncoding','browserRefererMatchesCapturedReferer','browser.jsonParseable','browser.envelopePresent','browser.scheduleArraysPresent')) { $schema[$key] = $bool }
+    foreach ($key in @('persistedMonitoringRefererContext','postLoginRefererContext','verifiedRefererContext','browserPageContext','browser.refererContext','java.refererContext')) { $schema[$key] = $context }
     foreach ($side in @('browser','java')) {
         $schema["$side.method"] = 'POST|OTHER|UNAVAILABLE'
         $schema["$side.statusFamily"] = '2xx|3xx|4xx|5xx|OTHER|UNAVAILABLE'
         $schema["$side.status429"] = $bool
         $schema["$side.contentFamily"] = 'json|html|other|UNAVAILABLE'
-        $schema["$side.formEncoding"] = 'URL_ENCODED|OTHER|UNAVAILABLE'
-        foreach ($date in @('dataOd','dataDo','data')) { $schema["$side.${date}Format"] = 'ISO_T_DATETIME|OTHER|UNAVAILABLE' }
-        foreach ($key in @('formFieldSetMatchesExpected','weekBoundarySemantics','dataAtWeekStart','xRequestedWithPresent','originPresent','refererPresent','verificationHeaderPresent','appGuidHeaderPresent','contentTypePresent','userAgentPresent','acceptPresent','acceptLanguagePresent','secFetchHeadersPresent','cookieHeaderPresent')) { $schema["$side.$key"] = $bool }
+        $schema["$side.formUrlEncoded"] = $bool
+        foreach ($date in @('dataOd','dataDo','data')) { $schema["$side.${date}IsoTimestamp"] = $bool }
+        foreach ($key in @('formFieldSetMatchesExpected','weekBoundarySemantics','dataAtWeekStart','xRequestedWithPresent','originPresent','refererPresent','verificationHeaderPresent','appGuidHeaderPresent','contentTypePresent','userAgentPresent','acceptPresent','acceptLanguagePresent','fetchMetadataPresent','cookieHeaderPresent')) { $schema["$side.$key"] = $bool }
     }
     $lines = @($Output -split '\r?\n' | Where-Object { $_.Length -gt 0 })
     if ($Output.Length -gt 16384 -or $lines.Count -lt 12 -or $lines.Count -gt 110 -or $lines[0] -cne 'REAL VULCAN SCHEDULE 429 INVESTIGATION') { throw 'Invalid investigation output' }

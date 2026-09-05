@@ -47,13 +47,25 @@ class Schedule429LocalBrowserTest {
   }
 
   @ParameterizedTest
-  @ValueSource(ints = {200, 429, 404})
-  void catalogToControlUsesOneNativeFetchWithoutUiSelectorsOrJquery(int status) throws Exception {
+  @org.junit.jupiter.params.provider.CsvSource({
+    "200,json",
+    "429,json",
+    "403,json",
+    "500,json",
+    "200,html",
+    "200,malformed",
+    "200,envelope"
+  })
+  void existingPageFetchUsesPostLoginAjaxHeadersAndNaturalCookies(int status, String content)
+      throws Exception {
     var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
     URI base = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/synthetic/");
+    URI current = base.resolve("Home.mvc/Index");
     var scheduleRequests = new AtomicInteger();
+    var documentRequests = new AtomicInteger();
     var formMatches = new java.util.concurrent.atomic.AtomicBoolean();
-    var cookiePresent = new java.util.concurrent.atomic.AtomicBoolean();
+    var headersMatch = new java.util.concurrent.atomic.AtomicBoolean();
+    var cookieNatural = new java.util.concurrent.atomic.AtomicBoolean();
     server.createContext(
         "/",
         exchange -> {
@@ -66,26 +78,40 @@ class Schedule429LocalBrowserTest {
               String form =
                   new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
               formMatches.set(
-                  io.github.bohdankordon.vulcanschedulemonitor.devsmoke.Schedule429Structure
-                      .formValues(form)
-                      .keySet()
-                      .equals(Set.of("dataOd", "dataDo", "data", "idDziennik")));
-              cookiePresent.set(exchange.getRequestHeaders().getFirst("Cookie") != null);
-              body =
-                  "{\"success\":true,\"data\":{\"planLekcji\":[],\"planLekcjiZeZmianami\":[]}}"
-                      .getBytes(StandardCharsets.UTF_8);
-              exchange.getResponseHeaders().set("Content-Type", "application/json");
+                  io.github.bohdankordon.vulcanschedulemonitor.devsmoke.Schedule429Structure.form(
+                          "POST",
+                          form,
+                          exchange.getRequestHeaders().getFirst("Content-Type"),
+                          LocalDate.of(2026, 8, 31))
+                      .equals(
+                          new io.github.bohdankordon.vulcanschedulemonitor.devsmoke
+                              .Schedule429Structure.FormFacts(
+                              true, true, true, true, true, true, true)));
+              var headers = exchange.getRequestHeaders();
+              headersMatch.set(
+                  "synthetic-token".equals(headers.getFirst("X-V-RequestVerificationToken"))
+                      && "synthetic-guid".equals(headers.getFirst("X-V-AppGuid"))
+                      && "XMLHttpRequest".equals(headers.getFirst("X-Requested-With")));
+              cookieNatural.set("Synthetic=value".equals(headers.getFirst("Cookie")));
+              String response =
+                  switch (content) {
+                    case "html" -> "<html>Local authentication response</html>";
+                    case "malformed" -> "invalid-json";
+                    case "envelope" -> "{\"success\":false}";
+                    default ->
+                        "{\"success\":true,\"data\":{\"planLekcji\":[],\"planLekcjiZeZmianami\":[]}}";
+                  };
+              body = response.getBytes(StandardCharsets.UTF_8);
+              exchange
+                  .getResponseHeaders()
+                  .set("Content-Type", content.equals("html") ? "text/html" : "application/json");
               result = status;
             } else {
-              // No matching class/menu text, UI handler, or jQuery. Cookie delivered by normal
-              // HTTP.
+              documentRequests.incrementAndGet();
               body = "<html><body>Local fixture</body></html>".getBytes(StandardCharsets.UTF_8);
               exchange.getResponseHeaders().set("Content-Type", "text/html");
               exchange.getResponseHeaders().set("Set-Cookie", "Synthetic=value; Path=/");
-              result =
-                  status == 404 && exchange.getRequestURI().getPath().endsWith("PlanLekcji.mvc")
-                      ? 404
-                      : 200;
+              result = 200;
             }
             exchange.sendResponseHeaders(result, body.length);
             exchange.getResponseBody().write(body);
@@ -115,10 +141,15 @@ class Schedule429LocalBrowserTest {
       var install = Schedule429Browser.class.getDeclaredMethod("installRedirectGuard");
       install.setAccessible(true);
       install.invoke(driver);
-      page.navigate(base.resolve("index").toString());
+      page.navigate(current.toString());
+      // Deliberately different cookie material proves the browser uses its own HTTP cookie jar.
       var material =
           new io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSessionMaterial(
-              base, base, "synthetic-token", "synthetic-guid", "Synthetic=value");
+              base,
+              status == 429 ? base : current,
+              "synthetic-token",
+              "synthetic-guid",
+              "CapturedOnly=not-in-browser");
       var selected =
           new io.github.bohdankordon.vulcanschedulemonitor.vulcan.journal.SchoolClass(
               1,
@@ -129,43 +160,32 @@ class Schedule429LocalBrowserTest {
               2026,
               LocalDate.of(2026, 9, 1),
               LocalDate.of(2027, 8, 31));
-      var verified =
-          new io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VerifiedVulcanSession(
-              material, java.util.List.of(selected));
-      if (status == 404) {
-        assertThatThrownBy(() -> driver.control(verified, LocalDate.of(2026, 8, 31)))
-            .isInstanceOf(
-                io.github.bohdankordon.vulcanschedulemonitor.devsmoke.Schedule429Failure.class);
-        var output = new java.io.ByteArrayOutputStream();
-        report.print(new java.io.PrintStream(output));
-        assertThat(output.toString(StandardCharsets.UTF_8))
-            .contains("stage=PLAN_CONTEXT_NAVIGATION", "failureCategory=NOT_FOUND");
-        assertThat(scheduleRequests).hasValue(0);
-      } else {
-        driver.control(verified, LocalDate.of(2026, 8, 31));
-        assertThat(driver.scheduleStatus()).isEqualTo(status);
-        assertThat(budget.browserRequests()).isEqualTo(1);
-        assertThat(budget.javaPermitted()).isEqualTo(status == 200);
-        assertThat(scheduleRequests).hasValue(1);
-        assertThat(formMatches).isTrue();
-        assertThat(cookiePresent).isTrue();
-        var output = new java.io.ByteArrayOutputStream();
-        report.print(new java.io.PrintStream(output));
-        assertThat(output.toString(StandardCharsets.UTF_8))
-            .contains("browserSource=BROWSER_CONTEXT_FETCH");
-        // Production capture keeps the last complete authenticated observation, not an invented
-        // Referer.
-        var field = Schedule429Browser.class.getDeclaredField("observations");
-        field.setAccessible(true);
-        ((java.util.List<BrowserRequestObservation>) field.get(driver))
-            .add(
-                new BrowserRequestObservation(
-                    base.resolve("Home.mvc/GetCache"),
-                    base.toString(),
-                    "synthetic-token",
-                    "synthetic-guid"));
-        if (status == 200) assertThat(driver.postPlanMaterial().refererUri()).isEqualTo(base);
-      }
+      driver.control(material, java.util.List.of(selected), LocalDate.of(2026, 8, 31));
+      assertThat(page.url()).isEqualTo(current.toString());
+      assertThat(documentRequests).hasValue(1);
+      assertThat(driver.scheduleStatus()).isEqualTo(status);
+      assertThat(budget.browserRequests()).isEqualTo(1);
+      assertThat(budget.javaPermitted()).isEqualTo(status == 200 && content.equals("json"));
+      assertThat(scheduleRequests).hasValue(1);
+      assertThat(formMatches).isTrue();
+      assertThat(headersMatch).isTrue();
+      assertThat(cookieNatural).isTrue();
+      var output = new java.io.ByteArrayOutputStream();
+      report.print(new java.io.PrintStream(output));
+      assertThat(output.toString(StandardCharsets.UTF_8))
+          .contains(
+              "browserSource=BROWSER_CONTEXT_FETCH",
+              "browser.verificationHeaderPresent=true",
+              "browser.appGuidHeaderPresent=true",
+              "browser.xRequestedWithPresent=true",
+              "browser.cookieCount=1",
+              "browserRefererMatchesCapturedReferer=" + (status != 429))
+          .doesNotContain(
+              "synthetic-token",
+              "synthetic-guid",
+              "CapturedOnly",
+              "Synthetic=",
+              current.toString());
     } finally {
       server.stop(0);
     }

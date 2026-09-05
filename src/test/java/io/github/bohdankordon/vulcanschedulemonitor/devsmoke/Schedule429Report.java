@@ -79,7 +79,7 @@ public final class Schedule429Report {
             .collect(java.util.stream.Collectors.joining("|")));
     s.put(
         "category",
-        "COMPARED|BROWSER_RATE_LIMITED|BROWSER_OTHER_FAILURE|INVALID_INPUT|INVALID_CREDENTIALS|MFA_REQUIRED|CAPTCHA_REQUIRED|UNSUPPORTED_AUTH_FLOW|TRANSIENT|PROTOCOL_FAILURE|HARNESS_FAILURE|PLAN_CONTEXT_UNAVAILABLE|NATIVE_TARGET_MISMATCH|BROWSER_REQUEST_TIMEOUT|SCHEDULE_BUDGET_BLOCKED");
+        "COMPARED|BROWSER_RATE_LIMITED|BROWSER_OTHER_FAILURE|INVALID_INPUT|INVALID_CREDENTIALS|MFA_REQUIRED|CAPTCHA_REQUIRED|UNSUPPORTED_AUTH_FLOW|TRANSIENT|PROTOCOL_FAILURE|HARNESS_FAILURE");
     s.put("result", "SUCCESS|FAIL");
     s.put("browserSource", "NATIVE_UI_REQUEST|BROWSER_CONTEXT_FETCH|NOT_REACHED");
     s.put("decisionCase", "1|2|3|4|NOT_REACHED");
@@ -87,7 +87,7 @@ public final class Schedule429Report {
         "javaOutcome",
         "SUCCESS|NOT_RUN|AUTHENTICATION_REQUIRED|RATE_LIMITED|SERVER_ERROR|PERMANENT_HTTP|TRANSPORT_ERROR|SESSION_REDIRECT|UNEXPECTED_HTML|PROTOCOL_FAILURE");
     s.put("javaHeaderEvidence", "SYNTHETIC_PRODUCTION_TRANSPORT");
-    s.put("javaMaterialContext", "POST_LOGIN_PROJECTION|POST_PLAN_ACTUAL");
+    s.put("javaMaterialContext", "POST_LOGIN_PROJECTION|PRE_REQUEST_POST_LOGIN");
     s.put("browserScheduleRequests", "[01]");
     s.put("javaScheduleRequests", "[01]");
     s.put("retries", "0");
@@ -96,23 +96,22 @@ public final class Schedule429Report {
           "blockedExtraScheduleRequests",
           "classCount",
           "postLoginCookieCount",
-          "postPlanCookieCount",
+          "verifiedCookieCount",
           "browser.cookieCount",
           "java.cookieCount"
         }) s.put(key, "[0-9]{1,6}");
     for (String key :
         new String[] {
           "javaPermitted",
-          "cookieSetChanged",
-          "cookieNameSetChanged",
-          "verificationTokenChanged",
-          "appGuidChanged",
+          "verificationChangedCookieMaterial",
+          "verificationChangedCookieCount",
+          "verificationChangedRefererContext",
           "sameFieldSet",
           "sameTimestampShape",
           "sameWeekBoundarySemantics",
           "sameDataSemanticPosition",
           "sameFormEncoding",
-          "planContextConfirmed",
+          "browserRefererMatchesCapturedReferer",
           "browser.jsonParseable",
           "browser.envelopePresent",
           "browser.scheduleArraysPresent"
@@ -121,7 +120,8 @@ public final class Schedule429Report {
         new String[] {
           "persistedMonitoringRefererContext",
           "postLoginRefererContext",
-          "postPlanRefererContext",
+          "verifiedRefererContext",
+          "browserPageContext",
           "browser.refererContext",
           "java.refererContext"
         }) s.put(key, CONTEXT);
@@ -130,9 +130,9 @@ public final class Schedule429Report {
       s.put(side + ".statusFamily", "2xx|3xx|4xx|5xx|OTHER|UNAVAILABLE");
       s.put(side + ".status429", BOOL);
       s.put(side + ".contentFamily", "json|html|other|UNAVAILABLE");
-      s.put(side + ".formEncoding", "URL_ENCODED|OTHER|UNAVAILABLE");
+      s.put(side + ".formUrlEncoded", BOOL);
       for (String date : new String[] {"dataOd", "dataDo", "data"})
-        s.put(side + "." + date + "Format", "ISO_T_DATETIME|OTHER|UNAVAILABLE");
+        s.put(side + "." + date + "IsoTimestamp", BOOL);
       for (String key :
           new String[] {
             "formFieldSetMatchesExpected",
@@ -147,7 +147,7 @@ public final class Schedule429Report {
             "userAgentPresent",
             "acceptPresent",
             "acceptLanguagePresent",
-            "secFetchHeadersPresent",
+            "fetchMetadataPresent",
             "cookieHeaderPresent"
           }) s.put(side + "." + key, BOOL);
     }

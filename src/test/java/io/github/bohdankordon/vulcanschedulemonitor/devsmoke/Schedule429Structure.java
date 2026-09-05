@@ -56,7 +56,7 @@ public final class Schedule429Structure {
             report.put(
                 side + "." + key, headers.containsKey(header) && !headers.get(header).isBlank()));
     report.put(
-        side + ".secFetchHeadersPresent",
+        side + ".fetchMetadataPresent",
         headers.keySet().stream()
             .anyMatch(key -> key.toLowerCase(Locale.ROOT).startsWith("sec-fetch-")));
     report.put(side + ".cookieCount", cookiePairs(headers.get("cookie")).size());
@@ -70,26 +70,21 @@ public final class Schedule429Structure {
     return result;
   }
 
-  private static Set<String> cookieNames(String header) {
-    Set<String> names = new HashSet<>();
-    cookiePairs(header).forEach(pair -> names.add(pair.substring(0, pair.indexOf('='))));
-    return names;
-  }
-
-  public static void cookies(
-      Schedule429Report report, VulcanSessionMaterial before, VulcanSessionMaterial after) {
-    report.put("postLoginCookieCount", cookiePairs(before.cookieHeader()).size());
-    report.put("postPlanCookieCount", cookiePairs(after.cookieHeader()).size());
+  public static void verificationDrift(
+      Schedule429Report report, VulcanSessionMaterial postLogin, VulcanSessionMaterial verified) {
+    int before = cookiePairs(postLogin.cookieHeader()).size();
+    int after = cookiePairs(verified.cookieHeader()).size();
+    String beforeContext = referer(postLogin.refererUri().toASCIIString());
+    String afterContext = referer(verified.refererUri().toASCIIString());
+    report.put("postLoginCookieCount", before);
+    report.put("verifiedCookieCount", after);
+    report.put("verificationChangedCookieCount", before != after);
     report.put(
-        "cookieSetChanged",
-        !cookiePairs(before.cookieHeader()).equals(cookiePairs(after.cookieHeader())));
-    report.put(
-        "cookieNameSetChanged",
-        !cookieNames(before.cookieHeader()).equals(cookieNames(after.cookieHeader())));
-    report.put(
-        "verificationTokenChanged",
-        !before.requestVerificationToken().equals(after.requestVerificationToken()));
-    report.put("appGuidChanged", !before.appGuid().equals(after.appGuid()));
+        "verificationChangedCookieMaterial",
+        !cookiePairs(postLogin.cookieHeader()).equals(cookiePairs(verified.cookieHeader())));
+    report.put("postLoginRefererContext", beforeContext);
+    report.put("verifiedRefererContext", afterContext);
+    report.put("verificationChangedRefererContext", !beforeContext.equals(afterContext));
   }
 
   public static void initialCookies(Schedule429Report report, VulcanSessionMaterial material) {
@@ -147,12 +142,12 @@ public final class Schedule429Structure {
 
   public static void formReport(Schedule429Report report, String side, FormFacts facts) {
     report.put(side + ".formFieldSetMatchesExpected", facts.fields());
-    report.put(side + ".dataOdFormat", facts.fromIso() ? "ISO_T_DATETIME" : "OTHER");
-    report.put(side + ".dataDoFormat", facts.toIso() ? "ISO_T_DATETIME" : "OTHER");
-    report.put(side + ".dataFormat", facts.anchorIso() ? "ISO_T_DATETIME" : "OTHER");
+    report.put(side + ".dataOdIsoTimestamp", facts.fromIso());
+    report.put(side + ".dataDoIsoTimestamp", facts.toIso());
+    report.put(side + ".dataIsoTimestamp", facts.anchorIso());
     report.put(side + ".weekBoundarySemantics", facts.week());
     report.put(side + ".dataAtWeekStart", facts.anchorAtStart());
-    report.put(side + ".formEncoding", facts.encoded() ? "URL_ENCODED" : "OTHER");
+    report.put(side + ".formUrlEncoded", facts.encoded());
   }
 
   private static boolean iso(String value) {

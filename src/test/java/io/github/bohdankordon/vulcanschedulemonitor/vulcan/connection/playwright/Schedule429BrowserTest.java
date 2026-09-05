@@ -129,12 +129,13 @@ class Schedule429BrowserTest {
   }
 
   @Test
-  void controllerRouteIsSingleSameOriginAndHasNoSelectorAssumption() {
+  void endpointIsSameOriginAndIndependentOfCurrentPageRoute() {
     URI base = URI.create(BASE);
-    assertThat(Schedule429Browser.planPage(base, base.resolve("Home.mvc/Index")))
-        .isEqualTo(base.resolve("PlanLekcji.mvc"));
+    assertThat(Schedule429Browser.scheduleEndpoint(base, base.resolve("Home.mvc/Index")))
+        .isEqualTo(base.resolve("PlanLekcji.mvc/GetPlanLekcjiContext"));
     assertThatThrownBy(
-            () -> Schedule429Browser.planPage(base, URI.create("https://external.example/")))
+            () ->
+                Schedule429Browser.scheduleEndpoint(base, URI.create("https://external.example/")))
         .isInstanceOf(
             io.github.bohdankordon.vulcanschedulemonitor.devsmoke.Schedule429Failure.class);
   }
@@ -170,6 +171,23 @@ class Schedule429BrowserTest {
     assertThat(output.toString())
         .contains("stage=BROWSER_CONTROL_WAIT", "failureCategory=PLAYWRIGHT_TRANSIENT")
         .doesNotContain("private value");
+  }
+
+  @Test
+  void unsafeControlRequestFailsClosedBeforeAnyScheduleRequest() throws Exception {
+    arm();
+    var unsafe = route("https://external.example/synthetic/PlanLekcji.mvc/GetPlanLekcjiContext", 1);
+    guard(unsafe);
+    verify(unsafe).abort();
+    var next = route(BASE + "PlanLekcji.mvc/GetPlanLekcjiContext", 1);
+    guard(next);
+    verify(next).abort();
+    assertThat(budget.browserRequests()).isZero();
+    var output = new java.io.ByteArrayOutputStream();
+    report.print(new java.io.PrintStream(output));
+    assertThat(output.toString())
+        .contains("stage=BROWSER_CONTROL_TRIGGER", "failureCategory=SECURITY_INVARIANT")
+        .doesNotContain("external.example");
   }
 
   private static String methodText(String source, String signature) {

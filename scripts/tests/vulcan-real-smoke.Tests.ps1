@@ -112,13 +112,13 @@ browser.status429=true
 browser.refererContext=PLAN_PAGE
 '@
     Write-Schedule429Report -Output $investigation -ExitCode 1
-    $harnessFailure = $investigation.Replace('category=BROWSER_RATE_LIMITED','category=HARNESS_FAILURE') + "`nstage=PLAN_CONTEXT_NAVIGATION`nfailureCategory=NOT_FOUND"
+    $harnessFailure = $investigation.Replace('category=BROWSER_RATE_LIMITED','category=HARNESS_FAILURE') + "`nstage=BROWSER_CONTROL_SETUP`nfailureCategory=NOT_FOUND"
     Write-Schedule429Report -Output $harnessFailure -ExitCode 1
     foreach ($badFailure in @(
-        $harnessFailure.Replace('PLAN_CONTEXT_NAVIGATION','https://private.example/secret'),
+        $harnessFailure.Replace('BROWSER_CONTROL_SETUP','https://private.example/secret'),
         $harnessFailure.Replace('NOT_FOUND','NOT_FOUND private-value'),
         $harnessFailure.Replace("`nfailureCategory=NOT_FOUND",''),
-        $harnessFailure.Replace("`nstage=PLAN_CONTEXT_NAVIGATION",''))) {
+        $harnessFailure.Replace("`nstage=BROWSER_CONTROL_SETUP",''))) {
         $rejected = $false; $script:reportWrites = 0
         function Write-Host { $script:reportWrites++ }
         try { Write-Schedule429Report -Output $badFailure -ExitCode 1 } catch { $rejected = $true }

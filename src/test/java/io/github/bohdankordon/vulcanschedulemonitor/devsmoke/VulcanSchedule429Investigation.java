@@ -52,7 +52,7 @@ public final class VulcanSchedule429Investigation {
               var browser = new Schedule429Browser(new SmokeDiagnostics(), report, budget)) {
             try {
               report.stage(AUTHENTICATED_BROWSER_READY);
-              var postLogin = browser.authenticate(request);
+              final var postLogin = browser.authenticate(request);
               report.put(
                   "postLoginRefererContext",
                   Schedule429Structure.referer(postLogin.refererUri().toASCIIString()));
@@ -62,10 +62,11 @@ public final class VulcanSchedule429Investigation {
               report.stage(CATALOG_READY);
               var verified = new DefaultVulcanSessionVerifier().verifyAndDiscover(postLogin);
               report.put("classCount", verified.classes().size());
+              Schedule429Structure.verificationDrift(report, postLogin, verified.sessionMaterial());
               LocalDate week =
                   LocalDate.now(ZoneId.of("Europe/Warsaw"))
                       .with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY));
-              browser.control(verified, week);
+              browser.control(postLogin, verified.classes(), week);
               if (browser.scheduleStatus() == 429) {
                 report.put("decisionCase", "1");
                 report.put("category", "BROWSER_RATE_LIMITED");
@@ -74,22 +75,9 @@ public final class VulcanSchedule429Investigation {
                 report.put("category", "BROWSER_OTHER_FAILURE");
                 report.put("javaOutcome", "NOT_RUN");
               } else {
-                var postPlan = browser.postPlanMaterial();
-                report.put(
-                    "postPlanRefererContext",
-                    Schedule429Structure.referer(postPlan.refererUri().toASCIIString()));
-                Schedule429Structure.cookies(report, postLogin, postPlan);
                 report.stage(JAVA_COMPARISON_SETUP);
-                reportJavaShape(report, javaShape, postPlan);
-                report.put("javaMaterialContext", "POST_PLAN_ACTUAL");
                 compareForms(report, browser.browserForm(), javaShape.form());
-                report.stage(JAVA_COMPARISON);
-                compareJava(
-                    report,
-                    budget,
-                    () ->
-                        new VulcanClient(VulcanSession.fromMaterial(postPlan))
-                            .getWeekSchedule(browser.journal(), week));
+                compareJavaFromPostLogin(report, budget, postLogin, browser.journal(), week);
                 exit = 0;
               }
             } catch (Throwable failure) {
@@ -111,6 +99,20 @@ public final class VulcanSchedule429Investigation {
     report.put("result", exit == 0 ? "SUCCESS" : "FAIL");
     report.print(output);
     System.exit(exit);
+  }
+
+  static void compareJavaFromPostLogin(
+      Schedule429Report report,
+      Schedule429Budget budget,
+      io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSessionMaterial postLogin,
+      long journal,
+      LocalDate week) {
+    report.stage(JAVA_COMPARISON_SETUP);
+    // This immutable material was captured BEFORE catalog verification and the browser request.
+    var client = new VulcanClient(VulcanSession.fromMaterial(postLogin));
+    report.stage(JAVA_COMPARISON);
+    compareJava(report, budget, () -> client.getWeekSchedule(journal, week));
+    report.put("javaMaterialContext", "PRE_REQUEST_POST_LOGIN");
   }
 
   static void compareJava(

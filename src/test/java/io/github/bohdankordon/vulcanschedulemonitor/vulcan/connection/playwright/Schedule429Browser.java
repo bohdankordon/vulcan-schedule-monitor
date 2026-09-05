@@ -23,12 +23,12 @@ import io.github.bohdankordon.vulcanschedulemonitor.devsmoke.Schedule429Failure;
 import io.github.bohdankordon.vulcanschedulemonitor.devsmoke.Schedule429Report;
 import io.github.bohdankordon.vulcanschedulemonitor.devsmoke.Schedule429Structure;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.PortalUrlValidator;
-import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VerifiedVulcanSession;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanAuthFailureCategory;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanAuthenticationException;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanLoginRequest;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics.VulcanDiagnostics;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics.VulcanDiagnostics.Stage;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.journal.SchoolClass;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSessionMaterial;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -64,7 +64,7 @@ public final class Schedule429Browser implements AutoCloseable {
   private URI application;
   private Request scheduleRequest;
   private int scheduleStatus;
-  private boolean planContext;
+  private URI capturedReferer;
   private boolean trafficStopped;
   private boolean fallback;
   private Schedule429Structure.FormFacts browserForm;
@@ -242,6 +242,7 @@ public final class Schedule429Browser implements AutoCloseable {
     try {
       destination = URI.create(route.request().url());
     } catch (RuntimeException exception) {
+      if (application != null) stopUnsafeControl();
       route.abort();
       return;
     }
@@ -250,6 +251,7 @@ public final class Schedule429Browser implements AutoCloseable {
         || application != null
             && (!application.getScheme().equals(destination.getScheme())
                 || !application.getRawAuthority().equals(destination.getRawAuthority()))) {
+      if (application != null && !trafficStopped) stopUnsafeControl();
       route.abort();
       return;
     }
@@ -257,6 +259,7 @@ public final class Schedule429Browser implements AutoCloseable {
       Request request = route.request();
       var values = Schedule429Structure.formValues(request.postData());
       Long candidate = safeTarget(destination, request.method(), values);
+      if (candidate == null && application != null) stopUnsafeControl();
       if (!budget.permitBrowser(candidate != null)) {
         route.abort();
         return;
@@ -266,12 +269,21 @@ public final class Schedule429Browser implements AutoCloseable {
       report.put("browserSource", fallback ? "BROWSER_CONTEXT_FETCH" : "NATIVE_UI_REQUEST");
       report.put("browser.method", request.method().equals("POST") ? "POST" : "OTHER");
       Schedule429Structure.headers(report, "browser", request.allHeaders());
+      report.put(
+          "browserRefererMatchesCapturedReferer",
+          capturedReferer != null
+              && capturedReferer.toASCIIString().equals(request.headerValue("referer")));
       browserForm =
           Schedule429Structure.form(
               request.method(), request.postData(), request.headerValue("content-type"), week);
       Schedule429Structure.formReport(report, "browser", browserForm);
     }
     route.resume();
+  }
+
+  private void stopUnsafeControl() {
+    trafficStopped = true;
+    report.fail(BROWSER_CONTROL_TRIGGER, new Schedule429Failure(SECURITY_INVARIANT));
   }
 
   private Long safeTarget(URI destination, String method, Map<String, String> values) {
@@ -283,6 +295,9 @@ public final class Schedule429Browser implements AutoCloseable {
       long journal = Long.parseLong(values.get("idDziennik"));
       if (!allowedJournals.contains(journal)
           || selectedJournal != null && selectedJournal != journal) return null;
+      if (!values.get("dataOd").equals(Schedule429Structure.stamp(week))
+          || !values.get("dataDo").equals(Schedule429Structure.stamp(week.plusDays(6))))
+        return null;
       LocalDate from = LocalDate.parse(values.get("dataOd").substring(0, 10));
       LocalDate to = LocalDate.parse(values.get("dataDo").substring(0, 10));
       LocalDate anchor = LocalDate.parse(values.get("data").substring(0, 10));
@@ -299,12 +314,6 @@ public final class Schedule429Browser implements AutoCloseable {
 
   private void observeResponse(com.microsoft.playwright.Response response) {
     try {
-      URI uri = URI.create(response.url());
-      if (application != null
-          && portalUrls.isAllowedRuntimeUri(uri)
-          && uri.equals(application.resolve("PlanLekcji.mvc/GetContext"))
-          && response.status() >= 200
-          && response.status() < 300) planContext = true;
       if (scheduleRequest == null || !response.request().equals(scheduleRequest)) return;
       scheduleStatus = response.status();
       trafficStopped = true;
@@ -358,60 +367,59 @@ public final class Schedule429Browser implements AutoCloseable {
     }
   }
 
-  /** One controller-derived page navigation; no assumed menu, class selector, or site JS API. */
-  public void control(VerifiedVulcanSession verified, LocalDate currentWeek) {
+  /** Compare from the existing authenticated Page; no navigation or assumed portal UI. */
+  public void control(
+      VulcanSessionMaterial postLogin, List<SchoolClass> classes, LocalDate currentWeek) {
     try {
       report.stage(TARGET_SELECTION);
-      application = verified.sessionMaterial().applicationBaseUri();
+      application = postLogin.applicationBaseUri();
+      capturedReferer = postLogin.refererUri();
       week = java.util.Objects.requireNonNull(currentWeek);
-      verified.classes().forEach(item -> allowedJournals.add(item.journalId()));
+      classes.forEach(item -> allowedJournals.add(item.journalId()));
       if (allowedJournals.isEmpty()) throw new Schedule429Failure(NOT_FOUND);
-      selectedJournal = verified.classes().getFirst().journalId();
-      report.stage(PLAN_CONTEXT_DISCOVERY);
+      selectedJournal = classes.getFirst().journalId();
+      report.stage(BROWSER_CONTROL_SETUP);
       requireAllowedPage(page);
       rejectInteractiveSecurity(page);
-      URI plan = planPage(application, URI.create(page.url()));
-      if (!portalUrls.isAllowedRuntimeUri(plan))
-        throw new Schedule429Failure(UNEXPECTED_PAGE_STATE);
-      report.stage(PLAN_CONTEXT_NAVIGATION);
-      // Scheduling stays unarmed during initialization: page-generated schedule calls are blocked.
-      var response =
-          page.navigate(
-              plan.toASCIIString(),
-              new Page.NavigateOptions()
-                  .setWaitUntil(com.microsoft.playwright.options.WaitUntilState.DOMCONTENTLOADED)
-                  .setTimeout(30000));
-      if (response == null) throw new Schedule429Failure(UNEXPECTED_PAGE_STATE);
-      if (response.status() == 404) throw new Schedule429Failure(NOT_FOUND);
-      if (response.status() < 200
-          || response.status() >= 300
-          || !Schedule429Structure.contentFamily(response.headerValue("content-type"))
-              .equals("html")) throw new Schedule429Failure(UNEXPECTED_PAGE_STATE);
-      requireAllowedPage(page);
-      rejectInteractiveSecurity(page);
-      if (!URI.create(page.url()).equals(plan)
+      URI currentPage = URI.create(page.url());
+      URI endpoint = scheduleEndpoint(application, currentPage);
+      if (!portalUrls.isAllowedRuntimeUri(endpoint)
           || isVisible(
               page.locator("input[autocomplete='current-password'], input[type='password']")))
         throw new Schedule429Failure(UNEXPECTED_PAGE_STATE);
-      planContext = true;
-      report.put("planContextConfirmed", true);
+      report.put("browserPageContext", Schedule429Structure.referer(currentPage.toASCIIString()));
       report.stage(BROWSER_CONTROL_TRIGGER);
       fallback = true;
       budget.arm();
-      // Native fetch supplies browser cookies/transport only. No claim of portal-native AJAX
-      // headers.
+      // Only the three known AJAX headers are explicit. Chromium supplies its own browser headers.
+      // Playwright receives ephemeral arguments; no JSON dump, CLI, environment, or storage is
+      // used.
       page.evaluate(
           """
-          ({endpoint, form}) => {
+          ({endpoint, form, verification, appGuid, origin, applicationPath}) => {
             const target = new URL(endpoint, location.href);
-            if (target.origin !== location.origin) throw new Error('Unsafe context');
+            const expectedOrigin = new URL(origin).origin;
+            if (location.origin !== expectedOrigin || target.origin !== expectedOrigin
+                || !location.pathname.startsWith(applicationPath)) throw new Error('Unsafe context');
             void fetch(endpoint, {method: 'POST', mode: 'same-origin', credentials: 'same-origin',
-              redirect: 'manual', body: new URLSearchParams(form)}).catch(() => {});
+              redirect: 'manual', body: new URLSearchParams(form), headers: {
+                'X-V-RequestVerificationToken': verification,
+                'X-V-AppGuid': appGuid,
+                'X-Requested-With': 'XMLHttpRequest'
+              }}).catch(() => {});
           }
           """,
           Map.of(
               "endpoint",
-              "PlanLekcji.mvc/GetPlanLekcjiContext",
+              endpoint.getRawPath(),
+              "origin",
+              application.getScheme() + "://" + application.getRawAuthority(),
+              "applicationPath",
+              application.getRawPath(),
+              "verification",
+              postLogin.requestVerificationToken(),
+              "appGuid",
+              postLogin.appGuid(),
               "form",
               Map.of(
                   "dataOd",
@@ -436,16 +444,15 @@ public final class Schedule429Browser implements AutoCloseable {
     }
   }
 
-  static URI planPage(URI application, URI current) {
-    // The known production endpoint identifies this one controller. No alternate routes/probes.
+  static URI scheduleEndpoint(URI application, URI current) {
     URI endpoint = application.resolve("PlanLekcji.mvc/GetPlanLekcjiContext");
-    URI plan = endpoint.resolve("../PlanLekcji.mvc");
-    if (!java.util.Objects.equals(current.getScheme(), plan.getScheme())
-        || !java.util.Objects.equals(current.getRawAuthority(), plan.getRawAuthority())
+    if (!java.util.Objects.equals(current.getScheme(), endpoint.getScheme())
+        || !java.util.Objects.equals(current.getRawAuthority(), endpoint.getRawAuthority())
+        || !current.getPath().startsWith(application.getPath())
         || !application.getPath().endsWith("/")
-        || plan.getQuery() != null
-        || plan.getFragment() != null) throw new Schedule429Failure(UNEXPECTED_PAGE_STATE);
-    return plan;
+        || endpoint.getQuery() != null
+        || endpoint.getFragment() != null) throw new Schedule429Failure(UNEXPECTED_PAGE_STATE);
+    return endpoint;
   }
 
   public int scheduleStatus() {
@@ -458,17 +465,6 @@ public final class Schedule429Browser implements AutoCloseable {
 
   public Schedule429Structure.FormFacts browserForm() {
     return browserForm;
-  }
-
-  public VulcanSessionMaterial postPlanMaterial() {
-    report.stage(POST_PLAN_SESSION_CAPTURE);
-    try {
-      return new VulcanSessionCapture(portalUrls)
-          .capture(observations, cookiesForObservedApplication(context, observations));
-    } catch (RuntimeException failure) {
-      report.fail(failure);
-      throw failure;
-    }
   }
 
   @Override
