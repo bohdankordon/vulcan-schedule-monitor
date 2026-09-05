@@ -527,3 +527,69 @@ redaction, exact-form preflight, one-shot permits, untouched loopback requests,
 HTTP/auth/HTML/transport/protocol outcomes, and Retry-After seconds/date/absence/
 malformed/bounded-duration handling. Formatting and whitespace checks passed.
 All fixtures were synthetic; VULCAN requests were zero. The real harness was not run.
+
+## Accept-only native-session diagnostic
+
+The subsequently authorized untouched baseline ran once and produced **N1**:
+validated native Firefox evidence was 2xx JSON, while Java using the same captured
+session material returned 429 / `RATE_LIMITED`, with Retry-After absent, one schedule
+request and zero retries. Java transport/request context is now the leading
+hypothesis. This remains **same captured session material, different execution
+time**; session age and changing server-side state prevent a causal conclusion.
+
+The next isolated variable is explicit `Accept: */*`, matching the native request's
+safe `STAR_STAR_ONLY` profile. This implementation has not made a real request.
+The following command is for a future, separately authorized invocation only:
+
+```powershell
+pwsh -NoProfile -File .\scripts\vulcan-native-session-java-accept-baseline.ps1 `
+  -Run -HarPath .\.dev\vulcan-schedule-native.har
+```
+
+This is **B only**: at most one Java schedule attempt, zero retries, and no untouched
+A request inside the invocation. The original script still selects `UNTOUCHED`;
+the sibling selects `ACCEPT_STAR_STAR`. Both use the same raw-HAR validation,
+session reconstruction, exact production-form preflight and redirected-stdin
+boundary. The raw HAR stays local and secret. There is no browser, authentication,
+cache/tree lookup, monitoring, Telegram, or persistence step.
+
+The test-source decorator wraps the existing `JdkClientHttpRequestFactory` within
+the production client's RestClient using test-only reflection. It delegates request
+creation to that same factory and sets one Accept value. It rejects any other
+method/endpoint and cannot be reused or installed twice. It does not replace the
+JDK client or CookieManager, change HTTP preference, TLS, redirects or timeouts,
+or modify production source. Untouched construction skips the decorator entirely.
+
+Paired loopback captures use identical session/form inputs and the same endpoint.
+They prove absent Accept in A, exactly one `*/*` value in B, and equality of every
+other captured header name/value, method, URI, protocol and form byte. Only header
+name casing and map ordering are normalized. Separate identity checks verify the
+original factory, JDK client and cookie handler are retained. Response and budget
+tests exercise success, 429, HTML, redirects, authentication and other HTTP errors.
+All fixtures are synthetic and all dispatched test requests use loopback.
+
+The finite schema adds `variant=UNTOUCHED/ACCEPT_STAR_STAR` and `acceptInjected`.
+The latter is false before customization, true after the decorator applies it,
+and `UNAVAILABLE` if the supervisor loses an Accept child's valid report. Injection
+does not itself prove successful wire delivery; attempted/request fields remain
+separate. Lost-child tests verify one child call, no restart, and unavailable
+request counts rather than a fabricated zero. The invocation budget is then spent.
+Existing evidence, form, status, outcome and safe Retry-After fields are retained.
+
+Future interpretation, without automatically changing production:
+
+- **A1:** B returns valid 2xx JSON. This strongly supports an effect from explicit
+  Accept, but time-varying server state remains a confounder. Review scope before
+  considering an operation-specific or transport-wide change.
+- **A2:** B returns 429. Accept is weakened as a sufficient explanation, not fully
+  refuted: A may have begun a rate-limit window and the material is older. A fresh
+  successful native capture would be the next useful control.
+- **A3:** B returns HTML, redirect or authentication/session failure. Inconclusive;
+  the captured material may be stale.
+- **A4:** Another failure. Report only its finite category.
+
+Validation: 14 additional Maven cases (12 focused variant cases and two additional
+stdin-boundary cases); full `verify` passed with 660 tests, zero failures/errors,
+and four optional Chromium cases skipped. The 37 existing and 11 new standalone
+PowerShell cases passed. Spotless and `git diff --check` passed. No developer HAR
+was inspected, no VULCAN request occurred, and the real Accept variant was not run.

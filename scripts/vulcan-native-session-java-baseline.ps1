@@ -7,8 +7,10 @@ $ErrorActionPreference = 'Stop'
 # Dot-sourcing defines helpers only; the sanitizer's guarded CLI entrypoint does not run.
 . (Join-Path $PSScriptRoot 'sanitize-vulcan-schedule-har.ps1')
 
-function New-NativeBaselineReport([string]$Category = 'NOT_AUTHORIZED') {
+function New-NativeBaselineReport([string]$Category = 'NOT_AUTHORIZED', [string]$Variant = 'UNTOUCHED') {
+    if ($Variant -cnotin @('UNTOUCHED', 'ACCEPT_STAR_STAR')) { throw 'UNSAFE_OUTPUT_GUARD' }
     return [ordered]@{
+        variant = $Variant; acceptInjected = $false
         schemaVersion = 1; result = 'FAIL'; category = $Category
         nativeEvidenceValidated = $false; 'session.cookieCount' = 0; 'session.refererContext' = 'UNAVAILABLE'
         'form.exactFieldSet' = $false; 'form.timestampShapesMatch' = $false; 'form.weekSemanticsMatch' = $false
@@ -20,6 +22,7 @@ function New-NativeBaselineReport([string]$Category = 'NOT_AUTHORIZED') {
 
 function Assert-NativeBaselineReport($Report) {
     $schema = @{
+        variant = @('UNTOUCHED', 'ACCEPT_STAR_STAR'); acceptInjected = 'optionalBool'
         schemaVersion = 'one'; result = @('SUCCESS', 'FAIL')
         category = @('VALIDATION_ONLY', 'INVALID_INPUT', 'NOT_AUTHORIZED', 'INVALID_HAR', 'INVALID_NATIVE_EVIDENCE', 'INVALID_SESSION', 'FORM_MISMATCH', 'BUDGET_EXHAUSTED', 'BASELINE_COMPLETED', 'HARNESS_FAILURE', 'BUILD_FAILURE', 'UNSAFE_OUTPUT_GUARD', 'CHILD_FAILURE')
         nativeEvidenceValidated = 'bool'; 'session.cookieCount' = 'cookies'
@@ -49,6 +52,9 @@ function Assert-NativeBaselineReport($Report) {
         if ($Report.category -cne 'CHILD_FAILURE' -or $Report.javaRequestAttempted -cne 'UNAVAILABLE' -or $Report.javaScheduleRequests -cne 'UNAVAILABLE') { throw 'UNSAFE_OUTPUT_GUARD' }
     } elseif ($Report.javaRequestAttempted -ne ($Report.javaScheduleRequests -eq 1)) { throw 'UNSAFE_OUTPUT_GUARD' }
     if ($Report.result -ceq 'SUCCESS' -and ($Report.javaOutcome -cne 'SUCCESS' -or !$Report.javaRequestAttempted -or !$Report.nativeEvidenceValidated)) { throw 'UNSAFE_OUTPUT_GUARD' }
+    if ($Report.variant -ceq 'UNTOUCHED' -and ($Report.acceptInjected -isnot [bool] -or $Report.acceptInjected)) { throw 'UNSAFE_OUTPUT_GUARD' }
+    if ($Report.acceptInjected -is [string] -and ($Report.category -cne 'CHILD_FAILURE' -or $Report.variant -cne 'ACCEPT_STAR_STAR')) { throw 'UNSAFE_OUTPUT_GUARD' }
+    if ($Report.result -ceq 'SUCCESS' -and $Report.variant -ceq 'ACCEPT_STAR_STAR' -and ($Report.acceptInjected -isnot [bool] -or !$Report.acceptInjected)) { throw 'UNSAFE_OUTPUT_GUARD' }
 }
 
 function Get-NativeSessionPayload([string]$RawHar) {
@@ -122,11 +128,13 @@ function Get-NativeSessionPayload([string]$RawHar) {
     }
 }
 
-function Invoke-NativeBaselineChild([string]$Classpath, [byte[]]$Payload, [bool]$ValidationOnly = $false) {
+function Invoke-NativeBaselineChild([string]$Classpath, [byte[]]$Payload, [bool]$ValidationOnly = $false, [string]$Variant = 'UNTOUCHED') {
+    if ($Variant -cnotin @('UNTOUCHED', 'ACCEPT_STAR_STAR')) { throw 'UNSAFE_OUTPUT_GUARD' }
     $start = [Diagnostics.ProcessStartInfo]::new('java')
     $start.UseShellExecute = $false; $start.CreateNoWindow = $true
     $start.RedirectStandardInput = $true; $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
     $mode = if ($ValidationOnly) { '--validate-native-session-input' } else { '--authorized-native-session-java-baseline' }
+    if ($Variant -ceq 'ACCEPT_STAR_STAR') { $mode = if ($ValidationOnly) { '--validate-native-session-accept-input' } else { '--authorized-native-session-java-accept-baseline' } }
     foreach ($argument in @('-cp', $Classpath, 'io.github.bohdankordon.vulcanschedulemonitor.devsmoke.VulcanNativeSessionJavaBaseline', $mode)) { $start.ArgumentList.Add($argument) }
     # Do not inherit Java agent/debug options capable of persisting request material.
     foreach ($name in @('JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS', 'JDK_JAVA_OPTIONS')) { [void]$start.Environment.Remove($name) }
@@ -139,13 +147,26 @@ function Invoke-NativeBaselineChild([string]$Classpath, [byte[]]$Payload, [bool]
         # Never expose child stderr, even on failure.
         if (![string]::IsNullOrWhiteSpace($stderr.GetAwaiter().GetResult())) { throw 'UNSAFE_OUTPUT_GUARD' }
         Assert-NativeBaselineReport $safe
+        if ($safe.variant -cne $Variant) { throw 'UNSAFE_OUTPUT_GUARD' }
         if (($safe.result -ceq 'SUCCESS') -ne ($process.ExitCode -eq 0)) { throw 'UNSAFE_OUTPUT_GUARD' }
         return $safe
     } finally { $process.Dispose() }
 }
 
-function Invoke-NativeSessionBaseline([bool]$Authorized, [string]$Source) {
-    $report = New-NativeBaselineReport
+function Invoke-NativeBaselineOnce([string]$Classpath, [byte[]]$Payload, $Report) {
+    # A lost child report cannot prove whether dispatch happened. Never report
+    # zero in that case; treat its one-shot budget as spent and do not restart.
+    $Report.category = 'CHILD_FAILURE'
+    $Report.nativeEvidenceValidated = $true
+    $Report.javaRequestAttempted = 'UNAVAILABLE'
+    $Report.javaScheduleRequests = 'UNAVAILABLE'
+    if ($Report.variant -ceq 'ACCEPT_STAR_STAR') { $Report.acceptInjected = 'UNAVAILABLE' }
+    try { return (Invoke-NativeBaselineChild $Classpath $Payload -Variant $Report.variant) }
+    catch { return $Report }
+}
+
+function Invoke-NativeSessionBaseline([bool]$Authorized, [string]$Source, [string]$Variant = 'UNTOUCHED') {
+    $report = New-NativeBaselineReport -Variant $Variant
     $payload = $null
     try {
         if ($Authorized) {
@@ -169,18 +190,12 @@ function Invoke-NativeSessionBaseline([bool]$Authorized, [string]$Source) {
             $payload = Get-NativeSessionPayload $raw
             $raw = $null
             $classpath = (Join-Path $root 'target/test-classes') + ';' + (Join-Path $root 'target/classes') + ';' + [IO.File]::ReadAllText((Join-Path $root 'target/native-session-baseline-classpath.txt')).Trim()
-            # A lost child report cannot prove whether dispatch happened. Never report
-            # zero in that case; treat its one-shot budget as spent and do not restart.
-            $report.category = 'CHILD_FAILURE'
-            $report.nativeEvidenceValidated = $true
-            $report.javaRequestAttempted = 'UNAVAILABLE'
-            $report.javaScheduleRequests = 'UNAVAILABLE'
-            $report = Invoke-NativeBaselineChild $classpath $payload
+            $report = Invoke-NativeBaselineOnce $classpath $payload $report
         }
     } catch { # The finite current category identifies the first failing boundary.
         if ($report.category -eq 'NOT_AUTHORIZED') { $report.category = 'INVALID_INPUT' }
     } finally { if ($null -ne $payload) { [Array]::Clear($payload, 0, $payload.Length) } }
-    try { Assert-NativeBaselineReport $report } catch { $report = New-NativeBaselineReport 'UNSAFE_OUTPUT_GUARD' }
+    try { Assert-NativeBaselineReport $report } catch { $report = New-NativeBaselineReport 'UNSAFE_OUTPUT_GUARD' $Variant }
     Write-Output (ConvertTo-Json -InputObject $report -Depth 4)
     return $(if ($report.result -ceq 'SUCCESS') { 0 } else { 1 })
 }

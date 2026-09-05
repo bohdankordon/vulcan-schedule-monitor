@@ -5,9 +5,22 @@ import java.util.function.Predicate;
 import tools.jackson.databind.ObjectMapper;
 
 final class NativeSessionBaselineReport {
+  enum Variant {
+    UNTOUCHED,
+    ACCEPT_STAR_STAR
+  }
+
   private final Map<String, Object> facts = new LinkedHashMap<>();
+  private final Variant variant;
 
   NativeSessionBaselineReport() {
+    this(Variant.UNTOUCHED);
+  }
+
+  NativeSessionBaselineReport(Variant variant) {
+    this.variant = Objects.requireNonNull(variant);
+    facts.put("variant", variant.name());
+    facts.put("acceptInjected", false);
     facts.put("schemaVersion", 1);
     facts.put("result", "FAIL");
     facts.put("category", "INVALID_INPUT");
@@ -28,6 +41,10 @@ final class NativeSessionBaselineReport {
     facts.put("retries", 0);
   }
 
+  Variant variant() {
+    return variant;
+  }
+
   void put(String key, Object value) {
     var predicate = schema().get(key);
     if (predicate == null || !predicate.test(value))
@@ -46,6 +63,10 @@ final class NativeSessionBaselineReport {
   }
 
   private void validate() {
+    if (!variant.name().equals(facts.get("variant"))
+        || (variant == Variant.UNTOUCHED && !Boolean.FALSE.equals(facts.get("acceptInjected")))) {
+      throw new IllegalArgumentException("UNSAFE_OUTPUT_GUARD");
+    }
     if (!facts.keySet().equals(schema().keySet()))
       throw new IllegalArgumentException("UNSAFE_OUTPUT_GUARD");
     facts.forEach(
@@ -62,6 +83,8 @@ final class NativeSessionBaselineReport {
 
   private static Map<String, Predicate<Object>> schema() {
     Map<String, Predicate<Object>> s = new HashMap<>();
+    s.put("variant", values("UNTOUCHED", "ACCEPT_STAR_STAR"));
+    s.put("acceptInjected", value -> value instanceof Boolean);
     s.put("schemaVersion", value -> Integer.valueOf(1).equals(value));
     s.put("result", values("SUCCESS", "FAIL"));
     s.put(

@@ -32,17 +32,32 @@ public final class VulcanNativeSessionJavaBaseline {
     PrintStream output = System.out;
     System.setOut(new PrintStream(OutputStream.nullOutputStream()));
     System.setErr(new PrintStream(OutputStream.nullOutputStream()));
-    var report = new NativeSessionBaselineReport();
+    boolean acceptVariant =
+        args.length == 1
+            && Set.of(
+                    "--authorized-native-session-java-accept-baseline",
+                    "--validate-native-session-accept-input")
+                .contains(args[0]);
+    var report =
+        new NativeSessionBaselineReport(
+            acceptVariant
+                ? NativeSessionBaselineReport.Variant.ACCEPT_STAR_STAR
+                : NativeSessionBaselineReport.Variant.UNTOUCHED);
     try {
       var logging = (LoggerContext) LoggerFactory.getILoggerFactory();
       logging.reset();
       logging.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME).setLevel(Level.OFF);
       java.util.logging.LogManager.getLogManager().reset();
       boolean validationOnly =
-          args.length == 1 && args[0].equals("--validate-native-session-input");
+          args.length == 1
+              && Set.of("--validate-native-session-input", "--validate-native-session-accept-input")
+                  .contains(args[0]);
       if (!validationOnly
-          && (args.length != 1 || !args[0].equals("--authorized-native-session-java-baseline")))
-        report.put("category", "NOT_AUTHORIZED");
+          && (args.length != 1
+              || !Set.of(
+                      "--authorized-native-session-java-baseline",
+                      "--authorized-native-session-java-accept-baseline")
+                  .contains(args[0]))) report.put("category", "NOT_AUTHORIZED");
       else
         try (var input = NativeSessionBaselineInput.read(System.in)) {
           var material = input.validate();
@@ -97,7 +112,17 @@ public final class VulcanNativeSessionJavaBaseline {
       NativeSessionBaselineReport report) {
     if (!preflight(material, report)) return;
     var client = new VulcanClient(material.session());
-    runOnce(permit, report, () -> client.getWeekSchedule(material.journal(), material.dataDate()));
+    NativeSessionAcceptDecorator decorator =
+        report.variant() == NativeSessionBaselineReport.Variant.ACCEPT_STAR_STAR
+            ? NativeSessionAcceptDecorator.install(
+                client, material.session().resolve(NativeSessionBaselineInput.ENDPOINT))
+            : null;
+    try {
+      runOnce(
+          permit, report, () -> client.getWeekSchedule(material.journal(), material.dataDate()));
+    } finally {
+      if (decorator != null) report.put("acceptInjected", decorator.injected());
+    }
   }
 
   static boolean preflight(

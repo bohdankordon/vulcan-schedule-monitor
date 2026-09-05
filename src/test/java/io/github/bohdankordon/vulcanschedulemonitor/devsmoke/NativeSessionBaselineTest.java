@@ -330,16 +330,23 @@ class NativeSessionBaselineTest {
   }
 
   @ParameterizedTest
-  @ValueSource(booleans = {false, true})
-  void actualStdinBoundaryNeverPermitsProviderTraffic(boolean matchingForm) throws Exception {
+  @CsvSource({
+    "false,UNTOUCHED",
+    "true,UNTOUCHED",
+    "false,ACCEPT_STAR_STAR",
+    "true,ACCEPT_STAR_STAR"
+  })
+  void actualStdinBoundaryNeverPermitsProviderTraffic(boolean matchingForm, String variant)
+      throws Exception {
     assumeTrue(System.getProperty("os.name").startsWith("Windows"));
     String command =
         ". ./scripts/vulcan-native-session-java-baseline.ps1; "
             + "$p = Get-NativeSessionPayload ([Console]::In.ReadToEnd()); "
-            + "try { $r = Invoke-NativeBaselineChild $env:NATIVE_TEST_CLASSPATH $p $true; ConvertTo-Json -InputObject $r -Depth 4 } "
+            + "try { $r = Invoke-NativeBaselineChild $env:NATIVE_TEST_CLASSPATH $p $true -Variant $env:NATIVE_TEST_VARIANT; ConvertTo-Json -InputObject $r -Depth 4 } "
             + "finally { [Array]::Clear($p, 0, $p.Length) }";
     var process = new ProcessBuilder("pwsh", "-NoProfile", "-Command", command);
     process.environment().put("NATIVE_TEST_CLASSPATH", classpath());
+    process.environment().put("NATIVE_TEST_VARIANT", variant);
     String har = matchingForm ? fixtureHar().replace("T12%3A", "T00%3A") : fixtureHar();
     var response = run(process, har.getBytes(StandardCharsets.UTF_8));
     assertThat(response.exit()).isZero();
@@ -348,6 +355,8 @@ class NativeSessionBaselineTest {
         .isEqualTo(matchingForm ? "VALIDATION_ONLY" : "FORM_MISMATCH");
     assertThat(report.path("javaScheduleRequests").intValue()).isZero();
     assertThat(report.path("nativeEvidenceValidated").booleanValue()).isTrue();
+    assertThat(report.path("variant").asString()).isEqualTo(variant);
+    assertThat(report.path("acceptInjected").booleanValue()).isFalse();
   }
 
   private static String fixtureHar() {
@@ -401,7 +410,7 @@ class NativeSessionBaselineTest {
 
   record Result(String out, int exit) {}
 
-  private static Result run(ProcessBuilder builder, byte[] input) throws Exception {
+  static Result run(ProcessBuilder builder, byte[] input) throws Exception {
     var process = builder.start();
     var output = CompletableFuture.supplyAsync(() -> read(process.getInputStream()));
     var errors = CompletableFuture.supplyAsync(() -> read(process.getErrorStream()));
@@ -425,7 +434,7 @@ class NativeSessionBaselineTest {
     }
   }
 
-  private static void safe(String value) {
+  static void safe(String value) {
     assertThat(value)
         .doesNotContain(
             TOKEN,
