@@ -260,3 +260,77 @@ occurred. No second invocation or retry was made.
 Total real schedule requests in this Java-only invocation: zero. No secrets or raw provider
 payload/capture artifacts were persisted. No production compatibility fix or PR was created.
 The previous experiments above remain the historical record.
+
+### Next evidence source: offline native-request HAR reduction
+
+Automated browser comparisons remain confounded by authentication/UI instability;
+the browser control that reached the endpoint returned HTML, not valid schedule JSON.
+The next evidence source is a request generated manually by the real Plan Lekcji UI.
+This tooling change makes no new endpoint claim and changes no production behavior.
+
+The developer can later log in in their normal browser, open the real schedule UI,
+select one authorized class, and export a HAR containing exactly one schedule request.
+Keep the raw HAR under `.dev/`; never paste it into chat or commit it. Both raw HARs
+and sanitized JSON under `.dev/` are already ignored by the repository. The tool
+does not open a browser, authenticate, resolve external resources, or send requests.
+
+Run with PowerShell 7.5 or newer, from the repository root:
+
+```powershell
+pwsh -NoProfile -File .\scripts\sanitize-vulcan-schedule-har.ps1 `
+    -InputPath .\.dev\vulcan-schedule-native.har `
+    -OutputPath .\.dev\vulcan-schedule-native.sanitized.json
+```
+
+Omit `-OutputPath` for stdout only. Stdout is sanitized JSON with flat, fixed keys
+(for example `response.statusFamily` and `headers.userAgent.present`). The optional
+file contains the same report. Existing output files are never overwritten; choose
+a new `.dev/*schedule*.json` filename for another reduction. Exit code is zero for
+a successful structural reduction, one for a finite input/matching/guard failure.
+`SUCCESS` means reduction succeeded, including for a captured HTTP 429 or HTML
+response; it does not mean the provider returned a valid schedule.
+
+Output includes status/content/protocol categories, header presence, token nonblank
+booleans, normalized protocol-header categories, cookie count, referer category,
+origin agreement, form field count/key-set/date-shape/week-relation booleans, and
+JSON envelope/array presence and counts. No dates, identifiers, cookie names,
+header values, URL strings, or response elements survive reduction. Referer
+classification uses path patterns within the request's application prefix and
+origin; `OTHER_ALLOWED` means this structural boundary matches, not independent
+proof of portal authorization. The schedule endpoint itself is not `PLAN_PAGE`.
+
+Only one exact controller/action path suffix is accepted, and it must use POST.
+Matching considers URLs, never text in response bodies. Multiple matching paths
+(regardless of method) return `AMBIGUOUS` with a count. Header duplicates and
+malformed/duplicate-key JSON fail closed. Form text takes precedence over HAR
+decoded params when both exist; params are supported when text is absent. Cookie
+count uses the separate HAR cookie array if present, otherwise Cookie header pair
+count; a browser export that strips cookies may therefore report zero. Timestamp
+relations compare calendar dates without emitting them. JSON parsing of response
+text happens only for 2xx responses whose HAR MIME type indicates JSON; HTML text
+is never inspected. Base64-encoded JSON content is supported ephemerally.
+
+Every output key and string belongs to an explicit allowlist. Boolean types and
+integer counts (0–1,000,000) are checked before file output and stdout. Input size
+is capped at 32 MiB and JSON depth at 64. Network/UNC paths and links/junctions are
+rejected; on Windows only fixed local drives are accepted. Errors contain only
+finite results and never parser messages or paths. No raw intermediate file is
+created. Do not enable PowerShell transcription/debug logging while handling a
+raw capture; it is outside the sanitizer's output boundary.
+
+The optional Java projection is intentionally not invoked: the existing production
+request measurement uses a loopback HTTP listener, while this sanitizer performs
+zero network operations. Compare the reduced native evidence with the previously
+recorded synthetic Java measurements separately, without claiming causality.
+
+Tests generate synthetic HAR data in memory and isolated temporary files. Coverage
+includes JSON/HTML/429, missing/ambiguous/wrong-method targets, malformed structures,
+header/form/cookie omissions, protocol and referer categories, date boundaries,
+array counts, output-guard tampering, and CLI stdout/stderr/file leak checks using
+fake secret markers. No real HAR was located or processed and no VULCAN request
+was made while building this tool. Existing experiments above are unchanged.
+
+Validation: all 47 standalone PowerShell synthetic cases passed. Maven verification
+reported 566 tests, zero failures/errors and four optional Chromium tests skipped;
+two new JUnit contracts integrate the sanitizer checks. Spotless and
+`git diff --check` passed. No Chromium execution is needed for this offline tool.
