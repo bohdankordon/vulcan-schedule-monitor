@@ -95,4 +95,47 @@ Without remembered credentials, or for invalid credentials, MFA, CAPTCHA, unsupp
 
 ## Manual validation
 
+### Opt-in local real-VULCAN smoke harness (developers only)
+
+Use only an account you are authorized to test. **`-Run` makes real VULCAN requests: one invocation is one connection attempt.** Configure manually in Windows PowerShell 7 with Java 21 available and Playwright Chromium already installed:
+
+```powershell
+.\scripts\vulcan-real-smoke.ps1 -Configure
+```
+
+The prompts collect the portal URL, login, and password; login and password use secure input. A versioned `VSM1` binary payload contains three length-prefixed UTF-8 fields and is protected with Windows DPAPI `DataProtectionScope.CurrentUser`. Only Base64 ciphertext is written to `.dev/vulcan-real-smoke.dpapi`; no plaintext intermediate file is created. This bundle is separate from the application master key and Telegram token. **DPAPI CurrentUser is development convenience and does not isolate credentials from arbitrary code running as the same Windows user. Never commit or share `.dev` contents, or supply credentials through an agent prompt.**
+
+After explicitly authorizing one attempt:
+
+```powershell
+.\scripts\vulcan-real-smoke.ps1 -Run
+```
+
+The script first compiles the test-source diagnostic main and resolves its existing Maven classpath without credentials. It then decrypts only the smoke bundle in memory and sends the binary payload to Java's redirected stdin. Credentials are never command-line arguments, environment variables, build inputs, or saved browser state. Transient byte/char arrays and BSTR buffers are cleared where practical; immutable JVM/.NET strings and browser-process memory cannot be reliably wiped. The child inherits only a small runtime environment allowlist, with monitoring and Telegram explicitly disabled. Third-party stdout/stderr are suppressed; the parent displays only a strictly validated finite diagnostic protocol.
+
+The main is opt-in, excluded from the production jar, and starts no Spring context, database, scheduler, token controller, recovery loop, or Telegram component. It reuses `PortalUrlValidator`, the default-headless `PlaywrightVulcanBrowserAuthenticator` (including `VulcanSessionCapture`), `VulcanSession.fromMaterial`, `DefaultVulcanSessionVerifier`, and `VulcanClient.getCache/getTree` with the real transport/adapters. It stops after verified session reconstruction/snapshot and production class conversion. No account, session, catalog row, or password is persisted; no remembered-credential slot is touched. One browser authentication and one verifier invocation occur, without harness retries. Each child has a five-minute process deadline; timeout/cancellation closes its process tree. Chromium is never installed by this runner.
+
+Diagnostics report these finite stages: `PORTAL_VALIDATION`, `BROWSER_AUTH`, `SESSION_CAPTURE`, `SESSION_MATERIAL_RECONSTRUCTION`, `VERIFY_CACHE_REQUEST`, `VERIFY_CACHE_PARSE`, `VERIFY_SCHOOL_YEAR`, `VERIFY_TREE_REQUEST`, `VERIFY_TREE_PARSE`, `SESSION_SNAPSHOT`, and `VERIFIED`. A stage can be `PASS`, `FAIL`, `INCOMPLETE`, or `NOT_REACHED`; `PASS` for an intermediate stage is not overall authentication success. The two parse stages cover JSON decoding and schema/domain conversion; school-year extraction has its own stage. Optional HTTP facts contain only status family, content family, and a redirect boolean. The smoke-only category `SESSION_AUTHENTICATION` distinguishes redirects, 401/403, and unexpected HTML from parser failures without exposing destinations or bodies. Normal production constructors use a no-op observer and retain existing public error mapping/logging.
+
+For example, a synthetic parse failure could end with:
+
+```text
+stage.VERIFY_CACHE_REQUEST=PASS
+stage.VERIFY_CACHE_PARSE=FAIL
+http.VERIFY_CACHE_REQUEST=SUCCESS,JSON,false
+category=PROTOCOL_FAILURE
+result=FAIL
+```
+
+`SUCCESS` in HTTP metadata means 2xx; other status families are `INFORMATIONAL`, `REDIRECT`, `CLIENT_ERROR`, `SERVER_ERROR`, and `OTHER`. Content is `JSON`, `HTML`, or `OTHER`. Successful verification also reports only `classCount`, never names. Exit codes are 0 for successful verification, 1 for a connection failure, and 2 for harness/input/setup failure. No raw exceptions, URLs, paths, headers, cookies, tokens, names, HTML/JSON, screenshots, HAR, traces, video, or storage state are emitted or persisted. MFA, CAPTCHA, and unsupported authentication stop the attempt; there is no bypass.
+
+Remove only this bundle, or view side-effect-free help:
+
+```powershell
+.\scripts\vulcan-real-smoke.ps1 -Clear
+.\scripts\vulcan-real-smoke.ps1 -Help
+```
+
+Normal Maven verification never invokes real mode or contacts VULCAN. Tests use mocked browsers, loopback synthetic HTTP, and an isolated temporary DPAPI bundle on Windows (the DPAPI test is skipped on non-Windows CI). No real credentials or existing `.dev` secrets are needed. Once the real core smoke succeeds, perform one final normal Telegram `/connect` test to cover the token/controller and persistence/catalog completion path. The harness itself makes no claim that this final user-facing validation has succeeded.
+
 CI tests the security and orchestration boundaries with synthetic encrypted sessions, a fake browser authenticator, local WireMock VULCAN responses, MockMvc, AES-GCM tests, and PostgreSQL/Testcontainers. It never contacts a real VULCAN tenant and never requires Chromium. Real tenant login details can vary and must be validated manually with an authorized test account. Do not record or publish credentials, URLs, request headers, cookies, screenshots, traces, class data, or browser state during that validation.

@@ -16,6 +16,8 @@ import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanAuth
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanAuthenticationException;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanBrowserAuthenticator;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanLoginRequest;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics.VulcanDiagnostics;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics.VulcanDiagnostics.Stage;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSessionMaterial;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -31,14 +33,22 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
       LoggerFactory.getLogger(PlaywrightVulcanBrowserAuthenticator.class);
   private final PortalUrlValidator portalUrls;
   private final boolean headless;
+  private final VulcanDiagnostics diagnostics;
 
   public PlaywrightVulcanBrowserAuthenticator(PortalUrlValidator portalUrls, boolean headless) {
+    this(portalUrls, headless, VulcanDiagnostics.NONE);
+  }
+
+  public PlaywrightVulcanBrowserAuthenticator(
+      PortalUrlValidator portalUrls, boolean headless, VulcanDiagnostics diagnostics) {
     this.portalUrls = portalUrls;
     this.headless = headless;
+    this.diagnostics = java.util.Objects.requireNonNull(diagnostics);
   }
 
   @Override
   public VulcanSessionMaterial authenticate(VulcanLoginRequest request) {
+    diagnostics.begin(Stage.BROWSER_AUTH);
     BrowserAuthStage stage = BrowserAuthStage.INITIAL_NAVIGATION;
     List<BrowserRequestObservation> observations = new CopyOnWriteArrayList<>();
     try (Playwright playwright = Playwright.create();
@@ -85,9 +95,14 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
       rejectInteractiveSecurity(page);
 
       stage = BrowserAuthStage.SESSION_CAPTURE;
+      diagnostics.pass(Stage.BROWSER_AUTH);
+      diagnostics.begin(Stage.SESSION_CAPTURE);
       VulcanSessionCapture capture = new VulcanSessionCapture(portalUrls);
       try {
-        return capture.capture(observations, cookiesForObservedApplication(context, observations));
+        VulcanSessionMaterial material =
+            capture.capture(observations, cookiesForObservedApplication(context, observations));
+        diagnostics.pass(Stage.SESSION_CAPTURE);
+        return material;
       } catch (VulcanAuthenticationException exception) {
         if (isVisible(
             page.locator("input[autocomplete='current-password'], input[type='password']"))) {

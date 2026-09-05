@@ -12,6 +12,8 @@ import com.microsoft.playwright.*;
 import com.microsoft.playwright.options.Cookie;
 import com.microsoft.playwright.options.ElementState;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.*;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics.VulcanDiagnostics;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics.VulcanDiagnostics.Stage;
 import java.net.URI;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
@@ -40,8 +42,9 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
   private final BrowserContext context = mock(BrowserContext.class);
   private final Playwright playwright = mock(Playwright.class, RETURNS_DEEP_STUBS);
   private final Browser browser = mock(Browser.class);
+  private final VulcanDiagnostics diagnostics = mock(VulcanDiagnostics.class);
   private final PlaywrightVulcanBrowserAuthenticator authenticator =
-      new PlaywrightVulcanBrowserAuthenticator(new PortalUrlValidator(), true);
+      new PlaywrightVulcanBrowserAuthenticator(new PortalUrlValidator(), true, diagnostics);
   private final ListAppender<ILoggingEvent> logs = new ListAppender<>();
   private final Logger logger =
       (Logger) LoggerFactory.getLogger(PlaywrightVulcanBrowserAuthenticator.class);
@@ -80,6 +83,31 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
   void tearDown() {
     logger.detachAppender(logs);
     logs.stop();
+  }
+
+  @Test
+  void optInObserverDistinguishesSessionCaptureFromEarlierBrowserSteps() {
+    authenticateExpecting(VulcanAuthFailureCategory.PROTOCOL_FAILURE);
+    var order = inOrder(diagnostics);
+    order.verify(diagnostics).begin(Stage.BROWSER_AUTH);
+    order.verify(diagnostics).pass(Stage.BROWSER_AUTH);
+    order.verify(diagnostics).begin(Stage.SESSION_CAPTURE);
+    verify(diagnostics, never()).pass(Stage.SESSION_CAPTURE);
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {CAPTCHA_SELECTOR, MFA_SELECTOR})
+  void optInObserverStopsAtBrowserForAnActualInteractiveChallenge(String selector) {
+    when(page.locator(selector).count()).thenReturn(1);
+    when(page.locator(selector).nth(0).isVisible()).thenReturn(true);
+    authenticateExpecting(
+        selector.equals(CAPTCHA_SELECTOR)
+            ? VulcanAuthFailureCategory.CAPTCHA_REQUIRED
+            : VulcanAuthFailureCategory.MFA_REQUIRED);
+    verify(diagnostics).begin(Stage.BROWSER_AUTH);
+    verify(diagnostics, never()).begin(Stage.SESSION_CAPTURE);
+    verify(context, never()).route(anyString(), any());
+    verify(username, never()).fill(anyString());
   }
 
   @Test
@@ -163,6 +191,7 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
           .isEqualTo(URI.create("https://school.vulcan.net.pl/synthetic/"));
       assertThat(session.cookieHeader()).isEqualTo("SyntheticCookie=synthetic-value");
       assertThat(logs.list).isEmpty();
+      verify(diagnostics).pass(Stage.SESSION_CAPTURE);
     }
   }
 
