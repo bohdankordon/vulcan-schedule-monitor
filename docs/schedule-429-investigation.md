@@ -93,6 +93,45 @@ methods skipped. All seven explicit local Chromium cases passed. Formatting and 
 checks passed; the production jar contains zero diagnostic classes. No real VULCAN request
 occurred during this verification.
 
-Second real invocation: pending commit and push. No production compatibility conclusion
-or fix is established. `result=SUCCESS` means the two-control comparison completed, including a
+## Second authorized invocation (2026-09-05)
+
+After committing and pushing harness `5bf745d31fc5d3222c9ddc44b3aa8fbe76c5de28`, exactly
+one new real invocation ran. Authentication and catalog verification succeeded (`classCount=26`).
+It stopped before the browser control:
+
+```text
+category=HARNESS_FAILURE
+result=FAIL
+stage=PLAN_CONTEXT_NAVIGATION
+failureCategory=UNEXPECTED_PAGE_STATE
+browserSource=NOT_REACHED
+browserScheduleRequests=0
+javaScheduleRequests=0
+blockedExtraScheduleRequests=0
+javaPermitted=false
+decisionCase=NOT_REACHED
+postLoginRefererContext=OTHER_ALLOWED
+postLoginCookieCount=4
+persistedMonitoringRefererContext=UNAVAILABLE
+retries=0
+```
+
+The controller-page navigation did not satisfy the required page-state checks. This category
+covers a missing navigation response, unsuccessful/non-HTML response, changed final route, or
+visible login state; the finite report does not distinguish those conditions. No raw page,
+exception, URL, headers or response body was retained to infer more. No further invocation or
+production change was made. Across both diagnostic invocations, real schedule requests total zero.
+Browser schedule status/429, post-plan capture, cookie changes and form comparison remain unavailable.
+Neither a successful browser control nor any decision-matrix case was reached.
+
+The only header facts are a **synthetic Java transport projection from post-login material**:
+verification token, AppGuid, X-Requested-With, Origin, Referer, Content-Type, User-Agent and cookies
+present; Accept, Accept-Language and Sec-Fetch metadata absent. Projected cookie count is four and
+Referer context is `OTHER_ALLOWED`. These are not real Java schedule-wire or browser comparison facts.
+
+The process exited and no diagnostic Java process remained. No retry, raw provider artifact,
+secret persistence, database mutation or production request fix occurred. The real 429 cause is
+still unresolved; no production compatibility change is indicated by this result.
+
+ `result=SUCCESS` means the two-control comparison completed, including a
 classified Java failure; it does not mean monitoring passed.
