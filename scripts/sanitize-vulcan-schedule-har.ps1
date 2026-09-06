@@ -1,9 +1,10 @@
 # Offline only. Never write parsed HAR objects or exception messages to any stream.
 [CmdletBinding()]
-param([string]$InputPath, [string]$OutputPath, [string]$JavaProfilePath, [switch]$SanitizedInput)
+param([string]$InputPath, [string]$OutputPath, [string]$JavaProfilePath, [switch]$SanitizedInput, [switch]$IncludePrelude)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'lib/vulcan-har-prelude.ps1')
 
 function Get-FingerprintSchema {
     $schema = @{
@@ -166,6 +167,11 @@ function Get-HarOutputSchema {
 function Assert-HarSafeOutput($Report) {
     $schema = Get-HarOutputSchema
     if ($Report -isnot [System.Collections.IDictionary] -or !$Report.Contains('result')) { throw 'UNSAFE_OUTPUT_GUARD' }
+    if ($Report.Contains('schemaVersion') -and $Report['schemaVersion'] -eq 3) {
+        $schema['schemaVersion'] = 'version3'
+        $preludeSchema = Get-HarPreludeSchema
+        foreach ($key in $preludeSchema.Keys) { $schema[$key] = $preludeSchema[$key] }
+    }
     if ($Report.Contains('java.profileSource')) {
         $javaSchema = Get-JavaFingerprintSchema
         foreach ($key in $javaSchema.Keys) { $schema["java.$key"] = $javaSchema[$key] }
@@ -180,14 +186,20 @@ function Assert-HarSafeOutput($Report) {
             if ($value -isnot [string] -or $rule -cnotcontains $value) { throw 'UNSAFE_OUTPUT_GUARD' }
         } elseif ($rule -eq 'bool') {
             if ($value -isnot [bool]) { throw 'UNSAFE_OUTPUT_GUARD' }
+        } elseif ($rule -eq 'optionalBool') {
+            if ($value -isnot [bool] -and ($value -isnot [string] -or $value -cne 'UNAVAILABLE')) { throw 'UNSAFE_OUTPUT_GUARD' }
+        } elseif ($rule -eq 'sequence') {
+            Assert-HarPreludeSequence $value
         } elseif (($value -isnot [int] -and $value -isnot [long]) -or $value -lt 0 -or $value -gt 1000000) {
             throw 'UNSAFE_OUTPUT_GUARD'
         }
         if ($rule -eq 'version2' -and $value -ne 2) { throw 'UNSAFE_OUTPUT_GUARD' }
+        if ($rule -eq 'version3' -and $value -ne 3) { throw 'UNSAFE_OUTPUT_GUARD' }
     }
-    if (!$Report.Contains('schemaVersion') -or $Report['schemaVersion'] -ne 2) { throw 'UNSAFE_OUTPUT_GUARD' }
+    if (!$Report.Contains('schemaVersion') -or $Report['schemaVersion'] -notin @(2, 3)) { throw 'UNSAFE_OUTPUT_GUARD' }
     if ($Report['result'] -eq 'SUCCESS') {
         if ($Report.Count -ne $schema.Count) { throw 'UNSAFE_OUTPUT_GUARD' }
+        if ($Report['schemaVersion'] -eq 3) { Assert-HarPreludeSummary $Report }
     } elseif ($Report['result'] -eq 'AMBIGUOUS') {
         if ($Report.Count -ne 3 -or !$Report.Contains('matchingRequestCount') -or $Report['matchingRequestCount'] -lt 2) { throw 'UNSAFE_OUTPUT_GUARD' }
     } elseif ($Report.Count -ne 2) { throw 'UNSAFE_OUTPUT_GUARD' }
@@ -447,8 +459,9 @@ function Get-HarLocalPath([string]$Value) {
     return $path
 }
 
-function Invoke-HarSanitizer([string]$Source, [string]$Destination, [string]$ProjectionPath, [bool]$ReducedInput = $false) {
-    $report = [ordered]@{ schemaVersion = 2; result = 'INVALID_INPUT' }
+function Invoke-HarSanitizer([string]$Source, [string]$Destination, [string]$ProjectionPath, [bool]$ReducedInput = $false, [bool]$Prelude = $false) {
+    $outputVersion = if ($Prelude) { 3 } else { 2 }
+    $report = [ordered]@{ schemaVersion = $outputVersion; result = 'INVALID_INPUT' }
     try {
         $sourceFile = Get-HarLocalPath $Source
         $outputFile = if ($Destination) { Get-HarLocalPath $Destination } else { $null }
@@ -466,8 +479,10 @@ function Invoke-HarSanitizer([string]$Source, [string]$Destination, [string]$Pro
             try {
                 $report = ConvertFrom-SafeProfileJson $raw
                 Assert-HarSafeOutput $report
-            } catch { $report = [ordered]@{ schemaVersion = 2; result = 'UNSAFE_OUTPUT_GUARD' } }
-        } else { $report = ConvertTo-HarSafeReport $raw }
+                if ($Prelude -and $report['schemaVersion'] -ne 3) { throw 'UNSAFE_OUTPUT_GUARD' }
+            } catch { $report = [ordered]@{ schemaVersion = $outputVersion; result = 'UNSAFE_OUTPUT_GUARD' } }
+        } elseif ($Prelude) { $report = ConvertTo-HarPreludeReport $raw }
+        else { $report = ConvertTo-HarSafeReport $raw }
         if ($ProjectionPath -and $report['result'] -eq 'SUCCESS') {
             $profileFile = Get-HarLocalPath $ProjectionPath
             try {
@@ -478,10 +493,10 @@ function Invoke-HarSanitizer([string]$Source, [string]$Destination, [string]$Pro
                     try { $profileJson = $profileReader.ReadToEnd() } finally { $profileReader.Dispose() }
                 } finally { $profileStream.Dispose() }
                 $report = Add-HarJavaComparison $report (ConvertFrom-SafeProfileJson $profileJson)
-            } catch { $report = [ordered]@{ schemaVersion = 2; result = 'UNSAFE_OUTPUT_GUARD' } }
+            } catch { $report = [ordered]@{ schemaVersion = $outputVersion; result = 'UNSAFE_OUTPUT_GUARD' } }
         }
         $raw = $null
-        try { Assert-HarSafeOutput $report } catch { $report = [ordered]@{ schemaVersion = 2; result = 'UNSAFE_OUTPUT_GUARD' } }
+        try { Assert-HarSafeOutput $report } catch { $report = [ordered]@{ schemaVersion = $outputVersion; result = 'UNSAFE_OUTPUT_GUARD' } }
         $safeJson = ConvertTo-Json -InputObject $report -Depth 4
         if ($outputFile) {
             $outStream = [IO.File]::Open($outputFile, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write)
@@ -490,16 +505,16 @@ function Invoke-HarSanitizer([string]$Source, [string]$Destination, [string]$Pro
                 try { $writer.Write($safeJson) } finally { $writer.Dispose() }
             } finally { $outStream.Dispose() }
         }
-    } catch { $report = [ordered]@{ schemaVersion = 2; result = 'INVALID_INPUT' } }
+    } catch { $report = [ordered]@{ schemaVersion = $outputVersion; result = 'INVALID_INPUT' } }
     # Guard immediately before stdout too. No untrusted field survives reduction.
-    try { Assert-HarSafeOutput $report } catch { $report = [ordered]@{ schemaVersion = 2; result = 'UNSAFE_OUTPUT_GUARD' } }
+    try { Assert-HarSafeOutput $report } catch { $report = [ordered]@{ schemaVersion = $outputVersion; result = 'UNSAFE_OUTPUT_GUARD' } }
     Write-Output (ConvertTo-Json -InputObject $report -Depth 4)
     if ($report['result'] -eq 'SUCCESS') { return 0 }
     return 1
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
-    $items = @(Invoke-HarSanitizer $InputPath $OutputPath $JavaProfilePath $SanitizedInput.IsPresent)
+    $items = @(Invoke-HarSanitizer $InputPath $OutputPath $JavaProfilePath $SanitizedInput.IsPresent $IncludePrelude.IsPresent)
     Write-Output $items[0]
     exit $items[-1]
 }

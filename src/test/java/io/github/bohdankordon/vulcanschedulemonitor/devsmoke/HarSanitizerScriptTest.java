@@ -9,17 +9,20 @@ import java.nio.file.Path;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class HarSanitizerScriptTest {
-  @Test
-  void syntheticOfflinePowerShellContracts() throws Exception {
+  @ParameterizedTest
+  @ValueSource(
+      strings = {
+        "sanitize-vulcan-schedule-har.Tests.ps1",
+        "sanitize-vulcan-schedule-prelude.Tests.ps1"
+      })
+  void syntheticOfflinePowerShellContracts(String scriptName) throws Exception {
     assumeTrue(System.getProperty("os.name").startsWith("Windows"), "PowerShell runner on Windows");
     Process process =
-        new ProcessBuilder(
-                "pwsh.exe",
-                "-NoProfile",
-                "-File",
-                "scripts/tests/sanitize-vulcan-schedule-har.Tests.ps1")
+        new ProcessBuilder("pwsh.exe", "-NoProfile", "-File", "scripts/tests/" + scriptName)
             .redirectErrorStream(true)
             .start();
     var output =
@@ -37,7 +40,8 @@ class HarSanitizerScriptTest {
     String text = new String(output.get(5, TimeUnit.SECONDS), StandardCharsets.UTF_8);
     assertThat(process.exitValue()).as(text).isZero();
     assertThat(text)
-        .contains("Synthetic offline HAR contracts passed:")
+        .contains("Synthetic offline")
+        .contains("contracts passed:")
         .doesNotContain("SUPER_SECRET_", "https://", "SCHOOL_IDENTIFIER_123", "CLASS_NAME_SECRET");
   }
 
@@ -54,7 +58,9 @@ class HarSanitizerScriptTest {
     assertThat(tracked.waitFor()).isZero();
     assertThat(new String(tracked.getInputStream().readAllBytes(), StandardCharsets.UTF_8))
         .isBlank();
-    String script = Files.readString(Path.of("scripts/sanitize-vulcan-schedule-har.ps1"));
+    String script =
+        Files.readString(Path.of("scripts/sanitize-vulcan-schedule-har.ps1"))
+            + Files.readString(Path.of("scripts/lib/vulcan-har-prelude.ps1"));
     assertThat(script)
         .doesNotContain(
             "Invoke-WebRequest",

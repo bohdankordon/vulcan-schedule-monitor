@@ -676,3 +676,94 @@ Validation: 38 new Maven cases; full `verify` passed with 698 tests, zero
 failures/errors and four optional Chromium cases skipped. Standalone PowerShell
 suites passed 37 existing baseline, 11 Accept and nine cookie-observation cases.
 Spotless and whitespace checks passed. Real VULCAN requests remained zero.
+
+## Native request prelude — offline schema v3
+
+The developer's controlled tests with fresh successful native Firefox captures
+returned untouched-Java 2xx JSON after five, ten and fifteen minutes idle. Each
+reported one schedule request, zero retries, and cookie count **4 -> 5** with both
+cookie-change booleans true. Idle up to fifteen minutes alone therefore did not
+reproduce the earlier 429. Browser-header experiments are deprioritized; the next
+question is how native navigation/XHR establishes application state before the
+successful schedule request. These results do not identify a required warm-up.
+
+The offline sanitizer adds an explicit `-IncludePrelude` mode. It emits schema v3
+and retains all v2 fingerprint fields. Default operation and the pure helper used
+by baseline validation remain v2, including their ability to describe failed
+native controls. Existing v2 sanitized input/comparison remains supported. V3
+sanitized reports also support the existing offline Java-profile comparison.
+V2 input cannot be promoted to v3 without raw sequence evidence.
+
+Future local invocation, **not performed during implementation**:
+
+```powershell
+pwsh -NoProfile -File .\scripts\sanitize-vulcan-schedule-har.ps1 `
+  -InputPath .\.dev\vulcan-schedule-native.har `
+  -IncludePrelude `
+  -OutputPath .\.dev\vulcan-schedule-native.v3.sanitized.json
+```
+
+The existing local-drive/reparse-point/size protections, no-overwrite output policy,
+strict JSON/duplicate-key rejection and finite error output apply. Raw captures
+remain secret and ignored under `.dev/`; only the allowlisted JSON may be shared.
+No provider, browser, authentication, database or messaging operation is added.
+
+V3 requires exactly one POST to the exact schedule action, captured successful
+2xx JSON with the expected envelope and both arrays, and the exact known form/week
+structure. A 429, HTML or invalid envelope is rejected as a prelude source. The
+target must use HTTPS/default port on an allowed VULCAN host. Only the exact same
+scheme/host/port is included; external hosts and other origins are excluded.
+
+Requests are sorted by `startedDateTime` (offsets normalized internally), with HAR
+array order breaking equal-time ties. Select the last **at most ten requests
+within ten seconds** before the target. A target or same-origin entry with missing
+or invalid chronological information fails closed. No absolute time is emitted.
+`sequenceIndex` starts at zero for the oldest retained entry; `relativeOrder=1`
+identifies the nearest retained request. Relative-time buckets are within one
+second, over one through five seconds, and over five through ten seconds.
+
+`prelude.sequence` entries contain only fixed method, endpoint, resource and status
+categories, bounded order/count fields, cookie presence/counts, Set-Cookie presence/
+header counts, and adjacent cookie-change booleans. Endpoint categories are
+`PLAN_PAGE`, `PLAN_CONTEXT`, `GET_CACHE`, `GET_TREE`, `REFRESH_SESSION`, `HOME`,
+`DZIENNIK`, `STATIC`, and `OTHER_ALLOWED`, based only on strict known path patterns.
+Resource categories use fixed HAR/browser metadata or MIME families; unknown
+values never become arbitrary output. HTML alone does not establish navigation.
+Repeated Set-Cookie headers are counted independently without inspecting values.
+
+Summary fields include `prelude.requestCount`, `containsPlanPage`, `containsGetCache`,
+`containsGetTree`, `containsRefreshSession`, `anyResponseSetCookie`,
+`anyCookieMaterialChange`, and the nearest retained request's endpoint/method/status/
+Set-Cookie presence. `target.cookieCount` and
+`target.cookieMaterialChangedFromImmediatelyPreviousRequest` describe the target.
+An absent nearest request means absent **within the bounded window**, not proof
+that the entire capture has no earlier navigation.
+
+Cookie equality is a case-sensitive in-memory sorted multiset of name/value pairs.
+Order-only differences are ignored; value changes, additions/removals and duplicate
+multiplicity are detected. Header-derived counts take priority; separate HAR cookie
+arrays can provide counts only when a header is missing. Comparisons require both
+Cookie headers; otherwise the delta is `UNAVAILABLE`. The first retained entry has
+no compared predecessor. `anyCookieMaterialChange` includes the final transition
+to the target: true if any observed change exists, unavailable if none is observed
+but a transition is unknown, otherwise false. No names, values, hashes, individual
+lengths, paths, IDs, query values, bodies, or absolute timestamps enter the output.
+Nested entries and aggregates pass an exact output schema before writing/stdout.
+
+Interpretation remains conditional: P1 (navigation, Set-Cookie, then a cookie delta)
+would justify reviewing a minimal application-state warm-up experiment; P2
+(navigation without visible mutation) leaves server-side changes possible; P3
+(no meaningful bounded prelude) favors investigation of connection persistence;
+P4 (only cache/tree preparation) favors comparing the normal verifier lifecycle.
+Request-start order does not prove response-completion order or that a cookie was
+applied before the next request. Path-scoped cookies can also change request-cookie
+material without rotation. No prelude is claimed necessary from these facts alone.
+
+Only synthetic fixtures were processed in this task. Real HAR analysis and every
+real VULCAN invocation remain deferred to separate authorization.
+
+Validation: 46 new synthetic prelude cases and 87 existing sanitizer cases passed
+as standalone PowerShell suites and through Maven. Full `verify` passed with 699
+tests, zero failures/errors and four optional Chromium cases skipped, after starting
+the local Docker test prerequisite. Spotless and `git diff --check` passed. No real
+HAR was processed, and VULCAN requests were zero.
