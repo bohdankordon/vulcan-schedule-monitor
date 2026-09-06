@@ -862,3 +862,110 @@ zero failures/errors and four optional Chromium cases skipped. All 15 standalone
 PowerShell contracts passed, along with Spotless and `git diff --check`. All new
 database/provider fixtures were disposable Testcontainers/loopback fixtures;
 real VULCAN requests were zero.
+
+## Persisted monitoring network sequence (build/test only)
+
+D2, reported by the developer: a **new** normal `/connect` session, with no
+earlier diagnostic request, remained idle for approximately five minutes and
+then returned valid current-week 2xx JSON through the persisted untouched-Java
+baseline. Cookies changed 4 -> 5. Together with immediate persisted-session and
+5/10/15-minute native-session success, this strongly deprioritizes simple
+first-poll age and browser-header explanations. The next boundary is the actual
+CURRENT -> persistence -> spacing -> NEXT monitoring network sequence.
+
+Future command, **not run in this build/test task**:
+
+```powershell
+pwsh -NoProfile -File .\scripts\vulcan-persisted-monitoring-sequence-baseline.ps1 -Run
+```
+
+After separate authorization: perform a **new** normal `/connect` with monitoring
+disabled and one enabled subscription, stop the normal app, wait approximately
+five minutes, invoke this diagnostic once, and share only the sanitized output.
+Previous diagnostics affected server-side state while discarding local rotations,
+so they cannot substitute for that new connection. No HAR or login credentials
+are inputs. The existing dev master-key DPAPI/stdin boundary and port-8080 guard
+are reused; no process is stopped automatically. Custom-port app instances must
+also be stopped by the developer. The offline sanitizer remains offline.
+
+The test-source driver uses the same strict target resolver as the prior baseline:
+one active-user account, CONNECTED, and one enabled ownership-matched active
+catalog class, with no CLI IDs. It explicitly composes production
+`MonitoringScopePlanner`, `MonitoringCycleRunner`, `ScheduleRefreshCoordinator`,
+`PersistedAccountWeeklyScheduleSource`, `ResilientWeeklyScheduleSource`,
+`RateLimitBackoffGate`, `VulcanSessionManager`, encrypted `VulcanSecretStore`, and
+untouched `VulcanClient`/adapter/JDK transport. The planning instant is pinned for
+the one cycle to avoid a week-boundary race; Warsaw CURRENT then NEXT must total
+exactly two scopes. The scheduled trigger is absent. Recovery is omitted, not
+mocked into success: auth/redirect/HTML becomes an account-blocking failure.
+No browser, GetCache/GetTree/RefreshSession, Telegram, or real tracking/outbox
+service is started. The real tracker/hasher uses an in-memory ActiveChangeStore
+and no-op TrackingEventOutbox, discarded at completion.
+
+Production policy defaults are retained: inter-scope spacing 500ms, three possible
+resilience attempts, initial transient backoff 1s, fallback rate-limit delay 30s,
+and maximum inline rate-limit delay 10s. The cycle's pacing callback records
+`spacingAppliedBeforeNext` only after its real delay completes. Retry delays use
+the separate resilience callback and are not counted as inter-scope pacing.
+A fresh production rate gate supplies `gateInitiallyClear`; account blocking is
+observed from the runner's CURRENT result. A no-Retry-After 429 therefore defers
+immediately and skips NEXT, without a second CURRENT request.
+
+A diagnostic-only request-factory guard sits below `VulcanClient`. It verifies the
+exact allowed schedule URI and POST, then acquires a shared nonrenewable permit
+before delegating to the **existing** JDK factory. No request/header/cookie/TLS/
+HTTP-version/timeout policy is changed. Two dispatch permits total cover both
+weeks and all retries. Attempt three is denied as `BUDGET_EXHAUSTED` and stops the
+cycle. Two transient CURRENT attempts may consume both slots, leaving no NEXT
+dispatch. Counts conservatively include a permitted attempt even if transport
+failure prevents a response; no-response cookie deltas remain unavailable.
+
+Unlike the read-only single-request baseline, this sequence needs transactional
+writes. A dedicated outer Spring transaction is marked rollback-only **before**
+loading or fetching. Production `sessions.replace` joins it. After CURRENT
+success, the diagnostic flushes the encrypted update, clears the JPA cache, and
+reloads via the production session manager to establish
+`current.sessionPersistedAfterSuccess`. NEXT receives a newly loaded session;
+its full material is compared in memory against CURRENT's post-response material
+for `next.loadedPostCurrentSession`. URI/token/AppGuid equality is exact; cookie
+equality uses a sorted multiset of name/value pairs, ignoring only ordering.
+No values, hashes, names or changed-pair details leave memory.
+
+The outer transaction always rolls back, including on HTTP, persistence, budget
+or interruption failures. A subsequent independent production load compares the
+restored material to the original and reports
+`databaseSessionRestoredAfterRollback`. Failure to verify restoration makes the
+diagnostic fail; unavailable is not treated as true. PostgreSQL integration tests
+also compare original ciphertext, nonce, account and secret-row fields after
+rollback, and assert no tracking/change/outbox rows were created. This isolation
+intentionally differs from the independently committed production cycle: it tests
+persistence/reload within one transaction, not cross-process visibility or commit
+timing. Server-side effects of real HTTP requests cannot be rolled back.
+
+Schema 1 uses `variant=PERSISTED_MONITORING_SEQUENCE`. Alongside finite target,
+scope, gate, spacing, persistence and rollback facts, `current.outcome` and
+`next.outcome` hold production cycle categories; `next.disposition` distinguishes
+dispatch from account-blocked/interrupted/budget/not-reached skips. `requests` is
+an ordered array of at most two permitted dispatches, each with CURRENT/NEXT,
+attempt number, finite HTTP outcome/status/content family, safe Retry-After
+duration, and the four cookie count/change observations. This preserves both
+CURRENT attempts if a retry consumes NEXT's budget. `retries` counts dispatched
+repeat attempts, not a denied third attempt. Unknown child state means the entire
+budget is spent, counts/rollback status are unavailable, and **never retry**.
+Both Java construction and the PowerShell supervisor enforce closed key/value
+schemas. Raw application logs, exception text and child stderr are suppressed.
+
+Future interpretations: M1 CURRENT 429/NEXT skipped reproduces the original
+failure inside the monitoring composition; M2 CURRENT success/NEXT 429 focuses
+attention on the second scope/sequence and observed persistence boundary; M3 both
+succeed means the normal initial network sequence is also functional under the
+tested conditions, making historical transient provider state more plausible
+than a stable client defect; M4 is another finite failure. None justifies inventing
+a header or production fix. No real invocation occurred in this implementation.
+
+Validation: 25 new sequence Java tests passed; the existing 26 persisted-baseline
+tests remained green after extracting their shared target resolver. Full Maven
+`verify` passed with 750 tests, zero failures/errors and four optional Chromium
+cases skipped. All 19 standalone sequence PowerShell contracts, Spotless and
+`git diff --check` passed. Tests used only synthetic data, Testcontainers and
+loopback; VULCAN requests were zero. No developer HAR or protected file was read.

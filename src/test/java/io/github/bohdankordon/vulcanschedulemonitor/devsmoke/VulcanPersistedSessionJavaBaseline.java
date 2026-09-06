@@ -121,8 +121,6 @@ public final class VulcanPersistedSessionJavaBaseline {
     return app.run();
   }
 
-  private record Account(long id, String status) {}
-
   private record Loaded(
       long journal,
       io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSession session) {}
@@ -144,43 +142,12 @@ public final class VulcanPersistedSessionJavaBaseline {
       Loaded loaded =
           tx.execute(
               status -> {
-                var accounts =
-                    jdbc.query(
-                        "SELECT a.id,a.status FROM vulcan_account a JOIN app_user u ON u.id=a.app_user_id WHERE u.active ORDER BY a.id LIMIT 2",
-                        (rs, row) -> new Account(rs.getLong(1), rs.getString(2)));
-                if (accounts.size() != 1) {
-                  report.put("category", accounts.isEmpty() ? "NO_ACCOUNT" : "AMBIGUOUS_ACCOUNT");
-                  return null;
-                }
-                var account = accounts.getFirst();
-                report.put("account.connected", account.status().equals("CONNECTED"));
-                report.put(
-                    "account.reconnectRequired", account.status().equals("RECONNECT_REQUIRED"));
-                if (!account.status().equals("CONNECTED")) {
-                  report.put("category", "ACCOUNT_NOT_CONNECTED");
-                  return null;
-                }
-                var journals =
-                    jdbc.query(
-                        """
-            SELECT c.journal_id FROM monitoring_subscription s
-            JOIN app_user u ON u.id=s.app_user_id
-            JOIN vulcan_class_catalog c ON c.id=s.catalog_class_id
-            JOIN vulcan_account a ON a.id=c.vulcan_account_id AND a.app_user_id=s.app_user_id
-            WHERE s.enabled AND u.active AND c.active AND a.status='CONNECTED' AND a.id=?
-            ORDER BY c.id LIMIT 2
-            """,
-                        (rs, row) -> rs.getLong(1),
-                        account.id());
-                if (journals.size() != 1) {
-                  report.put("category", journals.isEmpty() ? "NO_TARGET" : "AMBIGUOUS_TARGET");
-                  return null;
-                }
-                report.put("targetResolved", true);
+                var target = PersistedDiagnosticTarget.resolve(jdbc, report::put);
+                if (target == null) return null;
                 report.put("category", "SESSION_UNAVAILABLE");
-                var session = sessions.loadCurrent(account.id());
+                var session = sessions.loadCurrent(target.vulcanAccountId());
                 report.put("persistedSessionLoaded", true);
-                return new Loaded(journals.getFirst(), session);
+                return new Loaded(target.journalId(), session);
               });
       if (loaded == null) return;
       report.put("category", "UNSAFE_SESSION");
