@@ -767,3 +767,98 @@ as standalone PowerShell suites and through Maven. Full `verify` passed with 699
 tests, zero failures/errors and four optional Chromium cases skipped, after starting
 the local Docker test prerequisite. Spotless and `git diff --check` passed. No real
 HAR was processed, and VULCAN requests were zero.
+
+## Persisted normal-connect session baseline (build/test only)
+
+Developer-provided evidence: fresh native-session untouched Java succeeded after
+5, 10 and 15 minutes idle. All three calls observed cookie counts 4 -> 5 and
+changed cookie material. The native v3 prelude contained zero same-origin requests
+in its bounded ten-second window, with no PLAN_PAGE/GetCache/GetTree/RefreshSession
+prelude. This does not exclude earlier activity. Neither immediate warm-up nor
+ordinary idle up to fifteen minutes currently explains the older 429 results;
+browser-header experiments are deprioritized.
+
+The next boundary is normal `/connect` session capture, verification, persistence
+and reload. `scripts/vulcan-persisted-session-java-baseline.ps1` is a separate,
+explicitly opted-in diagnostic. No HAR is used. Future invocation, **only after
+separate real-access authorization**:
+
+```powershell
+pwsh -NoProfile -File .\scripts\vulcan-persisted-session-java-baseline.ps1 -Run
+```
+
+The future workflow is: start the normal app with monitoring disabled, complete
+a fresh normal `/connect` manually, ensure the desired enabled class exists, stop
+the app cleanly, then promptly run this one-shot diagnostic and share only its
+finite JSON. No credentials or identifiers are command-line inputs. The script
+builds the diagnostic test classpath before reading the normal dev CurrentUser
+DPAPI master-key file; the decrypted key travels only through redirected stdin.
+It does not read the credential smoke bundle or Telegram token. Local fixed-drive,
+no-reparse-point path checks and a bounded key-file read reuse the reviewed local
+boundary. There are no raw logs, session artifacts, or extracted-secret files.
+
+The Java driver starts a minimal non-web Spring Boot context containing production
+JPA repositories, `EncryptedVulcanSecretStore`, its normal AES-GCM/codec, and the
+production `VulcanSessionManager`. It excludes application component scanning,
+connection/authentication services, browser implementations, monitoring and
+Telegram. Unused session-manager auth/verifier dependencies throw immediately.
+The fixed local dev PostgreSQL destination matches `dev.ps1`; inherited Spring
+configuration, profiles and Java debug/agent environment options cannot override
+the diagnostic configuration. Flyway and SQL initialization are disabled, Hibernate
+only validates, and PostgreSQL connections have default transactions read-only.
+Test-only fixture setup uses a separate writable Testcontainers context.
+
+Preflight conservatively requires exactly one account belonging to an active app
+user, that account CONNECTED, and exactly one enabled subscription joining its
+own active catalog class. Cross-user ownership, missing/inactive targets, multiple
+accounts/targets, and missing/undecryptable session material fail before dispatch.
+Only IDs needed for internal resolution are queried; names and Telegram identities
+are not selected. Resolution and `loadCurrent` share a read-only repeatable-read
+transaction. The stored URI must pass the production HTTPS VULCAN host policy.
+The script checks normal dev port 8080 and the child reserves it until shutdown;
+it never stops another process. This guard covers the normal dev runner, not a
+custom-port deployment: the developer must stop any such instance separately.
+
+The operation is one untouched `VulcanClient.getWeekSchedule` for the Warsaw
+current-week Monday; the production adapter builds Monday/Sunday boundaries.
+The nonrenewable permit allows at most one call, with no retries, next week,
+GetCache/GetTree/RefreshSession, auth, recovery, scheduler or Telegram. No Accept or
+other header is injected. Cookie snapshots reuse the canonical multiset boolean
+observer, including classified HTTP failures. No `sessions.replace` or other save
+is called; the in-memory session is discarded even on success. Lost child output
+means the budget is spent, counts/observations unknown, and **never retry**.
+
+Schema 1 uses `variant=PERSISTED_CONNECT_SESSION`, finite `result`/`category`,
+`persistedSessionLoaded`, `targetResolved`, `account.connected`,
+`account.reconnectRequired`, `form.weekStartValid` and `form.weekEndValid`.
+It includes the four `session.cookieCountBefore/cookieCountAfter/cookieCountChanged/
+cookieMaterialChanged` fields, request-attempt/count fields, finite Java outcome,
+status/content family and 429 flag, bounded Retry-After seconds, and `retries=0`.
+Unobserved cookie deltas remain `UNAVAILABLE`. Every emitted key and value is
+allowlisted; no cookie identity, token, URL, date, internal ID or raw exception
+is included. Response content family remains unavailable when production exception
+classification does not expose it.
+
+Future interpretations: **C1**, a fresh persisted session returns 429, favors
+investigating `/connect` capture/verifier/snapshot/persistence boundaries; **C2**,
+valid JSON success, establishes that this persisted session is schedule-capable
+and motivates examining orchestration/spacing/current-plus-next-week sequencing;
+**C3**, auth/redirect/HTML, means the session is not usable for this operation at
+that time without establishing why; **C4**, target/session preflight failure,
+makes no provider request. None is a production fix or proof of causality.
+
+Tests use synthetic material, a disposable PostgreSQL Testcontainer and loopback
+HTTP only. They exercise the real encrypted persistence/load round-trip, current
+week at the Warsaw/UTC boundary, one-request permit, unchanged stored session after
+success and failure, actual JDK 429 cookie rotation, read-only write rejection,
+absent schedulers/Telegram/startup provider traffic, stream redaction and finite
+output guards. PowerShell contracts also exercise synthetic DPAPI input, default
+opt-out, busy-app refusal, and conservative lost-child handling. The developer's
+raw HAR, protected files and normal dev database were not inspected. No real
+diagnostic was executed in this build/test task.
+
+Validation: 26 new Java cases passed; full Maven `verify` passed with 725 tests,
+zero failures/errors and four optional Chromium cases skipped. All 15 standalone
+PowerShell contracts passed, along with Spotless and `git diff --check`. All new
+database/provider fixtures were disposable Testcontainers/loopback fixtures;
+real VULCAN requests were zero.
