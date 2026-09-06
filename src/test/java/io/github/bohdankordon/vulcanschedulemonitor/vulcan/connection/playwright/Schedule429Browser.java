@@ -116,7 +116,7 @@ public final class Schedule429Browser implements AutoCloseable {
       report.stage(AUTHENTICATED_BROWSER_READY);
       page.navigate(request.portalUri().toASCIIString());
       requireAllowedPage(page);
-      stage = BrowserAuthStage.COOKIE_CONSENT;
+      stage = BrowserAuthStage.INITIAL_PORTAL_CONSENT;
       VulcanPrivacyConsent.dismissIfPresent(page, portalUrls);
       stage = BrowserAuthStage.DIRECT_LOGIN_DISCOVERY;
       Locator directLogin = locateDirectLogin(page);
@@ -127,7 +127,7 @@ public final class Schedule429Browser implements AutoCloseable {
             LoadState.DOMCONTENTLOADED, new Page.WaitForLoadStateOptions().setTimeout(30_000));
       }
       requireAllowedPage(page);
-      stage = BrowserAuthStage.COOKIE_CONSENT;
+      stage = BrowserAuthStage.POST_DIRECT_LOGIN_CONSENT;
       VulcanPrivacyConsent.dismissIfPresent(page, portalUrls);
       stage = BrowserAuthStage.LOGIN_FORM_VALIDATION;
       rejectInteractiveSecurity(page);

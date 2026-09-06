@@ -70,7 +70,25 @@ final class VulcanPrivacyConsent {
   private VulcanPrivacyConsent() {}
 
   static void dismissIfPresent(Page page, PortalUrlValidator portalUrls) {
+    dismissIfPresent(page, portalUrls, operation -> {});
+  }
+
+  static void dismissIfPresent(
+      Page page,
+      PortalUrlValidator portalUrls,
+      Consumer<PrivacyConsentOperation> operationObserver) {
+    // The observer is diagnostic only: no return value, browser data or exception propagation.
+    Consumer<PrivacyConsentOperation> observe =
+        operation -> {
+          try {
+            operationObserver.accept(operation);
+          } catch (RuntimeException ignored) {
+            // Observer failures must not affect consent or escape into authentication/logging.
+          }
+        };
+    observe.accept(PrivacyConsentOperation.TRUST_VALIDATION);
     requireAllowedPage(page, portalUrls);
+    observe.accept(PrivacyConsentOperation.DISCOVERY);
     Set<Frame> monitoredFrames = new HashSet<>();
     monitoredFrames.add(page.mainFrame());
     Set<Frame> unsafeNavigations = new HashSet<>();
@@ -82,7 +100,7 @@ final class VulcanPrivacyConsent {
         };
     page.onFrameNavigated(navigation);
     try (ConsentReadiness readiness =
-        new ConsentReadiness(page, portalUrls, monitoredFrames, unsafeNavigations)) {
+        new ConsentReadiness(page, portalUrls, monitoredFrames, unsafeNavigations, observe)) {
       try {
         // Playwright pumps browser events and re-evaluates the condition without a fixed sleep.
         // Every evaluation takes a fresh frame snapshot: an opaque or not-yet-attached frame
@@ -96,11 +114,12 @@ final class VulcanPrivacyConsent {
       readiness.finish();
       if (readiness.action != null) {
         dismissTrustedSurface(
-            page, readiness.surface, readiness.action, portalUrls, unsafeNavigations);
+            page, readiness.surface, readiness.action, portalUrls, unsafeNavigations, observe);
       }
     } finally {
       page.offFrameNavigated(navigation);
     }
+    observe.accept(PrivacyConsentOperation.COMPLETED);
   }
 
   /** Per-attempt state only; tests drive the Playwright condition without wall-clock sleeps. */
@@ -109,6 +128,7 @@ final class VulcanPrivacyConsent {
     private final PortalUrlValidator portalUrls;
     private final Set<Frame> monitoredFrames;
     private final Set<Frame> unsafeNavigations;
+    private final Consumer<PrivacyConsentOperation> observe;
     // Keep positively identified consent contexts until hidden/detached or resolved. Removing
     // just a heading must not turn a still-blocking known privacy iframe into "no consent".
     private final Map<Frame, ConsentSurface> known = new LinkedHashMap<>();
@@ -120,11 +140,13 @@ final class VulcanPrivacyConsent {
         Page page,
         PortalUrlValidator portalUrls,
         Set<Frame> monitoredFrames,
-        Set<Frame> unsafeNavigations) {
+        Set<Frame> unsafeNavigations,
+        Consumer<PrivacyConsentOperation> observe) {
       this.page = page;
       this.portalUrls = portalUrls;
       this.monitoredFrames = monitoredFrames;
       this.unsafeNavigations = unsafeNavigations;
+      this.observe = observe;
     }
 
     private boolean poll() {
@@ -137,6 +159,7 @@ final class VulcanPrivacyConsent {
     }
 
     private boolean scan() {
+      observe.accept(PrivacyConsentOperation.TRUST_VALIDATION);
       requireAllowedPage(page, portalUrls);
       if (unsafeNavigations.contains(page.mainFrame())) throw unsupported();
       action = null;
@@ -151,6 +174,7 @@ final class VulcanPrivacyConsent {
           previous.remove();
         }
       }
+      observe.accept(PrivacyConsentOperation.DISCOVERY);
       Locator headings = visibleHeadings(page.getByText(HEADING));
       if (headings.count() > 0) {
         remember(page.mainFrame(), new ConsentSurface(null, List.of(), List.of(), headings));
@@ -160,12 +184,14 @@ final class VulcanPrivacyConsent {
         ConsentSurface found = findFrameConsent(page, frame, portalUrls, monitoredFrames);
         if (found != null) remember(frame, found);
       }
+      observe.accept(PrivacyConsentOperation.TRUST_VALIDATION);
       if (unsafeNavigations.contains(page.mainFrame()) || known.size() > 1) throw unsupported();
       for (ConsentSurface pending : known.values()) {
         requireTrustedSurface(page, pending, portalUrls, unsafeNavigations);
       }
       if (known.isEmpty()) return false;
       surface = known.values().iterator().next();
+      observe.accept(PrivacyConsentOperation.ACTION_RESOLUTION);
       try {
         action = resolveConsentAction(page, surface, portalUrls, unsafeNavigations);
       } catch (PlaywrightException exception) {
@@ -325,9 +351,12 @@ final class VulcanPrivacyConsent {
       ConsentSurface surface,
       ConsentAction action,
       PortalUrlValidator portalUrls,
-      Set<Frame> unsafeNavigations) {
+      Set<Frame> unsafeNavigations,
+      Consumer<PrivacyConsentOperation> observe) {
+    observe.accept(PrivacyConsentOperation.TRUST_VALIDATION);
     requireTrustedSurface(page, surface, portalUrls, unsafeNavigations);
     if (surface.detached()) return;
+    observe.accept(PrivacyConsentOperation.ACTION_RESOLUTION);
     Locator container = action.container();
     Locator accept = action.accept();
     Locator headings = surface.headings();
@@ -340,11 +369,14 @@ final class VulcanPrivacyConsent {
             : null;
     if (surface.frame() == null && originalContainer == null) throw unsupported();
     try {
+      observe.accept(PrivacyConsentOperation.ACCEPT_CLICK);
       accept.click(new Locator.ClickOptions().setTimeout(DISMISS_TIMEOUT_MS));
+      observe.accept(PrivacyConsentOperation.DISMISS_WAIT);
       if (surface.frame() == null) {
         originalContainer.waitForElementState(
             ElementState.HIDDEN,
             new ElementHandle.WaitForElementStateOptions().setTimeout(DISMISS_TIMEOUT_MS));
+        observe.accept(PrivacyConsentOperation.FINAL_VALIDATION);
         requireTrustedSurface(page, surface, portalUrls, unsafeNavigations);
         if (headings.count() != 0) throw unsupported();
       } else {
@@ -354,6 +386,7 @@ final class VulcanPrivacyConsent {
         page.waitForCondition(
             () -> noLongerBlocking(page, surface, portalUrls, unsafeNavigations),
             new Page.WaitForConditionOptions().setTimeout(DISMISS_TIMEOUT_MS));
+        observe.accept(PrivacyConsentOperation.FINAL_VALIDATION);
         if (!noLongerBlocking(page, surface, portalUrls, unsafeNavigations)) throw unsupported();
       }
     } catch (PlaywrightException exception) {

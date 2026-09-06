@@ -24,6 +24,7 @@ import java.net.URISyntaxException;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -50,6 +51,8 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
   public VulcanSessionMaterial authenticate(VulcanLoginRequest request) {
     diagnostics.begin(Stage.BROWSER_AUTH);
     BrowserAuthStage stage = BrowserAuthStage.INITIAL_NAVIGATION;
+    AtomicReference<PrivacyConsentOperation> consentOperation =
+        new AtomicReference<>(PrivacyConsentOperation.NOT_STARTED);
     List<BrowserRequestObservation> observations = new CopyOnWriteArrayList<>();
     try (Playwright playwright = Playwright.create();
         Browser browser =
@@ -59,8 +62,9 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
       page.onRequest(observed -> observeAuthenticatedRequest(observed, observations));
       page.navigate(request.portalUri().toASCIIString());
       requireAllowedPage(page);
-      stage = BrowserAuthStage.COOKIE_CONSENT;
-      VulcanPrivacyConsent.dismissIfPresent(page, portalUrls);
+      stage = BrowserAuthStage.INITIAL_PORTAL_CONSENT;
+      consentOperation.set(PrivacyConsentOperation.NOT_STARTED);
+      VulcanPrivacyConsent.dismissIfPresent(page, portalUrls, consentOperation::set);
       stage = BrowserAuthStage.DIRECT_LOGIN_DISCOVERY;
       Locator directLogin = locateDirectLogin(page);
       if (directLogin != null) {
@@ -70,8 +74,9 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
             LoadState.DOMCONTENTLOADED, new Page.WaitForLoadStateOptions().setTimeout(30_000));
       }
       requireAllowedPage(page);
-      stage = BrowserAuthStage.COOKIE_CONSENT;
-      VulcanPrivacyConsent.dismissIfPresent(page, portalUrls);
+      stage = BrowserAuthStage.POST_DIRECT_LOGIN_CONSENT;
+      consentOperation.set(PrivacyConsentOperation.NOT_STARTED);
+      VulcanPrivacyConsent.dismissIfPresent(page, portalUrls, consentOperation::set);
       stage = BrowserAuthStage.LOGIN_FORM_VALIDATION;
       rejectInteractiveSecurity(page);
 
@@ -111,19 +116,37 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
         throw exception;
       }
     } catch (VulcanAuthenticationException exception) {
-      logFailure(stage, exception.category());
+      logFailure(stage, consentOperation.get(), exception.category());
       throw exception;
     } catch (PlaywrightException exception) {
-      logFailure(stage, VulcanAuthFailureCategory.TRANSIENT);
+      logFailure(stage, consentOperation.get(), VulcanAuthFailureCategory.TRANSIENT);
       throw new VulcanAuthenticationException(VulcanAuthFailureCategory.TRANSIENT);
     } catch (RuntimeException exception) {
-      logFailure(stage, VulcanAuthFailureCategory.PROTOCOL_FAILURE);
+      logFailure(stage, consentOperation.get(), VulcanAuthFailureCategory.PROTOCOL_FAILURE);
       throw new VulcanAuthenticationException(VulcanAuthFailureCategory.PROTOCOL_FAILURE);
     }
   }
 
-  private static void logFailure(BrowserAuthStage stage, VulcanAuthFailureCategory category) {
-    logger.warn("VULCAN browser authentication failed: stage={} category={}", stage, category);
+  private static void logFailure(
+      BrowserAuthStage stage,
+      PrivacyConsentOperation operation,
+      VulcanAuthFailureCategory category) {
+    logger.warn("{}", formatFailure(stage, operation, category));
+  }
+
+  /** This boundary accepts only finite values, never an exception or browser/account data. */
+  static String formatFailure(
+      BrowserAuthStage stage,
+      PrivacyConsentOperation operation,
+      VulcanAuthFailureCategory category) {
+    return "VULCAN browser authentication failed: stage="
+        + stage.name()
+        + (stage == BrowserAuthStage.INITIAL_PORTAL_CONSENT
+                || stage == BrowserAuthStage.POST_DIRECT_LOGIN_CONSENT
+            ? " consentOperation=" + operation.name()
+            : "")
+        + " category="
+        + category.name();
   }
 
   private VerifiedLoginForm requireSafeLoginForm(Page page) {

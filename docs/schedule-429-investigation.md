@@ -969,3 +969,41 @@ tests remained green after extracting their shared target resolver. Full Maven
 cases skipped. All 19 standalone sequence PowerShell contracts, Spotless and
 `git diff --check` passed. Tests used only synthetic data, Testcontainers and
 loopback; VULCAN requests were zero. No developer HAR or protected file was read.
+
+## Temporary normal /connect blocker before the M-sequence experiment
+
+Two normal `/connect` attempts were reported to fail at approximately
+**2026-09-06 14:30 local** and **2026-09-06 14:31 local**, both with
+`stage=COOKIE_CONSENT category=TRANSIENT`. The existing stage covered both consent
+invocations, so these observations do not identify which invocation or internal
+operation failed. This is a separate authentication blocker; it does not change
+the historical schedule-429 conclusions above. The M-sequence experiment remains
+pending until a fresh successful `/connect` is possible.
+
+The diagnostic-only change distinguishes `INITIAL_PORTAL_CONSENT` from
+`POST_DIRECT_LOGIN_CONSENT`, and reports a finite `consentOperation`: discovery,
+trust validation, action resolution, accept click, dismiss wait, or final
+validation. `NOT_STARTED` and `COMPLETED` delimit each invocation; completion is
+reported to the internal observer only when processing and cleanup finish normally,
+including absent consent. Failures retain the last operation entered. Nested safety checks and
+exception cleanup retain the enclosing operation rather than replacing the
+failure location. Non-consent failure logs omit the operation.
+
+The observer accepts only the operation enum, has no return value, and isolates
+runtime exceptions. Production uses only an internal enum-state setter. The
+sanitized failure formatter accepts only stage/operation/category enums and never
+receives exception or page data. Playwright failures remain `TRANSIENT`; existing
+safety categories, call ordering, selectors, trusted ancestry/iframe rules,
+2000ms discovery and 3000ms dismissal limits, and retry behavior are unchanged.
+
+This change is build/test only: mocks and existing synthetic fixtures, with zero
+real VULCAN requests. No real `/connect`, monitoring, M-sequence, or schedule
+baseline was run. A real connection attempt requires separate authorization
+after review.
+
+Validation: 23 new deterministic diagnostic cases passed; the dedicated
+browser-auth/privacy suite passed all 152 cases. Full Maven `verify` passed with
+773 tests, zero failures/errors and four opt-in Chromium cases skipped. Spotless
+and `git diff --check` passed. Consent constants/selectors/timeouts and existing
+frame discovery, ancestry, action-resolution, and safety-rule bodies were also
+compared against the pre-change HEAD and remained unchanged.

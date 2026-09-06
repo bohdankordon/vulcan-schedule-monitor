@@ -22,6 +22,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.slf4j.LoggerFactory;
 
@@ -30,6 +31,9 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
   private static final String URL = "https://school.vulcan.net.pl/synthetic/login?secret=query";
   private static final String USERNAME = "synthetic-login";
   private static final String PASSWORD = "synthetic-password";
+  private static final String SECRET_DETAILS =
+      "https://school.vulcan.net.pl/SECRET_TENANT_PATH SUPER_SECRET_PASSWORD "
+          + "SUPER_SECRET_COOKIE SECRET_APPGUID private exception text <div>private DOM</div>";
   private static final String PASSWORD_SELECTOR =
       "input[autocomplete='current-password'], input[type='password']";
   private static final String USERNAME_SELECTOR =
@@ -141,7 +145,10 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
     verify(context, never()).route(anyString(), any());
     verify(username, never()).fill(anyString());
     verify(password, never()).fill(anyString());
-    assertFailureLog(BrowserAuthStage.COOKIE_CONSENT, VulcanAuthFailureCategory.TRANSIENT);
+    assertFailureLog(
+        BrowserAuthStage.INITIAL_PORTAL_CONSENT,
+        PrivacyConsentOperation.DISMISS_WAIT,
+        VulcanAuthFailureCategory.TRANSIENT);
   }
 
   @Test
@@ -203,6 +210,112 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
         BrowserAuthStage.DIRECT_LOGIN_DISCOVERY, VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
   }
 
+  @ParameterizedTest
+  @CsvSource({"false,false", "true,false", "true,true"})
+  void discoveryFailureIdentifiesInvocationWithOrWithoutDirectNavigation(
+      boolean secondInvocation, boolean directNavigation) {
+    Locator direct =
+        page.locator("a[title*='nauczyciel'], a[title*='pracownik'], a[href*='LoginEndpoint.aspx']")
+            .first();
+    when(page.locator(USERNAME_SELECTOR).count()).thenReturn(directNavigation ? 0 : 1);
+    when(direct.count()).thenReturn(1);
+    var calls = new java.util.concurrent.atomic.AtomicInteger();
+    doAnswer(
+            invocation -> {
+              if (calls.incrementAndGet() == (secondInvocation ? 2 : 1)) {
+                throw new PlaywrightException(SECRET_DETAILS);
+              }
+              return null;
+            })
+        .when(page)
+        .waitForCondition(any(), any(Page.WaitForConditionOptions.class));
+    clearInvocations(page, direct);
+
+    authenticateExpecting(VulcanAuthFailureCategory.TRANSIENT);
+
+    assertFailureLog(
+        secondInvocation
+            ? BrowserAuthStage.POST_DIRECT_LOGIN_CONSENT
+            : BrowserAuthStage.INITIAL_PORTAL_CONSENT,
+        PrivacyConsentOperation.DISCOVERY,
+        VulcanAuthFailureCategory.TRANSIENT);
+    var order = inOrder(page, direct);
+    order.verify(page).navigate(URL);
+    order.verify(page).waitForCondition(any(), argThat(options -> options.timeout == 2_000));
+    if (secondInvocation) {
+      order.verify(page).locator(USERNAME_SELECTOR);
+      if (directNavigation) {
+        order.verify(direct).click(any(Locator.ClickOptions.class));
+        order
+            .verify(page)
+            .waitForLoadState(
+                eq(com.microsoft.playwright.options.LoadState.DOMCONTENTLOADED),
+                any(Page.WaitForLoadStateOptions.class));
+      }
+      order.verify(page).waitForCondition(any(), argThat(options -> options.timeout == 2_000));
+    }
+    verify(page, times(secondInvocation ? 2 : 1))
+        .waitForCondition(any(), any(Page.WaitForConditionOptions.class));
+    verify(page).navigate(URL);
+    verify(playwright.chromium()).launch(any(BrowserType.LaunchOptions.class));
+    verify(direct, times(directNavigation ? 1 : 0)).click(any(Locator.ClickOptions.class));
+    verify(context, never()).route(anyString(), any());
+    verify(password, never()).fill(anyString());
+  }
+
+  @ParameterizedTest
+  @CsvSource({
+    "false,ACTION_RESOLUTION",
+    "false,ACCEPT_CLICK",
+    "false,DISMISS_WAIT",
+    "true,ACTION_RESOLUTION",
+    "true,ACCEPT_CLICK",
+    "true,DISMISS_WAIT"
+  })
+  void innerFailureIsPropagatedAtEitherConsentInvocation(
+      boolean secondInvocation, PrivacyConsentOperation operation) {
+    var consent = VulcanPrivacyConsentTest.knownConsent(page);
+    if (secondInvocation) {
+      Locator headings =
+          page.getByText(VulcanPrivacyConsent.HEADING)
+              .filter(new Locator.FilterOptions().setVisible(true));
+      when(page.locator(USERNAME_SELECTOR).count())
+          .thenAnswer(
+              invocation -> {
+                when(headings.count()).thenReturn(1);
+                return 1;
+              });
+      when(headings.count()).thenReturn(0);
+    }
+    switch (operation) {
+      case ACTION_RESOLUTION ->
+          when(consent.candidates().count()).thenThrow(new PlaywrightException(SECRET_DETAILS));
+      case ACCEPT_CLICK ->
+          doThrow(new PlaywrightException(SECRET_DETAILS))
+              .when(consent.accept())
+              .click(any(Locator.ClickOptions.class));
+      case DISMISS_WAIT ->
+          doThrow(new TimeoutError(SECRET_DETAILS))
+              .when(consent.originalContainer())
+              .waitForElementState(
+                  eq(ElementState.HIDDEN), any(ElementHandle.WaitForElementStateOptions.class));
+      default -> throw new AssertionError(operation);
+    }
+    authenticateExpecting(VulcanAuthFailureCategory.TRANSIENT);
+    assertFailureLog(
+        secondInvocation
+            ? BrowserAuthStage.POST_DIRECT_LOGIN_CONSENT
+            : BrowserAuthStage.INITIAL_PORTAL_CONSENT,
+        operation,
+        VulcanAuthFailureCategory.TRANSIENT);
+    verify(consent.accept(), times(operation == PrivacyConsentOperation.ACTION_RESOLUTION ? 0 : 1))
+        .click(any(Locator.ClickOptions.class));
+    verify(page, times(secondInvocation ? 2 : 1))
+        .waitForCondition(any(), any(Page.WaitForConditionOptions.class));
+    verify(context, never()).route(anyString(), any());
+    verify(password, never()).fill(anyString());
+  }
+
   @Test
   void unresolvedKnownConsentFailsAtConsentWithoutAttemptingDirectLogin() {
     var consent = VulcanPrivacyConsentTest.knownConsent(page);
@@ -214,7 +327,9 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
     verify(username, never()).fill(anyString());
     verify(password, never()).fill(anyString());
     assertFailureLog(
-        BrowserAuthStage.COOKIE_CONSENT, VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
+        BrowserAuthStage.INITIAL_PORTAL_CONSENT,
+        PrivacyConsentOperation.ACTION_RESOLUTION,
+        VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
   }
 
   @Test
@@ -332,7 +447,7 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
   }
 
   @Test
-  void readinessDomTimeoutLogsOnlyConsentStageAndCategory() {
+  void readinessDomTimeoutLogsConsentStageOperationAndCategory() {
     var consent = VulcanPrivacyConsentFrameTest.knownFrameConsent(page);
     when(consent
             .frame()
@@ -341,7 +456,10 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
             .count())
         .thenThrow(new TimeoutError(VulcanPrivacyConsentFrameTest.FRAME_URL + " " + PASSWORD));
     authenticateExpecting(VulcanAuthFailureCategory.TRANSIENT);
-    assertFailureLog(BrowserAuthStage.COOKIE_CONSENT, VulcanAuthFailureCategory.TRANSIENT);
+    assertFailureLog(
+        BrowserAuthStage.INITIAL_PORTAL_CONSENT,
+        PrivacyConsentOperation.DISCOVERY,
+        VulcanAuthFailureCategory.TRANSIENT);
     verify(context, never()).route(anyString(), any());
     verify(username, never()).fill(anyString());
     verify(password, never()).fill(anyString());
@@ -353,7 +471,9 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
     when(consent.candidates().count()).thenReturn(0);
     authenticateExpecting(VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
     assertFailureLog(
-        BrowserAuthStage.COOKIE_CONSENT, VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
+        BrowserAuthStage.INITIAL_PORTAL_CONSENT,
+        PrivacyConsentOperation.ACTION_RESOLUTION,
+        VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
     verify(context, never()).route(anyString(), any());
     verify(username, never()).fill(anyString());
     verify(password, never()).fill(anyString());
@@ -364,7 +484,10 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
     var consent = VulcanPrivacyConsentFrameTest.knownFrameConsent(page);
     doNothing().when(consent.accept()).click(any(Locator.ClickOptions.class));
     authenticateExpecting(VulcanAuthFailureCategory.TRANSIENT);
-    assertFailureLog(BrowserAuthStage.COOKIE_CONSENT, VulcanAuthFailureCategory.TRANSIENT);
+    assertFailureLog(
+        BrowserAuthStage.INITIAL_PORTAL_CONSENT,
+        PrivacyConsentOperation.DISMISS_WAIT,
+        VulcanAuthFailureCategory.TRANSIENT);
     verify(context, never()).route(anyString(), any());
     verify(password, never()).fill(anyString());
   }
@@ -528,6 +651,13 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
   }
 
   private void assertFailureLog(BrowserAuthStage stage, VulcanAuthFailureCategory category) {
+    assertFailureLog(stage, null, category);
+  }
+
+  private void assertFailureLog(
+      BrowserAuthStage stage,
+      PrivacyConsentOperation operation,
+      VulcanAuthFailureCategory category) {
     assertThat(logs.list)
         .singleElement()
         .satisfies(
@@ -536,10 +666,24 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
                   .isEqualTo(
                       "VULCAN browser authentication failed: stage="
                           + stage
+                          + (operation == null ? "" : " consentOperation=" + operation)
                           + " category="
                           + category);
+              assertThat(event.getFormattedMessage())
+                  .doesNotContain(
+                      "SUPER_SECRET_PASSWORD",
+                      "SUPER_SECRET_COOKIE",
+                      "SECRET_TENANT_PATH",
+                      "SECRET_APPGUID",
+                      "private exception text",
+                      "private DOM",
+                      "https://",
+                      "http://",
+                      URL,
+                      USERNAME,
+                      PASSWORD);
               assertThat(event.getThrowableProxy()).isNull();
-              assertThat(event.getArgumentArray()).containsExactly(stage, category);
+              assertThat(event.getArgumentArray()).containsExactly(event.getFormattedMessage());
             });
   }
 }
