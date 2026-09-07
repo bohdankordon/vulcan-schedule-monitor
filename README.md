@@ -48,6 +48,8 @@ See [Architecture](docs/architecture.md), [Account-aware monitoring](docs/accoun
 
 ## Requirements
 
+See [Operational health](docs/operations.md) for public probes, health privacy, and shutdown behavior.
+
 - A Java 21 JDK
 - PostgreSQL configured through standard Spring datasource properties
 - No system Maven installation is required

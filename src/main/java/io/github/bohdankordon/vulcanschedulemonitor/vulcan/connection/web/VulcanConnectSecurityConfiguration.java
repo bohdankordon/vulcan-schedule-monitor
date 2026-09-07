@@ -7,6 +7,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.web.SecurityFilterChain;
@@ -21,6 +22,12 @@ public class VulcanConnectSecurityConfiguration {
     http.authorizeHttpRequests(
             authorization ->
                 authorization
+                    .requestMatchers(
+                        HttpMethod.GET,
+                        "/actuator/health",
+                        "/actuator/health/liveness",
+                        "/actuator/health/readiness")
+                    .permitAll()
                     .requestMatchers("/connect", "/connect/**")
                     .permitAll()
                     .anyRequest()
