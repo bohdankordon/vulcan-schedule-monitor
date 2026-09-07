@@ -8,6 +8,7 @@ from pathlib import Path
 import secrets
 import socket
 import subprocess
+import tarfile
 import tempfile
 import time
 import urllib.error
@@ -28,7 +29,10 @@ ENV = {
         "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS",
     }
 }
-MARKERS = ["synthetic-db-" + secrets.token_hex(16), base64.b64encode(secrets.token_bytes(32)).decode()]
+# SQL metacharacters exercise psql literal quoting as well as secret redaction.
+MARKERS = ["synthetic-admin-" + secrets.token_hex(16),
+           "synthetic-app-" + secrets.token_hex(16) + "';--",
+           base64.b64encode(secrets.token_bytes(32)).decode()]
 HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
@@ -63,6 +67,71 @@ def inspect(container):
     return json.loads(run("docker", "inspect", container))[0]
 
 
+def audit_image_layers(directory):
+    archive = directory / "image-audit.tar"
+    run("docker", "image", "save", "--output", str(archive), IMAGE, timeout=180)
+    markers = [marker.encode() for marker in MARKERS]
+    overlap = max(map(len, markers)) - 1
+    with tarfile.open(archive) as saved:
+        manifest = json.load(saved.extractfile("manifest.json"))
+        for layer in {name for image in manifest for name in image["Layers"]}:
+            with tarfile.open(fileobj=saved.extractfile(layer), mode="r|*") as contents:
+                for member in contents:
+                    if not member.isfile():
+                        continue
+                    with contents.extractfile(member) as source:
+                        tail = b""
+                        while chunk := source.read(1024 * 1024):
+                            chunk = tail + chunk
+                            require(all(marker not in chunk for marker in markers), "Secret in image layer")
+                            tail = chunk[-overlap:]
+    archive.unlink()
+    print("Admin/app/key synthetic markers absent from every exported image layer: PASS", flush=True)
+
+
+def application_sql(container, query, denied=False):
+    # Authenticate over the Compose network, using the existing container env.
+    # No password is placed in host process arguments or printed diagnostics.
+    result = subprocess.run(
+        ["docker", "exec", "--interactive", container, "bash", "-c",
+         'export PGPASSWORD="$POSTGRES_APP_PASSWORD"; '
+         'exec psql --no-psqlrc --no-password --host=postgres --username=schedule_monitor '
+         '--dbname=schedule_monitor --tuples-only --no-align '
+         '--set=ON_ERROR_STOP=1 --set=VERBOSITY=verbose'],
+        input=query, cwd=ROOT, env=ENV, capture_output=True, text=True, timeout=30)
+    if denied:
+        require(result.returncode == 3 and "42501" in result.stderr,
+                "Application cluster-administration attempt must fail with insufficient_privilege")
+    else:
+        require(result.returncode == 0, "Application-role SQL verification failed (output withheld)")
+    return result.stdout.strip()
+
+
+def verify_application_role(container):
+    flags = application_sql(container, """
+        SELECT current_user, session_user, rolcanlogin, rolsuper, rolcreatedb,
+               rolcreaterole, rolreplication, rolbypassrls
+        FROM pg_roles WHERE rolname = current_user;
+    """)
+    require(flags == "schedule_monitor|schedule_monitor|t|f|f|f|f|f", "Unsafe application role flags")
+    ownership = application_sql(container, """
+        SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = current_database();
+        SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = 'public';
+        SELECT count(*) > 0 AND bool_and(tableowner = current_user)
+            FROM pg_tables WHERE schemaname = 'public';
+        SELECT count(*) > 0 AND bool_and(installed_by = current_user AND success)
+            FROM public.flyway_schema_history;
+        SELECT count(*) = 0 FROM pg_auth_members
+            WHERE member = (SELECT oid FROM pg_roles WHERE rolname = current_user);
+        SELECT count(*) > 0 FROM pg_stat_activity
+            WHERE usename = current_user AND datname = current_database() AND pid <> pg_backend_pid();
+    """)
+    require(ownership.splitlines() == ["schedule_monitor", "schedule_monitor", "t", "t", "t", "t"],
+            "Database/schema ownership, Flyway identity, memberships or live app datasource mismatch")
+    print("Application SQL identity=schedule_monitor; LOGIN; all five elevated flags=false; "
+          "database/schema/table ownership, Flyway history and live app sessions: PASS", flush=True)
+
+
 def status(port, path):
     try:
         with HTTP.open(f"http://127.0.0.1:{port}/actuator/health{path}", timeout=40) as response:
@@ -87,6 +156,9 @@ def validate_config(config):
     require(any(v["type"] == "volume" and v["source"] == "postgres_data"
                 and v["target"] == "/var/lib/postgresql" for v in db["volumes"]), "DB persistence missing")
     require("postgres_data" in config["volumes"], "Named volume missing")
+    require(any(v["type"] == "bind" and v["target"] == "/docker-entrypoint-initdb.d"
+                and v["read_only"] and Path(v["source"]).resolve() == (ROOT / "docker/postgres/init").resolve()
+                for v in db["volumes"]), "Read-only PostgreSQL initialization mount missing")
     require(not app.get("volumes") and app["read_only"] and app["tmpfs"], "App storage must be ephemeral")
     require(app["shm_size"] == "268435456", "Bounded shared memory missing")
     require(app["cap_drop"] == ["ALL"] and "no-new-privileges:true" in app["security_opt"], "App isolation missing")
@@ -98,6 +170,12 @@ def validate_config(config):
     require(all(env[k] == "false" for k in (
         "VULCAN_CONNECTION_ENABLED", "VULCAN_MONITORING_ENABLED", "TELEGRAM_BOT_ENABLED")), "Providers enabled")
     require(env["SPRING_DATASOURCE_URL"] == "jdbc:postgresql://postgres:5432/schedule_monitor", "Datasource mismatch")
+    require(db["environment"]["POSTGRES_USER"] == "postgres"
+            and db["environment"]["POSTGRES_PASSWORD"] == MARKERS[0]
+            and db["environment"]["POSTGRES_APP_PASSWORD"] == MARKERS[1]
+            and env["SPRING_DATASOURCE_USERNAME"] == "schedule_monitor"
+            and env["SPRING_DATASOURCE_PASSWORD"] == MARKERS[1]
+            and MARKERS[0] not in env.values(), "Separate admin/application credentials required")
     print("Compose topology, safe defaults, persistence, security and stop budget: PASS", flush=True)
 
 
@@ -113,7 +191,9 @@ def main():
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
-        env_file.write_text(f"POSTGRES_PASSWORD={MARKERS[0]}\nVULCAN_MASTER_KEY={MARKERS[1]}\n"
+        quoted_app_password = MARKERS[1].replace("'", "\\'")
+        env_file.write_text(f"POSTGRES_ADMIN_PASSWORD={MARKERS[0]}\n"
+                            f"POSTGRES_APP_PASSWORD='{quoted_app_password}'\nVULCAN_MASTER_KEY={MARKERS[2]}\n"
                             f"APP_PORT={port}\nAPP_IMAGE={IMAGE}\n", encoding="utf-8")
         project = "vsm-smoke-" + uuid.uuid4().hex[:12]
         base = ["docker", "compose", "--project-name", project, "--env-file", str(env_file),
@@ -121,8 +201,8 @@ def main():
         compose = base
         config = json.loads(run(*base, "config", "--format", "json"))
         validate_config(config)
-        # Both mandatory secrets must fail clearly on their own; output stays private.
-        for missing in ("POSTGRES_PASSWORD", "VULCAN_MASTER_KEY"):
+        # All mandatory secrets must fail clearly on their own; output stays private.
+        for missing in ("POSTGRES_ADMIN_PASSWORD", "POSTGRES_APP_PASSWORD", "VULCAN_MASTER_KEY"):
             absent = directory / "missing.env"
             absent.write_text("\n".join(line for line in env_file.read_text().splitlines()
                                         if not line.startswith(missing + "=")), encoding="utf-8")
@@ -130,7 +210,7 @@ def main():
                                      str(ROOT / "compose.production.yml"), "config", "--quiet"],
                                     cwd=ROOT, env=ENV, capture_output=True, text=True, timeout=30)
             require(failed.returncode != 0 and missing in failed.stderr, "Missing secret must fail clearly")
-        print("Missing POSTGRES_PASSWORD / VULCAN_MASTER_KEY rejection: PASS", flush=True)
+        print("Missing POSTGRES_ADMIN_PASSWORD / POSTGRES_APP_PASSWORD / VULCAN_MASTER_KEY rejection: PASS", flush=True)
         if not args.skip_build:
             print("Building production image (Maven and Chromium downloads allowed)...", flush=True)
             run("docker", "build", "--progress=plain", "-t", IMAGE, ".", timeout=1200)
@@ -141,6 +221,7 @@ def main():
         require(not any(item.split("=", 1)[0].startswith(("POSTGRES_", "SPRING_DATASOURCE_", "VULCAN_", "TELEGRAM_"))
                         for item in image["Config"]["Env"]), "Runtime secrets must not be image environment")
         print("Synthetic markers absent from image config/environment and full history: PASS", flush=True)
+        audit_image_layers(directory)
         require(image["Config"]["User"] == "10001:10001", "Non-root image user required")
         require(image["Config"]["Entrypoint"] == ["java", "-jar", "application.jar"], "Java must receive SIGTERM")
         require(image["Config"]["StopSignal"] == "SIGTERM", "SIGTERM required")
@@ -177,6 +258,10 @@ def main():
             app = run(*compose, "ps", "--quiet", "app")
             db = run(*compose, "ps", "--quiet", "postgres")
             runtime_env = inspect(app)["Config"]["Env"]
+            require("SPRING_DATASOURCE_USERNAME=schedule_monitor" in runtime_env
+                    and "SPRING_DATASOURCE_PASSWORD=" + MARKERS[1] in runtime_env
+                    and not any(MARKERS[0] in item or item.startswith("POSTGRES_ADMIN_PASSWORD=")
+                                for item in runtime_env), "App must receive only the application credential")
             require(all(k + "=false" in runtime_env for k in (
                 "VULCAN_CONNECTION_ENABLED", "VULCAN_MONITORING_ENABLED", "TELEGRAM_BOT_ENABLED")),
                 "Provider defaults must remain disabled in the running container")
@@ -185,6 +270,14 @@ def main():
             for path in ("", "/liveness", "/readiness"):
                 require(status(port, path) == 200, "Healthy endpoint failed: " + path)
             print("App + PostgreSQL healthy; root/liveness/readiness HTTP 200: PASS", flush=True)
+            startup_logs = run(*compose, "logs", "--no-color", "app")
+            require("Successfully applied" in startup_logs and "Initialized JPA EntityManagerFactory" in startup_logs,
+                    "Flyway migration/JPA initialization evidence missing")
+            verify_application_role(db)
+            application_sql(db, "CREATE DATABASE forbidden_smoke_database;", denied=True)
+            application_sql(db, "CREATE ROLE forbidden_smoke_role;", denied=True)
+            print("Application CREATE DATABASE and CREATE ROLE: denied (SQLSTATE 42501): PASS", flush=True)
+            db_volume = next(m["Name"] for m in inspect(db)["Mounts"] if m["Type"] == "volume")
             before = inspect(app)
             run(*compose, "stop", "postgres")
             wait_for("DB outage readiness HTTP 503", lambda: status(port, "/readiness") == 503)
@@ -199,6 +292,13 @@ def main():
             print("DB outage liveness HTTP 200; container healthy; restart count=0: PASS", flush=True)
             run(*compose, "start", "postgres")
             wait_for("DB restart readiness HTTP 200", lambda: status(port, "/readiness") == 200)
+            require(db_volume == next(m["Name"] for m in inspect(db)["Mounts"] if m["Type"] == "volume"),
+                    "PostgreSQL restart must reuse its named volume")
+            verify_application_role(db)
+            db_logs = run(*compose, "logs", "--no-color", "postgres")
+            require(db_logs.count("10-create-application-role.sh") == 1, "Initialization must run only once")
+            require(all(marker not in startup_logs + db_logs for marker in MARKERS), "Secret leaked to startup/DB logs")
+            print("Same-volume restart preserves non-superuser role; init ran once; no secrets in startup/DB logs: PASS", flush=True)
             started = time.monotonic()
             run(*compose, "stop", "app", timeout=135)
             elapsed = time.monotonic() - started

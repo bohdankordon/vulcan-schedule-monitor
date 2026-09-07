@@ -16,6 +16,10 @@ Both `show-details` and `show-components` are explicitly `never`. Group response
 
 Datasource, Flyway, and JPA initialization still gate normal startup. Migration or database initialization failure fails startup; there is no separate Flyway health endpoint or bypass.
 
+Production Compose separates PostgreSQL administration (`postgres`, `POSTGRES_ADMIN_PASSWORD`) from application access (`schedule_monitor`, `POSTGRES_APP_PASSWORD`). Spring/Flyway/JPA use only the non-superuser application role, which owns its database/schema for application DDL and has `NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`. The admin password is not passed to Spring and neither password is baked into an image. PostgreSQL remains internal only, without a host port.
+
+The official entrypoint runs the role initialization script only for an empty data volume. Normal restarts preserve the role and credentials; changes to the example/configuration do not change an existing volume. Volumes from the earlier superuser application configuration require explicit administrator reconciliation before reuse, not an automatic restart-time rewrite. See [container deployment](container-deployment.md#postgresql-roles-and-initialization) for the credential boundary and existing-volume semantics. TLS/reverse proxy and backup/restore remain out of scope.
+
 ## Shutdown and scheduled work
 
 Spring Boot 4.1's default graceful web-server shutdown is retained. `spring.lifecycle.timeout-per-shutdown-phase=30s` makes the lifecycle phase budget explicit. This is a per-phase wait budget, **not a 30-second limit on total process termination or bean destruction**. No custom shutdown hook is installed.

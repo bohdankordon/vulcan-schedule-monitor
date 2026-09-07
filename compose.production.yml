@@ -20,7 +20,7 @@ services:
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/schedule_monitor
       SPRING_DATASOURCE_USERNAME: schedule_monitor
-      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the untracked environment file}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_APP_PASSWORD:?Set POSTGRES_APP_PASSWORD in the untracked environment file}
       VULCAN_MASTER_KEY: ${VULCAN_MASTER_KEY:?Set VULCAN_MASTER_KEY to a stable Base64 encoded 32-byte key}
       VULCAN_CONNECTION_ENABLED: ${VULCAN_CONNECTION_ENABLED:-false}
       VULCAN_MONITORING_ENABLED: ${VULCAN_MONITORING_ENABLED:-false}
@@ -43,10 +43,17 @@ services:
     stop_grace_period: 60s
     environment:
       POSTGRES_DB: schedule_monitor
-      POSTGRES_USER: schedule_monitor
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the untracked environment file}
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Set POSTGRES_ADMIN_PASSWORD in the untracked environment file}
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:?Set POSTGRES_APP_PASSWORD in the untracked environment file}
     volumes:
       - postgres_data:/var/lib/postgresql
+      - type: bind
+        source: ./docker/postgres/init
+        target: /docker-entrypoint-initdb.d
+        read_only: true
+        bind:
+          create_host_path: false
     healthcheck:
       test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
       interval: 5s
