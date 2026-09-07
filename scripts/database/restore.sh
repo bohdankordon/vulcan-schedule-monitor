@@ -10,6 +10,8 @@ Usage: bash scripts/database/restore.sh --archive PATH --confirm schedule_monito
        [--env-file PATH] [--output-dir PATH] [--project-name NAME]
        [--skip-safety-backup] [--readiness-timeout SECONDS]
 Defaults: repository .env.production, backups/ for safety backup, readiness 180s.
+The existing app container must have VULCAN connection, VULCAN monitoring and
+Telegram explicitly false. Recreate app to apply env-file edits; no bypass exists.
 --skip-safety-backup is dangerous: use only when the current DB cannot be dumped
 and you knowingly accept destructive recovery without a fresh recovery point.
 The original VULCAN_MASTER_KEY must be preserved separately for encrypted rows.
@@ -74,6 +76,7 @@ verify_role
 validate_archive "$stage/archive"
 app=$("${compose[@]}" ps --all --quiet app)
 [[ -n $app && $app != *$'\n'* ]] || fail 'Expected exactly one existing application container.'
+verify_restore_provider_safety "$app"
 if ! $skip_safety; then
     backup_args=(--env-file "$env_file" --output-dir "$output_dir")
     if [[ -n ${project_name:-} ]]; then backup_args+=(--project-name "$project_name"); fi

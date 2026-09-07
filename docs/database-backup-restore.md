@@ -6,6 +6,18 @@ These Linux Bash operations protect the `schedule_monitor` logical database in
 [container foundation](container-deployment.md) and [health/shutdown contract](operations.md)
 before recovery. This runbook does not deploy a server or enable providers.
 
+**Recovery is a rollback in time.** The database returns to the backup snapshot;
+external actions after that snapshot do not roll back. Telegram messages already
+sent remain sent. Older outbox/tracking state can cause work to be observed,
+processed or delivered again when providers are eventually re-enabled. Recovery
+does not provide exactly-once delivery or reconstruct later external side effects.
+
+**Restore requires the existing app container to have all three provider switches
+exactly `false`.** This hard preflight applies to running and stopped containers,
+before even the safety backup. Editing `.env.production` alone is insufficient:
+`docker compose start app` uses the already-created container's environment.
+Follow the [app recreation workflow](#prepare-the-app-for-recovery) before restore.
+
 ## Contents and privacy
 
 The custom archive contains schema, tables, rows, sequences, indexes, constraints,
@@ -64,7 +76,8 @@ of the input archive under `${TMPDIR:-/tmp}`. Run one restore operation at a tim
 do not run another database maintenance operation concurrently. Stop unrelated
 database clients before maintenance. Environment variables override env-file
 values in Compose; select provider switches deliberately. Disposable verification
-always forces VULCAN connection, monitoring and Telegram off.
+keeps providers disabled whenever Java runs; unsafe rejection fixtures use only
+inert, network-isolated containers or containers that are never started.
 
 ## Online backup
 
@@ -122,6 +135,47 @@ failure after a valid list. See [PostgreSQL 18 pg_restore](https://www.postgresq
 
 ## Destructive restore
 
+### Prepare the app for recovery
+
+Use the **same production Compose project** as the existing stack. From the
+repository root, temporarily set these entries in the private env configuration:
+
+```ini
+VULCAN_CONNECTION_ENABLED=false
+VULCAN_MONITORING_ENABLED=false
+TELEGRAM_ENABLED=false
+```
+
+The Compose file maps `TELEGRAM_ENABLED` to the container's
+`TELEGRAM_BOT_ENABLED`. Shell variables take precedence over the env file, so clear
+these three shell overrides before applying that private configuration:
+
+```bash
+unset VULCAN_CONNECTION_ENABLED VULCAN_MONITORING_ENABLED TELEGRAM_ENABLED
+docker compose --env-file .env.production -f compose.production.yml \
+  up -d --no-deps --force-recreate --no-build app
+```
+
+If the existing stack uses a custom project name, include `--project-name NAME`
+in this command, the restore command, and all later commands for that stack.
+Keep the existing project selection; never substitute a new project during recovery.
+This [Compose command](https://docs.docker.com/reference/cli/docker/compose/up/)
+recreates only `app` with the current configuration and existing image. `--no-deps`
+leaves PostgreSQL running; the harness verifies its container, process and volume
+are unchanged with the current topology. Do not use `down` or remove any volume.
+
+Restore inspects the actual existing container with `docker inspect`, without
+executing anything inside it. For each of `VULCAN_CONNECTION_ENABLED`,
+`VULCAN_MONITORING_ENABLED`, and `TELEGRAM_BOT_ENABLED`, exactly one entry with the
+literal value `false` is required. Enabled, missing, malformed, unexpected or
+duplicate entries fail closed. Only fixed internal verdicts are extracted; neither
+the complete environment nor its values are printed. Failure emits generic
+provider-disable/recreation guidance. There is no provider-safety bypass, including
+through `--skip-safety-backup`. Do not concurrently recreate or reconfigure app
+while a restore is in progress.
+
+### Restore and review before reconnecting providers
+
 Choose one exact trusted archive; do not use globs or an automatically selected
 "latest" file. Replace the illustrative path below with the actual reported path:
 
@@ -145,7 +199,9 @@ database mutation. `--readiness-timeout SECONDS` defaults to 180 and accepts
    supported major. Metadata is never evaluated as shell code.
 4. Check Compose configuration, PostgreSQL health/reachability, exact tool/server
    versions and the expected non-superuser role. Run `pg_restore --list` on the
-   copied archive and check that exactly one app container exists.
+   copied archive and check that exactly one app container exists. Inspect that
+   container's actual configuration and require all three provider flags exactly
+   `false`, before creating any safety backup or stopping app.
 5. Run the real `backup.sh` while the app is still running. Its completed safety
    backup path is printed and retained. Any failure aborts before app stop or DB
    mutation. The subsequent restore uses the same validated private input copy.
@@ -162,7 +218,7 @@ database mutation. `--readiness-timeout SECONDS` defaults to 180 and accepts
 9. Verify database ownership and role security again: LOGIN true; `rolsuper`,
    `rolcreatedb`, `rolcreaterole`, `rolreplication`, `rolbypassrls` false; no role
    memberships. A missing/unsafe role fails; tooling never promotes it.
-10. Start the existing app normally. Poll inside the app with its existing curl
+10. Start the existing app with providers still disabled. Poll inside the app with its existing curl
     for GET `/actuator/health/readiness` HTTP 200, discarding response bodies, with
     the bounded timeout. A fixed sleep is not readiness evidence.
 
@@ -172,12 +228,32 @@ Readiness proves application/database startup, not the validity of encrypted
 VULCAN state or external provider credentials. No provider contact or decryption
 is used to certify an archive.
 
+After readiness succeeds, review the recovered subscriptions, tracking baselines,
+notification outbox and other application state as appropriate for the recovery
+point. Consider work already performed externally after that point before choosing
+to reconnect providers. Do not assume the safety backup or readiness check prevents
+replay once providers are enabled.
+
+Only after that review, deliberately restore the intended provider switches in
+the private configuration. Clear the same shell overrides and repeat the app-only
+recreation command to apply them:
+
+```bash
+unset VULCAN_CONNECTION_ENABLED VULCAN_MONITORING_ENABLED TELEGRAM_ENABLED
+docker compose --env-file .env.production -f compose.production.yml \
+  up -d --no-deps --force-recreate --no-build app
+```
+
+Use the same project selection again. `restore.sh` never automatically re-enables
+providers, and editing the env file or merely starting/restarting an existing
+container does not apply changed environment values.
+
 ### Safety backup override and failures
 
 `--skip-safety-backup` is an explicit dangerous override for an already damaged,
 undumpable current database. It warns and records the absence of a fresh safety
 archive. It bypasses only the safety backup, never confirmation, integrity,
-metadata, version, role, archive or shutdown guards. Use it only when knowingly
+metadata, version, role, archive, provider-safety or shutdown guards. Use it only when knowingly
 accepting destructive recovery risk.
 
 If replacement fails after its first destructive step, output explicitly says
@@ -221,8 +297,19 @@ Windows uses `.\mvnw.cmd`, `python`, and installed Git Bash for the same scripts
 The container harness builds the production image once, performs the existing
 Chromium/health/outage/role checks, then runs real backup/restore against a unique
 Compose project/volume and generated env file. It uses synthetic probe rows only;
-VULCAN connection=false, monitoring=false and Telegram=false. Provider request
-counts are zero by disabled runtime configuration, not by packet capture.
+whenever the application runs, VULCAN connection=false, monitoring=false and
+Telegram=false. Provider request counts are zero by disabled application runtime
+configuration and inert fixtures, not by packet capture.
+
+Provider guards are tested for all three actual container variable names, each
+with `true`, missing, and malformed `FALSE` values. Running enabled fixtures use
+only `sleep` with network mode `none`; stopped cases are never started. Java and
+provider integrations never run in these fixtures. Every rejection, both with
+and without `--skip-safety-backup`, preserves the exact container process state,
+probe rows and backup directory contents despite the normal env file remaining
+provider-disabled. Each fixture is replaced with the real all-false configuration
+before continuing. The documented app-only recreation is then exercised, proving
+PostgreSQL's process/volume/data are untouched; all existing recovery tests follow.
 
 Tests verify the unchanged running app during backup; original rows, sequences,
 Flyway history, JPA startup, app database sessions and role security after restore;

@@ -288,6 +288,65 @@ def verify_database_operations(directory, env_file, project, compose, app, db, p
     unchanged(before, mutated)
     print("Safety backup destination failure aborts before app stop/DB mutation: PASS", flush=True)
 
+    # Exercise actual container config while the normal env file remains disabled.
+    # Enabled fixtures never run Java: running cases use only sleep with no network;
+    # missing/malformed cases are created but never started. PostgreSQL is untouched.
+    db_before = inspect(db)
+    override = directory / "provider-fixture.json"
+    for provider in ("TELEGRAM_BOT_ENABLED", "VULCAN_CONNECTION_ENABLED", "VULCAN_MONITORING_ENABLED"):
+        for value in ("true", None, "FALSE"):
+            override.write_text(json.dumps({"services": {"app": {
+                "environment": {provider: value}, "entrypoint": ["sleep", "infinity"],
+                "network_mode": "none", "restart": "no", "healthcheck": {"disable": True},
+            }}}), encoding="utf-8")
+            try:
+                run(*compose, "-f", str(override), "up", "--no-start", "--no-deps",
+                    "--force-recreate", "--no-build", "app")
+                fixture_app = run(*compose, "ps", "--all", "--quiet", "app")
+                selected = run("docker", "inspect", "--format",
+                               '{{range .Config.Env}}{{if eq (index (split . "=") 0) "' + provider
+                               + '"}}{{println .}}{{end}}{{end}}', fixture_app)
+                # Compose/Docker may retain an unset key without an assignment.
+                expected = ("", provider, provider + "=") if value is None else (provider + "=" + value,)
+                require(selected in expected,
+                        "Provider fixture environment mismatch (values withheld)")
+                require(run("docker", "inspect", "--format", '{{json .Config.Entrypoint}}', fixture_app)
+                        == '["sleep","infinity"]'
+                        and run("docker", "inspect", "--format", '{{.HostConfig.NetworkMode}}', fixture_app)
+                        == "none", "Provider fixture must be inert and network-isolated")
+                if value == "true":
+                    run("docker", "start", fixture_app)  # Starts sleep only, never the app.
+                state_before = run("docker", "inspect", "--format", '{{json .State}}', fixture_app)
+                require(json.loads(state_before)["Running"] == (value == "true"), "Fixture process state mismatch")
+                artifacts_before = {p.name: p.read_bytes() for p in output.iterdir()}
+                for options in ((), ("--skip-safety-backup",)):
+                    script("restore.sh", "--archive", archive.as_posix(), "--confirm", "schedule_monitor",
+                           *options, failure="Restore requires the app container to have VULCAN and Telegram providers disabled.")
+                    require(run("docker", "inspect", "--format", '{{json .State}}', fixture_app) == state_before,
+                            "Provider rejection stopped/started/changed the app process")
+                    require(marker() == mutated, "Provider rejection mutated the database")
+                    require({p.name: p.read_bytes() for p in output.iterdir()} == artifacts_before,
+                            "Provider rejection created/changed backup artifacts")
+                label = "enabled/running" if value == "true" else "missing/stopped" if value is None else "malformed/stopped"
+                print(f"Provider guard {provider} {label}: PASS; process/data/backups unchanged; skip cannot bypass", flush=True)
+            finally:
+                # Restore real app configuration to false after every fixture, but
+                # defer Java startup until all negative cases are finished.
+                run(*compose, "up", "--no-start", "--no-deps", "--force-recreate", "--no-build", "app")
+    # Exercise the documented operator command: recreate ONLY app, then prove the
+    # PostgreSQL container, process and volume were neither restarted nor replaced.
+    run(*compose, "up", "-d", "--no-deps", "--force-recreate", "--no-build", "app")
+    app = run(*compose, "ps", "--quiet", "app")
+    wait_for("Provider-disabled app recreation readiness HTTP 200", lambda: status(port, "/readiness") == 200)
+    db_after = inspect(db)
+    require(run(*compose, "ps", "--quiet", "postgres") == db
+            and db_after["State"]["StartedAt"] == db_before["State"]["StartedAt"]
+            and db_after["RestartCount"] == db_before["RestartCount"]
+            and {m["Destination"]: m for m in db_after["Mounts"]}
+            == {m["Destination"]: m for m in db_before["Mounts"]}, "App-only recreation changed PostgreSQL")
+    require(marker() == mutated, "App-only recreation mutated probe data")
+    print("Documented app-only provider-disable recreation preserves PostgreSQL process/volume/data: PASS", flush=True)
+
     previous = set(output.glob("*.dump"))
     transcript = script("restore.sh", "--archive", archive.as_posix(), "--confirm", "schedule_monitor")
     safety = set(output.glob("*.dump")) - previous
@@ -321,6 +380,7 @@ def verify_database_operations(directory, env_file, project, compose, app, db, p
     print("Explicit recovery from safety archive with dangerous skip override; pre-restore data recovered: PASS", flush=True)
     logs = run(*compose, "logs", "--no-color")
     require(all(secret not in logs for secret in MARKERS), "Secret leaked during backup/restore")
+    return app
 
 
 def main():
@@ -443,7 +503,7 @@ def main():
             require(db_logs.count("10-create-application-role.sh") == 1, "Initialization must run only once")
             require(all(marker not in startup_logs + db_logs for marker in MARKERS), "Secret leaked to startup/DB logs")
             print("Same-volume restart preserves non-superuser role; init ran once; no secrets in startup/DB logs: PASS", flush=True)
-            verify_database_operations(directory, env_file, project, compose, app, db, port)
+            app = verify_database_operations(directory, env_file, project, compose, app, db, port)
             started = time.monotonic()
             run(*compose, "stop", "app", timeout=135)
             elapsed = time.monotonic() - started

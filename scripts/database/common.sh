@@ -58,3 +58,21 @@ validate_archive() {
     # TOC output may contain private object names; do not print it.
     "${compose[@]}" exec -T postgres pg_restore --list < "$1" > /dev/null
 }
+
+verify_restore_provider_safety() {
+    local verdict message
+    message='Restore requires the app container to have VULCAN and Telegram providers disabled. Recreate the app container with all provider switches false before recovery.'
+    # Filter inside Docker's template: only fixed verdicts leave docker inspect,
+    # never environment values. Inspect works even when the container is stopped.
+    # A separator per required key rejects missing entries; repeated verdicts
+    # reject duplicate entries, including duplicates with conflicting values.
+    verdict=$(docker inspect --type container --format '
+        {{- range $name := split "VULCAN_CONNECTION_ENABLED VULCAN_MONITORING_ENABLED TELEGRAM_BOT_ENABLED" " " -}}
+            {{- range $.Config.Env -}}
+                {{- if eq (index (split . "=") 0) $name -}}
+                    {{- if eq . (printf "%s=false" $name) -}}disabled{{- else -}}unsafe{{- end -}}
+                {{- end -}}
+            {{- end -}};
+        {{- end -}}' "$1" 2>/dev/null) || fail "$message"
+    [[ $verdict == 'disabled;disabled;disabled;' ]] || fail "$message"
+}
