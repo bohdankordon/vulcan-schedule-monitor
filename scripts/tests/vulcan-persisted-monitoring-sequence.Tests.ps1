@@ -49,4 +49,16 @@ foreach ($key in @('cookieNames','outcome','cookieMaterialChanged','scope','atte
 $bad = New-MonitoringSequenceReport; $bad.totalScheduleRequests = 3
 $caught = $false; try { Assert-MonitoringSequenceReport $bad } catch { $caught = $true }; Assert-Test $caught
 $cases++
+# Every new field is closed against arbitrary text; counts are bounded on both sides.
+foreach ($key in @((New-MonitoringSequenceReport).Keys | Where-Object { $_ -match '^current\.(persistence|liveCookieTopology|materialRoundTrip)\.' })) {
+    $isCount = $key -match '(expectedCookieCount|actualCookieCount|totalCookieCount|cookieCountBefore|cookieCountAfter)$'
+    foreach ($value in @('SUPER_SECRET_TOKEN https://SECRET_DOMAIN/SECRET_PATH', $(if ($isCount) { -1 } else { 1 }), $(if ($isCount) { 1001 } else { 'false' }), $(if ($isCount) { $true } else { @{} }))) {
+        $bad = New-MonitoringSequenceReport; $bad[$key] = $value
+        $caught = $false
+        try { Assert-MonitoringSequenceReport $bad } catch { $caught = $true; Assert-Test ($_.Exception.Message -ceq 'UNSAFE_OUTPUT_GUARD') }
+        Assert-Test $caught; $cases++
+    }
+    $valid = New-MonitoringSequenceReport; $valid[$key] = $(if ($isCount) { 1000 } else { $true })
+    Assert-MonitoringSequenceReport $valid; $cases++
+}
 Write-Output "Sequence PowerShell contracts passed: $cases cases."

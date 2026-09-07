@@ -37,6 +37,7 @@ class PersistedMonitoringSequenceTest {
   final List<Duration> delays = new ArrayList<>();
   int[] statuses;
   String retryAfter;
+  String responseCookie;
   boolean html;
   static final Clock CLOCK = Clock.fixed(Instant.parse("2026-09-06T22:30:00Z"), ZoneOffset.UTC);
   static final String KEY = Base64.getEncoder().encodeToString(new byte[32]);
@@ -59,8 +60,7 @@ class PersistedMonitoringSequenceTest {
                     new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8)));
             int status = statuses[Math.min(slot, statuses.length - 1)];
             ex.getResponseHeaders().set("Content-Type", html ? "text/html" : "application/json");
-            ex.getResponseHeaders()
-                .set("Set-Cookie", "rotated=SUPER_SECRET_COOKIE_B; Path=/SECRET_TENANT/");
+            ex.getResponseHeaders().set("Set-Cookie", responseCookie);
             if (status == 302) ex.getResponseHeaders().set("Location", "/never-follow");
             if (retryAfter != null) ex.getResponseHeaders().set("Retry-After", retryAfter);
             byte[] body =
@@ -109,6 +109,7 @@ class PersistedMonitoringSequenceTest {
     delays.clear();
     statuses = new int[] {200, 200};
     retryAfter = null;
+    responseCookie = "rotated=SUPER_SECRET_COOKIE_B; Path=/SECRET_TENANT/";
     html = false;
   }
 
@@ -179,6 +180,77 @@ class PersistedMonitoringSequenceTest {
   }
 
   @Test
+  void duplicatePathCookieReproducesPostSuccessMismatchBeforeNextWithoutRetry() throws Exception {
+    responseCookie = "original=SUPER_SECRET_COOKIE_B; Path=/";
+    var report = execute();
+    assertThat(report.facts())
+        .containsEntry("result", "FAIL")
+        .containsEntry("category", "SEQUENCE_COMPLETED")
+        .containsEntry("current.sessionPersistedAfterSuccess", false)
+        .containsEntry("current.persistence.applicationBaseSame", true)
+        .containsEntry("current.persistence.refererSame", true)
+        .containsEntry("current.persistence.verificationTokenSame", true)
+        .containsEntry("current.persistence.appGuidSame", true)
+        .containsEntry("current.persistence.cookieMaterialSame", false)
+        .containsEntry("current.persistence.expectedCookieCount", 2)
+        .containsEntry("current.persistence.actualCookieCount", 1)
+        .containsEntry("current.persistence.cookieCountChanged", true)
+        .containsEntry("current.liveCookieTopology.totalCookieCount", 2)
+        .containsEntry("current.liveCookieTopology.duplicateNamePresent", true)
+        .containsEntry("current.liveCookieTopology.duplicateNameDifferentPathPresent", true)
+        .containsEntry("current.liveCookieTopology.duplicateNameDifferentDomainPresent", false)
+        .containsEntry("current.materialRoundTrip.cookieMaterialSame", false)
+        .containsEntry("current.materialRoundTrip.cookieCountBefore", 2)
+        .containsEntry("current.materialRoundTrip.cookieCountAfter", 1)
+        .containsEntry("current.outcome", "INTERRUPTED")
+        .containsEntry("next.disposition", "SKIPPED_INTERRUPTED")
+        .containsEntry("spacingAppliedBeforeNext", false)
+        .containsEntry("next.loadedPostCurrentSession", "UNAVAILABLE")
+        .containsEntry("databaseSessionRestoredAfterRollback", true)
+        .containsEntry("totalScheduleRequests", 1)
+        .containsEntry("retries", 0);
+    assertThat(requests(report)).hasSize(1);
+    assertThat(requests(report).getFirst()).containsEntry("outcome", "SUCCESS");
+    assertThat(calls.get()).isEqualTo(1);
+    assertThat(delays).isEmpty();
+    assertPowerShellReport(report);
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void postgresPreservesExactMaterialBeforeReconstructionAndSafeMaterialAfterward(
+      boolean duplicate) {
+    var expected =
+        material(
+            "original=SUPER_SECRET_COOKIE_A;  "
+                + (duplicate ? "original" : "rotated")
+                + "=SUPER_SECRET_COOKIE_B");
+    var store = context.getBean(VulcanSecretStore.class);
+    var tx =
+        new org.springframework.transaction.support.TransactionTemplate(
+            context.getBean(org.springframework.transaction.PlatformTransactionManager.class));
+    tx.executeWithoutResult(
+        status -> {
+          store.replace(1, expected, null, CLOCK.instant());
+          var em = context.getBean(jakarta.persistence.EntityManager.class);
+          em.flush();
+          em.clear();
+          var actual = store.loadSession(1);
+          assertThat(SessionFidelityDiagnostics.compare(expected, actual).allSame()).isTrue();
+          assertThat(expected.cookieHeader().equals(actual.cookieHeader())).isTrue();
+        });
+    // A separate transaction/repository read still preserves exact material.
+    var actual = store.loadSession(1);
+    assertThat(SessionFidelityDiagnostics.compare(expected, actual).allSame()).isTrue();
+    assertThat(expected.cookieHeader().equals(actual.cookieHeader())).isTrue();
+    var reconstructed =
+        context.getBean(VulcanSessionManager.class).loadCurrent(1).snapshotMaterial();
+    assertThat(SessionFidelityDiagnostics.compare(expected, reconstructed).allSame())
+        .isEqualTo(!duplicate);
+    assertThat(calls.get()).isZero();
+  }
+
+  @Test
   void currentPersistsAndNextReloadsThroughRealEncryptedStoreInsideRollbackOnlyTransaction() {
     var manager = spy(context.getBean(VulcanSessionManager.class));
     var writes = new AtomicInteger();
@@ -205,6 +277,12 @@ class PersistedMonitoringSequenceTest {
         .containsEntry("accountBlockedAfterCurrent", false)
         .containsEntry("totalScheduleRequests", 2)
         .containsEntry("retries", 0);
+    for (String key : MonitoringSequenceReport.FIDELITY_BOOLEANS) {
+      boolean expected = !key.contains("duplicateName") && !key.endsWith("cookieCountChanged");
+      assertThat(report.facts()).containsEntry(key, expected);
+    }
+    for (String key : MonitoringSequenceReport.FIDELITY_COUNTS)
+      assertThat(report.facts()).containsEntry(key, 2);
     assertThat(requests(report)).extracting(r -> r.get("scope")).containsExactly("CURRENT", "NEXT");
     assertThat(requests(report).getFirst())
         .containsEntry("cookieCountBefore", 1)
@@ -477,8 +555,11 @@ class PersistedMonitoringSequenceTest {
 
   @Test
   void actualJavaSuccessReportPassesPowerShellOutputGuard() throws Exception {
+    assertPowerShellReport(execute());
+  }
+
+  private void assertPowerShellReport(MonitoringSequenceReport report) throws Exception {
     Assumptions.assumeTrue(System.getProperty("os.name").startsWith("Windows"));
-    var report = execute();
     var result =
         NativeSessionBaselineTest.run(
             new ProcessBuilder(

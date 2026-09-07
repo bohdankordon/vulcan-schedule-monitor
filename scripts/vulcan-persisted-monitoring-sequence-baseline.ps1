@@ -12,6 +12,21 @@ function New-MonitoringSequenceReport([string]$Category = 'NOT_AUTHORIZED') {
         spacingConfiguredMillis = 500; spacingAppliedBeforeNext = $false
         'current.sessionPersistedAfterSuccess' = 'UNAVAILABLE'; 'next.loadedPostCurrentSession' = 'UNAVAILABLE'
         databaseSessionRestoredAfterRollback = 'UNAVAILABLE'
+        'current.persistence.applicationBaseSame' = 'UNAVAILABLE'
+        'current.persistence.refererSame' = 'UNAVAILABLE'
+        'current.persistence.verificationTokenSame' = 'UNAVAILABLE'
+        'current.persistence.appGuidSame' = 'UNAVAILABLE'
+        'current.persistence.cookieMaterialSame' = 'UNAVAILABLE'
+        'current.persistence.cookieCountChanged' = 'UNAVAILABLE'
+        'current.liveCookieTopology.duplicateNamePresent' = 'UNAVAILABLE'
+        'current.liveCookieTopology.duplicateNameDifferentPathPresent' = 'UNAVAILABLE'
+        'current.liveCookieTopology.duplicateNameDifferentDomainPresent' = 'UNAVAILABLE'
+        'current.materialRoundTrip.cookieMaterialSame' = 'UNAVAILABLE'
+        'current.persistence.expectedCookieCount' = 'UNAVAILABLE'
+        'current.persistence.actualCookieCount' = 'UNAVAILABLE'
+        'current.liveCookieTopology.totalCookieCount' = 'UNAVAILABLE'
+        'current.materialRoundTrip.cookieCountBefore' = 'UNAVAILABLE'
+        'current.materialRoundTrip.cookieCountAfter' = 'UNAVAILABLE'
         'current.outcome' = 'NOT_REACHED'; 'next.outcome' = 'NOT_REACHED'; 'next.disposition' = 'NOT_REACHED'
         totalScheduleRequests = 0; retries = 0; requests = @()
     }
@@ -26,8 +41,14 @@ function Assert-MonitoringSequenceReport($Report) {
     foreach ($key in @('persistedSessionLoaded','targetResolved','account.connected','account.reconnectRequired','gateInitiallyClear','accountBlockedAfterCurrent','spacingAppliedBeforeNext')) {
         if ($Report[$key] -isnot [bool]) { throw 'UNSAFE_OUTPUT_GUARD' }
     }
-    foreach ($key in @('current.sessionPersistedAfterSuccess','next.loadedPostCurrentSession','databaseSessionRestoredAfterRollback')) {
-        if ($Report[$key] -isnot [bool] -and $Report[$key] -cne 'UNAVAILABLE') { throw 'UNSAFE_OUTPUT_GUARD' }
+    foreach ($key in @('current.sessionPersistedAfterSuccess','next.loadedPostCurrentSession','databaseSessionRestoredAfterRollback','current.persistence.applicationBaseSame','current.persistence.refererSame','current.persistence.verificationTokenSame','current.persistence.appGuidSame','current.persistence.cookieMaterialSame','current.persistence.cookieCountChanged','current.liveCookieTopology.duplicateNamePresent','current.liveCookieTopology.duplicateNameDifferentPathPresent','current.liveCookieTopology.duplicateNameDifferentDomainPresent','current.materialRoundTrip.cookieMaterialSame')) {
+        if ($Report[$key] -isnot [bool] -and !($Report[$key] -is [string] -and $Report[$key] -ceq 'UNAVAILABLE')) { throw 'UNSAFE_OUTPUT_GUARD' }
+    }
+    # Diagnostic counts saturate at 1000; unavailable is never interpreted as zero.
+    foreach ($key in @('current.persistence.expectedCookieCount','current.persistence.actualCookieCount','current.liveCookieTopology.totalCookieCount','current.materialRoundTrip.cookieCountBefore','current.materialRoundTrip.cookieCountAfter')) {
+        $value = $Report[$key]
+        if ($value -is [string] -and $value -ceq 'UNAVAILABLE') { continue }
+        if (($value -isnot [int] -and $value -isnot [long]) -or $value -lt 0 -or $value -gt 1000) { throw 'UNSAFE_OUTPUT_GUARD' }
     }
     foreach ($key in @('scopeCount','totalScheduleRequests','retries')) {
         $value = $Report[$key]

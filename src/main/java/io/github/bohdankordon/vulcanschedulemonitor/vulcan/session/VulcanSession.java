@@ -75,6 +75,11 @@ public final class VulcanSession {
         cookieHeader);
   }
 
+  /** Local diagnostics only; never exposes the store or cookie identities. */
+  CookieTopologyObservation cookieTopologyForDiagnostics() {
+    return CookieTopologyObservation.observe(cookieManager.getCookieStore().getCookies());
+  }
+
   public static VulcanSession fromBrowserSession(
       URI applicationBaseUri,
       String requestVerificationToken,

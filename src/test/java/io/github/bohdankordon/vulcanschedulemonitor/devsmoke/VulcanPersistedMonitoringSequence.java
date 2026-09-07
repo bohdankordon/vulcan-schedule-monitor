@@ -157,15 +157,7 @@ public final class VulcanPersistedMonitoringSequence {
   }
 
   static boolean sameMaterial(VulcanSessionMaterial a, VulcanSessionMaterial b) {
-    return a.applicationBaseUri().equals(b.applicationBaseUri())
-        && a.refererUri().equals(b.refererUri())
-        && a.requestVerificationToken().equals(b.requestVerificationToken())
-        && a.appGuid().equals(b.appGuid())
-        && pairs(a.cookieHeader()).equals(pairs(b.cookieHeader()));
-  }
-
-  private static List<String> pairs(String header) {
-    return Arrays.stream(header.split(";", -1)).map(String::trim).sorted().toList();
+    return SessionFidelityDiagnostics.compare(a, b).allSame();
   }
 
   private static final class Cycle {
@@ -225,11 +217,28 @@ public final class VulcanPersistedMonitoringSequence {
             em.flush();
             em.clear();
             if (scope.equals(scopes.getFirst())) {
-              boolean saved =
-                  currentPost != null
-                      && sameMaterial(
-                          currentPost,
-                          sessions.loadCurrent(target.vulcanAccountId()).snapshotMaterial());
+              boolean saved = false;
+              if (currentPost != null) {
+                var comparison =
+                    SessionFidelityDiagnostics.compare(
+                        currentPost,
+                        sessions.loadCurrent(target.vulcanAccountId()).snapshotMaterial());
+                report.put(
+                    "current.persistence.applicationBaseSame", comparison.applicationBaseSame());
+                report.put("current.persistence.refererSame", comparison.refererSame());
+                report.put(
+                    "current.persistence.verificationTokenSame",
+                    comparison.verificationTokenSame());
+                report.put("current.persistence.appGuidSame", comparison.appGuidSame());
+                report.put(
+                    "current.persistence.cookieMaterialSame", comparison.cookieMaterialSame());
+                report.put(
+                    "current.persistence.expectedCookieCount", comparison.expectedCookieCount());
+                report.put("current.persistence.actualCookieCount", comparison.actualCookieCount());
+                report.put(
+                    "current.persistence.cookieCountChanged", comparison.cookieCountChanged());
+                saved = comparison.allSame();
+              }
               report.put("current.sessionPersistedAfterSuccess", saved);
               if (!saved) throw ScheduleSourceException.of(SourceFailureKind.INTERRUPTED);
               em.clear(); // NEXT must decrypt from a fresh repository read, not a cached entity.
@@ -372,8 +381,34 @@ public final class VulcanPersistedMonitoringSequence {
       if (index == 0) {
         currentPost = session.snapshotMaterial();
         currentInstance = session;
+        observeLocalFidelity(session);
       }
       return result.get();
+    }
+
+    private void observeLocalFidelity(VulcanSession session) {
+      try {
+        var topology = SessionFidelityDiagnostics.topology(session);
+        report.put("current.liveCookieTopology.totalCookieCount", topology.totalCookieCount());
+        report.put(
+            "current.liveCookieTopology.duplicateNamePresent", topology.duplicateNamePresent());
+        report.put(
+            "current.liveCookieTopology.duplicateNameDifferentPathPresent",
+            topology.duplicateNameDifferentPathPresent());
+        report.put(
+            "current.liveCookieTopology.duplicateNameDifferentDomainPresent",
+            topology.duplicateNameDifferentDomainPresent());
+      } catch (RuntimeException ignored) {
+        // Optional observation failure leaves finite UNAVAILABLE defaults, not a new outcome.
+      }
+      try {
+        var roundTrip = SessionFidelityDiagnostics.roundTrip(currentPost);
+        report.put("current.materialRoundTrip.cookieMaterialSame", roundTrip.cookieMaterialSame());
+        report.put("current.materialRoundTrip.cookieCountBefore", roundTrip.cookieCountBefore());
+        report.put("current.materialRoundTrip.cookieCountAfter", roundTrip.cookieCountAfter());
+      } catch (RuntimeException ignored) {
+        // Reconstruction is local only. Never retry or obscure the existing persistence invariant.
+      }
     }
   }
 }

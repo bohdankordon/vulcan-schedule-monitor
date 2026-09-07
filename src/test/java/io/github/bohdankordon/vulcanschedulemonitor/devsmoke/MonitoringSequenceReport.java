@@ -5,6 +5,25 @@ import tools.jackson.databind.ObjectMapper;
 
 final class MonitoringSequenceReport {
   static final Set<String> CATEGORIES;
+  static final Set<String> FIDELITY_BOOLEANS =
+      Set.of(
+          "current.persistence.applicationBaseSame",
+          "current.persistence.refererSame",
+          "current.persistence.verificationTokenSame",
+          "current.persistence.appGuidSame",
+          "current.persistence.cookieMaterialSame",
+          "current.persistence.cookieCountChanged",
+          "current.liveCookieTopology.duplicateNamePresent",
+          "current.liveCookieTopology.duplicateNameDifferentPathPresent",
+          "current.liveCookieTopology.duplicateNameDifferentDomainPresent",
+          "current.materialRoundTrip.cookieMaterialSame");
+  static final Set<String> FIDELITY_COUNTS =
+      Set.of(
+          "current.persistence.expectedCookieCount",
+          "current.persistence.actualCookieCount",
+          "current.liveCookieTopology.totalCookieCount",
+          "current.materialRoundTrip.cookieCountBefore",
+          "current.materialRoundTrip.cookieCountAfter");
 
   static {
     var categories = new HashSet<>(PersistedBaselineReport.CATEGORIES);
@@ -46,12 +65,18 @@ final class MonitoringSequenceReport {
     facts.put("current.outcome", "NOT_REACHED");
     facts.put("next.outcome", "NOT_REACHED");
     facts.put("next.disposition", "NOT_REACHED");
+    FIDELITY_BOOLEANS.stream().sorted().forEach(key -> facts.put(key, "UNAVAILABLE"));
+    FIDELITY_COUNTS.stream().sorted().forEach(key -> facts.put(key, "UNAVAILABLE"));
   }
 
   void put(String key, Object value) {
     if (!facts.containsKey(key)) throw unsafe();
     boolean valid;
-    if (key.equals("category")) valid = CATEGORIES.contains(value);
+    if (FIDELITY_BOOLEANS.contains(key))
+      valid = value instanceof Boolean || "UNAVAILABLE".equals(value);
+    else if (FIDELITY_COUNTS.contains(key))
+      valid = "UNAVAILABLE".equals(value) || value instanceof Integer n && n >= 0 && n <= 1000;
+    else if (key.equals("category")) valid = CATEGORIES.contains(value);
     else if (key.equals("result")) valid = Set.of("SUCCESS", "FAIL").contains(value);
     else if (key.endsWith(".outcome"))
       valid =

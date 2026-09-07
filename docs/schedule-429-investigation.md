@@ -1149,3 +1149,138 @@ cookie lookup, successful material capture, finite logger arguments and secret
 redaction. Spotless and `git diff --check` passed. Source comparison confirmed
 unchanged base derivation, same-origin rules, material constructor/validators,
 and cookie-selection loop apart from its count observation.
+
+## Post-success session fidelity investigation (2026-09-07, offline only)
+
+The first separately authorized real persisted monitoring-sequence diagnostic
+returned `result=FAIL category=SEQUENCE_COMPLETED`. The persisted session loaded,
+the target resolved with two scopes, and the gate was initially clear. **CURRENT
+itself returned 2xx JSON SUCCESS**, with cookies changing from 6 to 7 and both
+cookie-count and cookie-material change observations true. The account was not
+blocked after CURRENT. Immediately after production session persistence, flush,
+clear and reload, `current.sessionPersistedAfterSuccess=false`.
+
+The harness deliberately translated that invariant failure into
+`current.outcome=INTERRUPTED` and `next.disposition=SKIPPED_INTERRUPTED`. There was
+one schedule request, zero retries, no spacing before NEXT, and
+`next.loadedPostCurrentSession=UNAVAILABLE`. Rollback verification reported
+`databaseSessionRestoredAfterRollback=true`. This was neither M1 current-429,
+M2 next-429 nor M3 complete two-request success. It is a new post-success
+persistence/session-fidelity question, separate from the historical first-request
+429 conclusion. The old observation cannot identify the differing material field
+or attribute the mismatch to JPA, encryption, codec or cookie reconstruction.
+
+Although rollback restored the database, the successful real CURRENT response
+already mutated live cookie state. **Do not reuse that session for another real
+experiment. A new successful `/connect` is required first**, under separate
+authorization. M-sequence remains pending. This offline change does not run
+`/connect`, monitoring, M-sequence or any provider baseline.
+
+### Safe comparison boundaries for a future authorized run
+
+The existing persistence invariant now obtains a finite field comparison and
+uses its conjunction for the same pass/fail decision. It reports:
+
+```text
+current.persistence.applicationBaseSame
+current.persistence.refererSame
+current.persistence.verificationTokenSame
+current.persistence.appGuidSame
+current.persistence.cookieMaterialSame
+current.persistence.expectedCookieCount
+current.persistence.actualCookieCount
+current.persistence.cookieCountChanged
+current.liveCookieTopology.totalCookieCount
+current.liveCookieTopology.duplicateNamePresent
+current.liveCookieTopology.duplicateNameDifferentPathPresent
+current.liveCookieTopology.duplicateNameDifferentDomainPresent
+current.materialRoundTrip.cookieMaterialSame
+current.materialRoundTrip.cookieCountBefore
+current.materialRoundTrip.cookieCountAfter
+```
+
+Comparisons use secrets only in memory. Cookie material uses the same sorted
+multiset of trimmed pairs as the original invariant: order alone is ignored,
+duplicate pairs remain significant. The topology seam is package-private in
+`vulcan.session`; a test-source adapter exposes only finite observations to the
+devsmoke harness. Cookie names are compared case-insensitively, domains likewise,
+and paths exactly, consistent with JDK cookie identity comparisons. No cookie
+store, identity, value or hash escapes. Counts saturate at 1000, meaning 1000 or
+more; equality and count-change decisions still use the full data, so equal
+saturated counts do not imply equality. Unreached or failed optional observations
+remain `UNAVAILABLE`, never a false zero. Both Java and PowerShell report guards
+allow only these fixed keys and boolean/bounded-integer/`UNAVAILABLE` values.
+
+After successful CURRENT response processing, the harness observes live topology
+and locally reconstructs `snapshotMaterial -> fromMaterial -> snapshotMaterial`
+before production persistence. The reconstructed instance is discarded; it is
+never used for requests or persistence. Optional local observation errors cannot
+replace the existing outcome. The original reload mismatch still interrupts
+before NEXT. No request, retry, wait, cookie-selection rule, acceptance criterion,
+production session format or persistence operation is changed.
+
+### Structural hypothesis and proposed follow-up designs
+
+By construction, `snapshotMaterial()` writes only `name=value` pairs, discarding
+Path and Domain (and other attributes). `seedCookies()` reconstructs every pair
+at the application path. The deterministic test uses a real JDK CookieManager
+configured by VulcanSession and one loopback Set-Cookie response: two cookies
+share a name, have different values, and have application-path versus root-path
+identities. This isolates the structural hypothesis without provider traffic.
+It does **not** establish that the real 6-to-7 response had duplicate-name cookies;
+that requires future safe topology evidence. Attribute loss begins when the live
+store is flattened; same-name identity collapse can then occur during reseeding.
+
+Offline results: the loopback different-path case retains both live identities,
+then reports `cookieMaterialSame=false`, `cookieCountBefore=2`,
+`cookieCountAfter=1` for the local round-trip. Unique-name cookies survive with
+two cookies; same-name/same-path Set-Cookie deterministically replaces the old
+value and survives with one cookie. An in-memory JDK CookieManager also confirms
+duplicate-name/different-domain topology without network access. Ordering-only
+changes pass the original multiset comparison.
+
+SecretPayloadCodec preserves the exact cookie-header string (including spacing
+and duplicate pairs) and identical re-encoded bytes. The real AES encrypted store,
+tested with an in-memory repository, preserves all material fields exactly for
+both unique and duplicate names, including an existing-row update. PostgreSQL
+Testcontainers tests likewise preserve exact material after flush/clear and a
+separate transaction read. Only subsequent VulcanSession reconstruction collapses
+the duplicate names; round-trip-safe material remains equal through that step.
+Thus the reproduced loss is in live-cookie flattening/reseeding, before PostgreSQL
+or encryption, not a codec or database alteration of the material string. This
+isolates the synthetic case; the exact cause of the real mismatch remains unmeasured.
+
+The loopback/Testcontainers M harness reproduction reports CURRENT provider
+`outcome=SUCCESS`, all four non-cookie persistence comparisons true,
+`cookieMaterialSame=false`, expected/actual counts 2/1, duplicate-name/different-path
+true, different-domain false, and the same local round-trip loss. It still produces
+`current.outcome=INTERRUPTED`, skips NEXT with one request and zero retries, and
+verifies rollback restoration. Its finite report passes both Java and PowerShell
+output guards without exposing synthetic secrets.
+
+No production fix is implemented. A later migration-compatible design could add
+an explicit, versioned cookie list to session material, retaining name/value,
+Path, Domain, Secure and HttpOnly, plus expiry semantics only where needed for
+correct reconstruction. A new codec version could read legacy v1 payloads as
+legacy header material and write v2 after validated migration or a fresh capture.
+An alternative is a versioned optional structured-cookie section alongside the
+legacy header during migration, with one deliberately specified authoritative
+representation and no silent fallback after malformed structured data. Either
+design must preserve multiple same-name identities, define host-only/domain and
+expiry behavior, and handle browser captures that initially lack full Set-Cookie
+metadata. Missing attributes must not be invented as observed facts. Do not blindly
+serialize Java HttpCookie internals. Existing encrypted sessions, key/AAD version
+handling, safe rollback and secret-free logging all need explicit compatibility
+tests before such a fix is authorized.
+
+Validation: 16 new deterministic JUnit cases passed. The dedicated
+session/codec/encrypted-store/persistence/devsmoke suite passed 57 tests with no
+failures, errors or skips; the PowerShell report contracts passed all 94 cases.
+Full Maven `verify` passed 877 tests with zero failures/errors and five optional
+Chromium entries skipped. Chromium was not enabled for this session-only change.
+Spotless and `git diff --check` passed. Source comparison confirmed that removing
+the new package-private observation seam leaves VulcanSession unchanged; production
+material, codec, encryption, persistence and request logic were not modified.
+VULCAN requests = 0 for this work: synthetic loopback/Testcontainers only, no
+developer secrets or developer database rows inspected, and no real `/connect`,
+monitoring, M-sequence or schedule baseline run.
