@@ -1,6 +1,6 @@
 # Container deployment foundation
 
-This is a single-host application + PostgreSQL foundation. HTTPS reverse proxy/TLS and database backup/restore tooling are deferred. `/connect` must **not** be treated as production-public until an HTTPS reverse proxy and matching `PUBLIC_BASE_URL` are configured in the later deployment phase.
+This is a single-host application + PostgreSQL foundation with [database backup and restore tooling](database-backup-restore.md). HTTPS reverse proxy/TLS is deferred. `/connect` must **not** be treated as production-public until an HTTPS reverse proxy and matching `PUBLIC_BASE_URL` are configured in the later deployment phase.
 
 ## Build and start
 
@@ -77,11 +77,11 @@ The named `postgres_data` volume mounts `/var/lib/postgresql`, the [PostgreSQL 1
 docker compose --env-file .env.production -f compose.production.yml down
 ```
 
-`down` removes containers and the network and **retains database state**. `down -v` **destroys database state** by deleting named volumes. Do not use `-v` for routine operations. Backup/restore and backup retention are deferred to PR #16; this foundation is not a substitute for them.
+`down` removes containers and the network and **retains database state**. `down -v` **destroys database state** by deleting named volumes. Do not use `-v` for routine operations. Follow the [backup/recovery runbook](database-backup-restore.md) before destructive maintenance. Automatic scheduling and retention remain deferred.
 
 ## Reproducible validation
 
-Run normal project verification plus the container harness (Python 3 standard library and Docker only):
+Run normal project verification plus the container harness (Python 3 standard library, Docker and Bash; Git Bash on Windows):
 
 ```shell
 ./mvnw spotless:apply
@@ -94,4 +94,4 @@ On Windows use `.\mvnw.cmd` and `python`. The harness builds the production imag
 
 The optional `browser-smoke` Docker target adds a compiled test helper to the exact runtime stage, launches Chromium at a data URL, and clicks a button under `--network none`. The production target contains no helper or debug endpoint. The Compose smoke uses a unique disposable project/volume/network, checks all three HTTP probes, and authenticates as `schedule_monitor` to verify all five elevated role flags are false, database/schema/table ownership, Flyway's recorded migration user, absence of role memberships, and the running application's database sessions. Both `CREATE DATABASE` and `CREATE ROLE` must fail with SQLSTATE `42501`. A synthetic password containing SQL metacharacters exercises literal quoting without exposing credentials.
 
-The harness stops only its own PostgreSQL, verifies readiness 503/liveness 200 with no app restart, checks recovery on the same named volume, repeats the role checks, and verifies initialization ran only once with no secrets in startup/database logs. It also verifies Spring shutdown under SIGTERM. Provider switches are disabled and inherited operator configuration is filtered; provider request counts follow from disabled runtime switches and an empty synthetic database, not packet capture. Finally it removes **only its disposable test volume**. Developer PostgreSQL data is never selected. The same harness runs in the `Container build and smoke` PR CI job; Maven tests and Dependency Review remain separate.
+The harness stops only its own PostgreSQL, verifies readiness 503/liveness 200 with no app restart, checks recovery on the same named volume, repeats the role checks, and verifies initialization ran only once with no secrets in startup/database logs. It then executes the real Bash backup/restore scripts against synthetic probe rows, verifies online backup, rejection guards, safety backup, round-trip recovery, payload failure after replacement, and explicit recovery from the safety archive. It also verifies Spring shutdown under SIGTERM. Provider switches are disabled and inherited operator configuration is filtered; provider request counts follow from disabled runtime switches and synthetic database state, not packet capture. Finally it removes **only its disposable test volume** and temporary artifacts. Developer PostgreSQL data is never selected. The same harness runs in the `Container build and smoke` PR CI job with one production image build; Maven tests and Dependency Review remain separate.
