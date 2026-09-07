@@ -50,6 +50,8 @@ See [Architecture](docs/architecture.md), [Account-aware monitoring](docs/accoun
 
 See [Operational health](docs/operations.md) for public probes, health privacy, and shutdown behavior.
 
+See [Container deployment](docs/container-deployment.md) for the production image, private Compose topology, and isolated container verification.
+
 - A Java 21 JDK
 - PostgreSQL configured through standard Spring datasource properties
 - No system Maven installation is required
@@ -70,7 +72,7 @@ Monitoring is off unless `vulcan.monitoring.enabled=true` is set and secure conn
 
 Telegram is off unless `telegram.bot.enabled=true` is set. Disabled startup creates no Telegram runtime, client, delivery gateway, or dispatch scheduler and requires no token. When enabled, the adapter uses long polling and dispatches at most one durable intent per two-second scheduler tick. Supported private-chat commands are `/start`, `/help`, `/status`, `/subscriptions`, `/classes`, and `/connect`. `/classes` uses strictly authorized catalog callbacks; `/connect` issues a fresh short-lived link to the configured public HTTPS origin. Never send VULCAN credentials through Telegram.
 
-Secure connection is off unless `vulcan.connection.enabled=true`. Enabling it also requires `vulcan.connection.public-base-url` and a valid `VULCAN_MASTER_KEY`. Install Chromium manually on the runtime host; builds and CI do not download or launch a browser:
+Secure connection is off unless `vulcan.connection.enabled=true`. Enabling it also requires `vulcan.connection.public-base-url` and a valid `VULCAN_MASTER_KEY`. For a non-container runtime, install Chromium manually on the host (the container image bundles it):
 
 ```powershell
 .\mvnw.cmd -Dexec.mainClass=com.microsoft.playwright.CLI -Dexec.args="install chromium" exec:java

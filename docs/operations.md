@@ -30,4 +30,4 @@ The lifecycle audit found no executor detached from Spring cleanup or unbounded 
 
 `OperationalHealthTests` exercises the configured Actuator groups through the real security filter chain. It verifies the actual PostgreSQL contributor type and healthy responses, substitutes a controlled `db` contributor temporarily to prove DOWN/recovery behavior without stopping the shared test database, checks exact response privacy, and verifies HTTP exposure separately from security denial. Existing connect security and outbox recovery tests remain regression coverage. Tests use synthetic data and local services only.
 
-Container/deployment design, backup/restore, and the production runbook are deferred to subsequent phases.
+See [container deployment](container-deployment.md) for the image, Compose healthchecks, stop budget and isolated smoke. Reverse proxy/TLS, backup/restore and the complete production runbook remain deferred.

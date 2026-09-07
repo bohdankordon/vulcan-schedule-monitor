@@ -1,0 +1,63 @@
+services:
+  app:
+    image: ${APP_IMAGE:-vulcan-schedule-monitor:production}
+    build:
+      context: .
+      target: production
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 120s
+    read_only: true
+    tmpfs:
+      # Playwright Java extracts and executes its bundled Node driver here.
+      - /tmp:rw,nosuid,nodev,exec,size=512m,mode=1777
+    shm_size: 256m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "127.0.0.1:${APP_PORT:-8080}:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/schedule_monitor
+      SPRING_DATASOURCE_USERNAME: schedule_monitor
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the untracked environment file}
+      VULCAN_MASTER_KEY: ${VULCAN_MASTER_KEY:?Set VULCAN_MASTER_KEY to a stable Base64 encoded 32-byte key}
+      VULCAN_CONNECTION_ENABLED: ${VULCAN_CONNECTION_ENABLED:-false}
+      VULCAN_MONITORING_ENABLED: ${VULCAN_MONITORING_ENABLED:-false}
+      VULCAN_CONNECTION_PUBLICBASEURL: ${PUBLIC_BASE_URL:-}
+      TELEGRAM_BOT_ENABLED: ${TELEGRAM_ENABLED:-false}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  postgres:
+    image: postgres:18.6
+    restart: unless-stopped
+    stop_grace_period: 60s
+    environment:
+      POSTGRES_DB: schedule_monitor
+      POSTGRES_USER: schedule_monitor
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the untracked environment file}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  postgres_data:

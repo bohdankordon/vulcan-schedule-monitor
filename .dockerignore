@@ -1,0 +1,38 @@
+# Allow only build inputs; local configuration, Git, IDEs, target, .dev, logs,
+# docs, CI, OS metadata and unrelated scripts never enter the build context.
+**
+!Dockerfile
+!.mvn/
+!.mvn/wrapper/
+!.mvn/wrapper/maven-wrapper.properties
+!.mvn/wrapper/maven-wrapper.jar
+!mvnw
+!pom.xml
+!src/
+!src/main/
+!src/main/**
+!scripts/
+!scripts/container/
+!scripts/container/ChromiumSmoke.java
+# Defense in depth for sensitive files accidentally placed beneath src/main.
+**/.env*
+**/secrets/**
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.jks
+**/*.har
+**/*.log
+**/*.trace
+**/trace.zip
+**/*storage-state*.json
+**/storageState*.json
+**/.auth/**
+**/playwright-report/**
+**/test-results/**
+**/screenshots/**
+**/videos/**
+**/browser-profile/**
+**/.DS_Store
+**/Thumbs.db
