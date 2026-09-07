@@ -1,5 +1,6 @@
 package io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.persistence;
 
+import static io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.SessionMaterialTestSupport.cookiePairs;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.*;
 
@@ -61,7 +62,7 @@ class SessionMaterialStorageFidelityTest {
       assertThat(Arrays.equals(codec.encodeSession(material), codec.encodeSession(loaded)))
           .isTrue();
       assertThat(
-              SessionFidelityDiagnostics.compare(
+              SessionMaterialTestSupport.compare(
                       material, VulcanSession.fromMaterial(loaded).snapshotMaterial())
                   .allSame())
           .isTrue();
@@ -113,8 +114,7 @@ class SessionMaterialStorageFidelityTest {
 
   private static void assertExact(VulcanSessionMaterial expected, VulcanSessionMaterial actual) {
     // Boolean assertions deliberately avoid rendering secret-bearing payloads on failure.
-    assertThat(SessionFidelityDiagnostics.compare(expected, actual).allSame()).isTrue();
-    assertThat(expected.cookiePairsForDiagnostics().equals(actual.cookiePairsForDiagnostics()))
-        .isTrue();
+    assertThat(SessionMaterialTestSupport.compare(expected, actual).allSame()).isTrue();
+    assertThat(cookiePairs(expected).equals(cookiePairs(actual))).isTrue();
   }
 }

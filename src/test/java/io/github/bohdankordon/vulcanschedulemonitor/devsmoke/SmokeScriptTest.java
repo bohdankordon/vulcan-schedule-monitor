@@ -33,20 +33,10 @@ class SmokeScriptTest {
                 "pwsh.exe", "-NoProfile", "-File", "scripts/tests/vulcan-real-smoke.Tests.ps1")
             .redirectErrorStream(true)
             .start();
-    var captured =
-        java.util.concurrent.CompletableFuture.supplyAsync(
-            () -> {
-              try {
-                return process.getInputStream().readAllBytes();
-              } catch (java.io.IOException exception) {
-                throw new java.io.UncheckedIOException(exception);
-              }
-            });
-    boolean finished = process.waitFor(45, TimeUnit.SECONDS);
-    if (!finished) process.destroyForcibly();
-    assertThat(finished).isTrue();
+    assertThat(process.waitFor(45, TimeUnit.SECONDS)).isTrue();
     String output =
-        new String(captured.get(5, TimeUnit.SECONDS), java.nio.charset.StandardCharsets.UTF_8);
+        new String(
+            process.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
     assertThat(process.exitValue()).as(output).isZero();
     assertThat(output)
         .contains("Synthetic PowerShell smoke contracts passed.")

@@ -1,6 +1,6 @@
 #Requires -Version 7.0
 [CmdletBinding()]
-param([switch]$Configure, [switch]$Run, [switch]$InvestigateSchedule429, [switch]$InvestigateSchedule429JavaBaseline, [switch]$Clear, [switch]$Help)
+param([switch]$Configure, [switch]$Run, [switch]$Clear, [switch]$Help)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -11,8 +11,6 @@ REAL VULCAN SMOKE - LOCAL DEVELOPMENT ONLY (Windows, PowerShell 7, Java 21)
 
   .\scripts\vulcan-real-smoke.ps1 -Configure   Manually store a separate DPAPI credential bundle
   .\scripts\vulcan-real-smoke.ps1 -Run         One authorized real connection attempt
-  .\scripts\vulcan-real-smoke.ps1 -InvestigateSchedule429  One browser control; Java only after 2xx JSON
-  .\scripts\vulcan-real-smoke.ps1 -InvestigateSchedule429JavaBaseline  Zero browser; at most one Java schedule request
   .\scripts\vulcan-real-smoke.ps1 -Clear       Delete only the smoke credential bundle
   .\scripts\vulcan-real-smoke.ps1 -Help        This help; no setup, secrets, or network
 
@@ -181,111 +179,14 @@ function Write-SmokeReport {
     foreach ($line in $lines) { Write-Host $line }
 }
 
-function Write-Schedule429Report {
-    param([string]$Output, [int]$ExitCode)
-    $bool = 'true|false|UNAVAILABLE'
-    $context = 'PLAN_PAGE|HOME_OR_LANDING|JOURNAL_PAGE|OTHER_ALLOWED|UNAVAILABLE'
-    $schema = @{
-        category = 'COMPARED|BROWSER_RATE_LIMITED|BROWSER_OTHER_FAILURE|INVALID_INPUT|INVALID_CREDENTIALS|MFA_REQUIRED|CAPTCHA_REQUIRED|UNSUPPORTED_AUTH_FLOW|TRANSIENT|PROTOCOL_FAILURE|HARNESS_FAILURE'
-        result = 'SUCCESS|FAIL'
-        stage = 'INVESTIGATION_INPUT|JAVA_TRANSPORT_CALIBRATION|AUTHENTICATED_BROWSER_READY|CATALOG_READY|TARGET_SELECTION|BROWSER_CONTROL_SETUP|BROWSER_REQUEST_OBSERVER_SETUP|BROWSER_CONTROL_TRIGGER|BROWSER_CONTROL_WAIT|JAVA_COMPARISON_SETUP|JAVA_COMPARISON|BROWSER_CLEANUP'
-        failureCategory = 'NOT_FOUND|AMBIGUOUS|NOT_ACTIONABLE|NAVIGATION_TIMEOUT|REQUEST_NOT_OBSERVED|UNEXPECTED_PAGE_STATE|INTERNAL_INVARIANT|SECURITY_INVARIANT|PLAYWRIGHT_TRANSIENT'
-        browserSource = 'NATIVE_UI_REQUEST|BROWSER_CONTEXT_FETCH|NOT_REACHED'
-        decisionCase = '1|2|3|4|NOT_REACHED'
-        javaOutcome = 'SUCCESS|NOT_RUN|AUTHENTICATION_REQUIRED|RATE_LIMITED|SERVER_ERROR|PERMANENT_HTTP|TRANSPORT_ERROR|SESSION_REDIRECT|UNEXPECTED_HTML|PROTOCOL_FAILURE'
-        javaHeaderEvidence = 'SYNTHETIC_PRODUCTION_TRANSPORT'
-        javaMaterialContext = 'POST_LOGIN_PROJECTION|PRE_REQUEST_POST_LOGIN'
-        browserScheduleRequests = '[01]'
-        javaScheduleRequests = '[01]'
-        retries = '0'
-    }
-    foreach ($key in @('blockedExtraScheduleRequests','classCount','postLoginCookieCount','verifiedCookieCount','browser.cookieCount','java.cookieCount')) { $schema[$key] = '[0-9]{1,6}' }
-    foreach ($key in @('javaPermitted','verificationChangedCookieMaterial','verificationChangedCookieCount','verificationChangedRefererContext','sameFieldSet','sameTimestampShape','sameWeekBoundarySemantics','sameDataSemanticPosition','sameFormEncoding','browserRefererMatchesCapturedReferer','browser.jsonParseable','browser.envelopePresent','browser.scheduleArraysPresent')) { $schema[$key] = $bool }
-    foreach ($key in @('persistedMonitoringRefererContext','postLoginRefererContext','verifiedRefererContext','browserPageContext','browser.refererContext','java.refererContext')) { $schema[$key] = $context }
-    foreach ($side in @('browser','java')) {
-        $schema["$side.method"] = 'POST|OTHER|UNAVAILABLE'
-        $schema["$side.statusFamily"] = '2xx|3xx|4xx|5xx|OTHER|UNAVAILABLE'
-        $schema["$side.status429"] = $bool
-        $schema["$side.contentFamily"] = 'json|html|other|UNAVAILABLE'
-        $schema["$side.formUrlEncoded"] = $bool
-        foreach ($date in @('dataOd','dataDo','data')) { $schema["$side.${date}IsoTimestamp"] = $bool }
-        foreach ($key in @('formFieldSetMatchesExpected','weekBoundarySemantics','dataAtWeekStart','xRequestedWithPresent','originPresent','refererPresent','verificationHeaderPresent','appGuidHeaderPresent','contentTypePresent','userAgentPresent','acceptPresent','acceptLanguagePresent','fetchMetadataPresent','cookieHeaderPresent')) { $schema["$side.$key"] = $bool }
-    }
-    $lines = @($Output -split '\r?\n' | Where-Object { $_.Length -gt 0 })
-    if ($Output.Length -gt 16384 -or $lines.Count -lt 12 -or $lines.Count -gt 110 -or $lines[0] -cne 'REAL VULCAN SCHEDULE 429 INVESTIGATION') { throw 'Invalid investigation output' }
-    $facts = @{}
-    foreach ($line in $lines | Select-Object -Skip 1) {
-        $pair = $line -split '=', 2
-        if ($pair.Count -ne 2 -or -not $schema.ContainsKey($pair[0]) -or $facts.ContainsKey($pair[0]) -or
-            $pair[0] -cnotin @($schema.Keys) -or $pair[1] -cnotmatch ('^(?:' + $schema[$pair[0]] + ')$')) { throw 'Invalid investigation output' }
-        $facts[$pair[0]] = $pair[1]
-    }
-    foreach ($key in @('category','result','browserSource','browserScheduleRequests','javaScheduleRequests','blockedExtraScheduleRequests','javaPermitted','decisionCase','persistedMonitoringRefererContext','retries','javaHeaderEvidence')) {
-        if (-not $facts.ContainsKey($key)) { throw 'Incomplete investigation output' }
-    }
-    if ($facts.ContainsKey('stage') -ne $facts.ContainsKey('failureCategory') -or
-        ($facts.category -ceq 'HARNESS_FAILURE' -and -not $facts.ContainsKey('stage'))) { throw 'Incomplete failure output' }
-    if (($ExitCode -eq 0) -ne ($facts.result -ceq 'SUCCESS') -or
-        ($facts.result -ceq 'SUCCESS') -ne ($facts.category -ceq 'COMPARED') -or
-        ($facts.javaScheduleRequests -ceq '1' -and ($facts.browserScheduleRequests -cne '1' -or $facts.javaPermitted -cne 'true')) -or
-        ($facts.decisionCase -ceq '1' -and ($facts.javaScheduleRequests -cne '0' -or $facts.javaPermitted -cne 'false'))) { throw 'Inconsistent investigation output' }
-    # Validate the entire report before forwarding any prefix, exactly as normal -Run does.
-    foreach ($line in $lines) { Write-Host $line }
-}
-
-function Write-Schedule429JavaBaselineReport {
-    param([string]$Output, [int]$ExitCode)
-    $schema = @{
-        category = 'BASELINE_COMPLETED|HARNESS_FAILURE|INVALID_INPUT|INVALID_CREDENTIALS|MFA_REQUIRED|CAPTCHA_REQUIRED|UNSUPPORTED_AUTH_FLOW|TRANSIENT|PROTOCOL_FAILURE|UNEXPECTED_BROWSER_SCHEDULE_TRAFFIC'
-        result = 'SUCCESS|FAIL'
-        decisionCase = 'J1|J2|J3|J4|NOT_REACHED'
-        javaOutcome = 'SUCCESS|NOT_RUN|RATE_LIMITED|AUTHENTICATION_REQUIRED|SESSION_REDIRECT|UNEXPECTED_HTML|SERVER_ERROR|PERMANENT_HTTP|TRANSPORT_ERROR|PROTOCOL_FAILURE'
-        'java.statusFamily' = '2xx|3xx|4xx|5xx|OTHER|UNAVAILABLE'
-        'java.status429' = 'true|false|UNAVAILABLE'
-        retryAfterPresent = 'true|false|UNAVAILABLE'
-        retryAfterSeconds = '[0-9]{1,19}'
-        javaMaterialContext = 'NOT_USED|PRE_VERIFICATION_POST_LOGIN'
-        browserScheduleRequests = '0'
-        javaScheduleRequests = '[01]'
-        retries = '0'
-        stage = 'INPUT|AUTHENTICATION|CATALOG_DISCOVERY|TARGET_SELECTION|JAVA_BASELINE_SETUP|JAVA_BASELINE'
-        failureCategory = 'SECURITY_INVARIANT|INTERNAL_INVARIANT|PLAYWRIGHT_TRANSIENT|AUTHENTICATION_FAILURE'
-    }
-    foreach ($key in @('postLoginCookieCount','verifiedCookieCount','classCount')) { $schema[$key] = '[0-9]{1,6}' }
-    foreach ($key in @('applicationBaseChanged','refererChangedExact','verificationTokenChanged','appGuidChanged','cookieMaterialChanged','cookieCountChanged','unexpectedBrowserScheduleTraffic','browserClosedBeforeVerification')) { $schema[$key] = 'true|false' }
-    foreach ($key in @('postLoginRefererContext','verifiedRefererContext')) { $schema[$key] = 'HOME_OR_LANDING|JOURNAL_PAGE|PLAN_PAGE|OTHER_ALLOWED|UNAVAILABLE' }
-    $lines = @($Output -split '\r?\n' | Where-Object { $_.Length -gt 0 })
-    if ($Output.Length -gt 8192 -or $lines.Count -lt 15 -or $lines.Count -gt 40 -or $lines[0] -cne 'REAL VULCAN SCHEDULE 429 JAVA BASELINE') { throw 'Invalid Java baseline output' }
-    $facts = @{}
-    foreach ($line in $lines | Select-Object -Skip 1) {
-        $pair = $line -split '=', 2
-        if ($pair.Count -ne 2 -or -not $schema.ContainsKey($pair[0]) -or $facts.ContainsKey($pair[0]) -or
-            $pair[0] -cnotin @($schema.Keys) -or $pair[1] -cnotmatch ('^(?:' + $schema[$pair[0]] + ')$')) { throw 'Invalid Java baseline output' }
-        $facts[$pair[0]] = $pair[1]
-    }
-    foreach ($key in @('category','result','decisionCase','javaOutcome','java.statusFamily','java.status429','retryAfterPresent','javaMaterialContext','browserScheduleRequests','javaScheduleRequests','retries','unexpectedBrowserScheduleTraffic','browserClosedBeforeVerification')) {
-        if (-not $facts.ContainsKey($key)) { throw 'Incomplete Java baseline output' }
-    }
-    if (($ExitCode -eq 0) -ne ($facts.result -ceq 'SUCCESS') -or
-        ($facts.result -ceq 'SUCCESS') -ne ($facts.javaOutcome -ceq 'SUCCESS') -or
-        ($facts.unexpectedBrowserScheduleTraffic -ceq 'true' -and ($facts.javaScheduleRequests -cne '0' -or $facts.category -cne 'UNEXPECTED_BROWSER_SCHEDULE_TRAFFIC')) -or
-        ($facts.javaScheduleRequests -ceq '1' -and ($facts.browserClosedBeforeVerification -cne 'true' -or $facts.javaMaterialContext -cne 'PRE_VERIFICATION_POST_LOGIN')) -or
-        ($facts.decisionCase -cne 'NOT_REACHED' -and ($facts.javaScheduleRequests -cne '1' -or $facts.category -cne 'BASELINE_COMPLETED')) -or
-        ($facts.decisionCase -ceq 'J1' -and ($facts.javaOutcome -cne 'RATE_LIMITED' -or $facts.'java.status429' -cne 'true')) -or
-        ($facts.retryAfterPresent -ceq 'true') -ne $facts.ContainsKey('retryAfterSeconds') -or
-        ($facts.retryAfterPresent -cne 'UNAVAILABLE' -and $facts.'java.status429' -cne 'true') -or
-        $facts.ContainsKey('stage') -ne $facts.ContainsKey('failureCategory')) { throw 'Inconsistent Java baseline output' }
-    foreach ($line in $lines) { Write-Host $line }
-}
-
 function Invoke-VulcanRealSmoke {
-    param([switch]$Configure, [switch]$Run, [switch]$InvestigateSchedule429, [switch]$InvestigateSchedule429JavaBaseline, [switch]$Clear, [switch]$Help)
+    param([switch]$Configure, [switch]$Run, [switch]$Clear, [switch]$Help)
     if ($Help) { Show-VulcanSmokeHelp; return 0 }
     $phase = 'SETUP'
     $payload = $null
     try {
         if (-not $IsWindows) { throw 'Windows required' }
-        if (([int]$Configure.IsPresent + [int]$Run.IsPresent + [int]$InvestigateSchedule429.IsPresent + [int]$InvestigateSchedule429JavaBaseline.IsPresent + [int]$Clear.IsPresent) -ne 1) {
+        if (([int]$Configure.IsPresent + [int]$Run.IsPresent + [int]$Clear.IsPresent) -ne 1) {
             Show-VulcanSmokeHelp
             return 2
         }
@@ -334,28 +235,14 @@ function Invoke-VulcanRealSmoke {
         $driver = New-SmokeProcessInfo -Executable $java -RepositoryRoot $root
         $driver.ArgumentList.Add('-cp')
         $driver.ArgumentList.Add("target/test-classes;target/classes;$classpath")
-        if ($InvestigateSchedule429JavaBaseline) {
-            $driver.ArgumentList.Add('io.github.bohdankordon.vulcanschedulemonitor.devsmoke.VulcanSchedule429JavaBaseline')
-            $driver.ArgumentList.Add('--authorized-schedule-429-java-baseline')
-        } elseif ($InvestigateSchedule429) {
-            $driver.ArgumentList.Add('io.github.bohdankordon.vulcanschedulemonitor.devsmoke.VulcanSchedule429Investigation')
-            $driver.ArgumentList.Add('--authorized-schedule-429-investigation')
-        } else {
-            $driver.ArgumentList.Add('io.github.bohdankordon.vulcanschedulemonitor.devsmoke.VulcanRealSmoke')
-            $driver.ArgumentList.Add('--authorized-local-smoke')
-        }
+        $driver.ArgumentList.Add('io.github.bohdankordon.vulcanschedulemonitor.devsmoke.VulcanRealSmoke')
+        $driver.ArgumentList.Add('--authorized-local-smoke')
         $phase = 'INPUT'
         $payload = Unprotect-SmokePayload -Path $secret
         if ($payload.Length -gt 32768) { throw 'Invalid input size' }
         $phase = 'DRIVER'
         $result = Invoke-SmokeChild -Info $driver -InputBytes $payload
-        if ($InvestigateSchedule429JavaBaseline) {
-            Write-Schedule429JavaBaselineReport -Output $result.Output -ExitCode $result.ExitCode
-        } elseif ($InvestigateSchedule429) {
-            Write-Schedule429Report -Output $result.Output -ExitCode $result.ExitCode
-        } else {
-            Write-SmokeReport -Output $result.Output -ExitCode $result.ExitCode
-        }
+        Write-SmokeReport -Output $result.Output -ExitCode $result.ExitCode
         return $result.ExitCode
     }
     catch {
@@ -369,5 +256,5 @@ function Invoke-VulcanRealSmoke {
 
 # Dot-sourcing only defines functions for isolated synthetic tests; normal use dispatches one mode.
 if ($MyInvocation.InvocationName -ne '.') {
-    exit (Invoke-VulcanRealSmoke -Configure:$Configure -Run:$Run -InvestigateSchedule429:$InvestigateSchedule429 -InvestigateSchedule429JavaBaseline:$InvestigateSchedule429JavaBaseline -Clear:$Clear -Help:$Help)
+    exit (Invoke-VulcanRealSmoke -Configure:$Configure -Run:$Run -Clear:$Clear -Help:$Help)
 }

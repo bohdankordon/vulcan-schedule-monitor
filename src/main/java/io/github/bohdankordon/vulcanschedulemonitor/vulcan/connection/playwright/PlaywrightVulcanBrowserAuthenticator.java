@@ -155,45 +155,11 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
       PrivacyConsentDismissObservation dismissal,
       SessionCaptureDiagnostics captureDiagnostics,
       VulcanAuthFailureCategory category) {
-    if (stage == BrowserAuthStage.SESSION_CAPTURE) {
-      SessionCaptureObservation capture = captureDiagnostics.snapshot();
-      logger.warn(
-          "VULCAN browser authentication failed: stage={} captureFailure={} allowedRequests={}"
-              + " completeRequests={} sawReferer={} sawVerificationToken={} sawAppGuid={}"
-              + " sawAllRequiredHeadersTogether={} candidates={} candidatesWithCookies={} cookieCount={} category={}",
-          stage,
-          capture.failure(),
-          capture.allowedRequests(),
-          capture.completeRequests(),
-          capture.sawReferer(),
-          capture.sawVerificationToken(),
-          capture.sawAppGuid(),
-          capture.sawAllRequiredHeadersTogether(),
-          capture.candidates(),
-          capture.candidatesWithCookies(),
-          capture.cookieCount(),
-          category);
-    } else if (!isConsentStage(stage)) {
-      logger.warn("VULCAN browser authentication failed: stage={} category={}", stage, category);
-    } else if (operation != PrivacyConsentOperation.DISMISS_WAIT) {
-      logger.warn(
-          "VULCAN browser authentication failed: stage={} consentOperation={} category={}",
-          stage,
-          operation,
-          category);
-    } else {
-      logger.warn(
-          "VULCAN browser authentication failed: stage={} consentOperation={} dismissFailure={}"
-              + " dismissState={} headingPresent={} containerVisible={} anyOwnerAriaHidden={} category={}",
-          stage,
-          operation,
-          dismissal.failure(),
-          dismissal.state(),
-          dismissal.headingPresent(),
-          dismissal.containerVisible(),
-          dismissal.anyOwnerAriaHidden(),
-          category);
-    }
+    // Both formatters accept only finite observations; never pass an exception or browser data.
+    logger.warn(
+        stage == BrowserAuthStage.SESSION_CAPTURE
+            ? formatSessionCaptureFailure(captureDiagnostics.snapshot(), category)
+            : formatFailure(stage, operation, dismissal, category));
   }
 
   /** This boundary accepts only finite values, never an exception or browser/account data. */

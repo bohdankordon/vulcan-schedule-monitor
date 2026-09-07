@@ -15,9 +15,9 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 @TestConfiguration(proxyBeanMethods = false)
 @EnableAutoConfiguration
 @EntityScan("io.github.bohdankordon.vulcanschedulemonitor")
-@EnableJpaRepositories(basePackageClasses = PersistedBaselineConfiguration.class)
+@EnableJpaRepositories(basePackageClasses = SessionPersistenceTestConfiguration.class)
 @Import({EncryptedVulcanSecretStore.class, VulcanRecoveryPersistence.class})
-public class PersistedBaselineConfiguration {
+class SessionPersistenceTestConfiguration {
   @Bean
   Clock clock() {
     return Clock.systemUTC();

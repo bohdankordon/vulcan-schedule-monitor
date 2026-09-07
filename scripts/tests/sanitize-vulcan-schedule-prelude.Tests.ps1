@@ -1,7 +1,7 @@
 # Entirely synthetic, including CLI fixtures. Never reads .dev or provider captures.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$sanitizer = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../sanitize-vulcan-schedule-har.ps1'))
+$sanitizer = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../diagnostics/sanitize-vulcan-schedule-har.ps1'))
 . $sanitizer
 $script:preludeCases = 0
 $script:preludeCase = 'setup'

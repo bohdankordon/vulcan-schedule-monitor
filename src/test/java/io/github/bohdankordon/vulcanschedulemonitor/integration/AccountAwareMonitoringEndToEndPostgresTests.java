@@ -6,6 +6,7 @@ import static com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlPathEqualTo;
 import static com.github.tomakehurst.wiremock.stubbing.Scenario.STARTED;
 import static io.github.bohdankordon.vulcanschedulemonitor.testsupport.VulcanFixtures.text;
+import static io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.SessionMaterialTestSupport.cookiePairs;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -138,8 +139,7 @@ class AccountAwareMonitoringEndToEndPostgresTests extends PostgresIntegrationTes
     var result = productionCoordinator().refreshSuccessfulWeek(current);
 
     assertThat(result.baselineEstablishedNow()).isTrue();
-    assertThat(
-            sessions.loadCurrent(owner.accountId()).snapshotMaterial().cookiePairsForDiagnostics())
+    assertThat(cookiePairs(sessions.loadCurrent(owner.accountId()).snapshotMaterial()))
         .contains("rotated=after-weekly");
     byte[] ciphertext =
         jdbc.queryForObject(
@@ -284,8 +284,7 @@ class AccountAwareMonitoringEndToEndPostgresTests extends PostgresIntegrationTes
     assertThat(result.baselineEstablishedNow()).isTrue();
     assertThat(fakes.authenticationCalls).hasValue(1);
     server.verify(2, postRequestedFor(urlPathEqualTo(owner.applicationPath() + SCHEDULE_ENDPOINT)));
-    assertThat(
-            sessions.loadCurrent(owner.accountId()).snapshotMaterial().cookiePairsForDiagnostics())
+    assertThat(cookiePairs(sessions.loadCurrent(owner.accountId()).snapshotMaterial()))
         .contains("session=recovered", "rotated=after-recovery")
         .doesNotContain("session=expired");
     assertThat(

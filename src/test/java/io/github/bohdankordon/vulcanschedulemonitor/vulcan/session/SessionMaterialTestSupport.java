@@ -1,8 +1,19 @@
 package io.github.bohdankordon.vulcanschedulemonitor.vulcan.session;
 
-/** Test-source adapter: secret comparisons remain local; only booleans/bounded counts escape. */
-public final class SessionFidelityDiagnostics {
-  private SessionFidelityDiagnostics() {}
+/**
+ * Synthetic test helpers; comparison/topology observations contain only booleans/bounded counts.
+ */
+public final class SessionMaterialTestSupport {
+  private SessionMaterialTestSupport() {}
+
+  /** Lossy rendering for synthetic assertions only; no production caller or logging. */
+  public static String cookiePairs(VulcanSessionMaterial material) {
+    if (material.cookieRepresentation() == VulcanSessionMaterial.CookieRepresentation.LEGACY_HEADER)
+      return material.legacyCookieHeader();
+    return material.cookies().stream()
+        .map(cookie -> cookie.name() + "=" + cookie.value())
+        .collect(java.util.stream.Collectors.joining("; "));
+  }
 
   public record MaterialComparison(
       boolean applicationBaseSame,
@@ -47,7 +58,11 @@ public final class SessionFidelityDiagnostics {
   }
 
   public static CookieTopology topology(VulcanSession session) {
-    var observation = session.cookieTopologyForDiagnostics();
+    var observation =
+        CookieTopologyObservation.observe(
+            session.snapshotMaterial().cookies().stream()
+                .map(VulcanCookieMaterial::toCookie)
+                .toList());
     return new CookieTopology(
         observation.totalCookieCount(),
         observation.duplicateNamePresent(),

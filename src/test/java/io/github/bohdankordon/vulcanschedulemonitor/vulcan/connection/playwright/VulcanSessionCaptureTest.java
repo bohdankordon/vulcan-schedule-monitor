@@ -1,5 +1,6 @@
 package io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.playwright;
 
+import static io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.SessionMaterialTestSupport.cookiePairs;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -45,7 +46,7 @@ class VulcanSessionCaptureTest {
     assertThat(material.refererUri().getPath()).startsWith("/tenant/unit/");
     assertThat(material.requestVerificationToken()).isEqualTo("synthetic-verification");
     assertThat(material.appGuid()).isEqualTo("synthetic-guid");
-    assertThat(material.cookiePairsForDiagnostics())
+    assertThat(cookiePairs(material))
         .contains("UnexpectedCookie=one", "FutureCookie=two")
         .doesNotContain("Foreign");
   }

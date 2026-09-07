@@ -1,5 +1,6 @@
 package io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.playwright;
 
+import static io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.SessionMaterialTestSupport.cookiePairs;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.*;
@@ -208,7 +209,7 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
       var session = authenticator.authenticate(request);
       assertThat(session.applicationBaseUri())
           .isEqualTo(URI.create("https://school.vulcan.net.pl/synthetic/"));
-      assertThat(session.cookiePairsForDiagnostics()).isEqualTo("SyntheticCookie=synthetic-value");
+      assertThat(cookiePairs(session)).isEqualTo("SyntheticCookie=synthetic-value");
       assertThat(logs.list).isEmpty();
       verify(diagnostics).pass(Stage.SESSION_CAPTURE);
     }
@@ -466,20 +467,7 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
                       PlaywrightVulcanBrowserAuthenticator.formatSessionCaptureFailure(
                           expected, category));
               SessionCaptureDiagnosticsTest.assertFiniteLog(event.getFormattedMessage());
-              assertThat(event.getArgumentArray())
-                  .containsExactly(
-                      BrowserAuthStage.SESSION_CAPTURE,
-                      expected.failure(),
-                      expected.allowedRequests(),
-                      expected.completeRequests(),
-                      expected.sawReferer(),
-                      expected.sawVerificationToken(),
-                      expected.sawAppGuid(),
-                      expected.sawAllRequiredHeadersTogether(),
-                      expected.candidates(),
-                      expected.candidatesWithCookies(),
-                      expected.cookieCount(),
-                      category);
+              assertThat(event.getArgumentArray()).isNull();
               assertThat(event.getThrowableProxy()).isNull();
             });
   }
@@ -812,8 +800,7 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
                       "stage=INITIAL_PORTAL_CONSENT consentOperation=DISMISS_WAIT dismissFailure="
                           + failure.name())
                   .endsWith(" category=" + category.name());
-              assertThat(event.getArgumentArray())
-                  .allSatisfy(value -> assertThat(value).isInstanceOf(Enum.class));
+              assertThat(event.getArgumentArray()).isNull();
               assertThat(event.getThrowableProxy()).isNull();
             });
     verify(consent.accept()).click(any(Locator.ClickOptions.class));
@@ -1024,11 +1011,7 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
                       USERNAME,
                       PASSWORD);
               assertThat(event.getThrowableProxy()).isNull();
-              assertThat(event.getArgumentArray())
-                  .allSatisfy(
-                      value ->
-                          assertThat(value instanceof Enum<?> || value instanceof Boolean)
-                              .isTrue());
+              assertThat(event.getArgumentArray()).isNull();
               if (operation == PrivacyConsentOperation.DISMISS_WAIT) {
                 assertThat(event.getFormattedMessage()).contains(" dismissFailure=WAIT_TIMEOUT ");
               } else {

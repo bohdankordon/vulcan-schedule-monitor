@@ -42,10 +42,10 @@ class SessionPayloadV2Test {
     var bytes = codec.encodeSession(material);
     assertThat(java.nio.ByteBuffer.wrap(bytes).getInt()).isEqualTo(0x56534D32);
     var decoded = codec.decodeSession(bytes);
-    assertThat(SessionFidelityDiagnostics.compare(material, decoded).allSame()).isTrue();
+    assertThat(SessionMaterialTestSupport.compare(material, decoded).allSame()).isTrue();
     assertThat(Arrays.equals(bytes, codec.encodeSession(decoded))).isTrue();
     assertThat(
-            SessionFidelityDiagnostics.compare(
+            SessionMaterialTestSupport.compare(
                     decoded, VulcanSession.fromMaterial(decoded).snapshotMaterial())
                 .allSame())
         .isTrue();

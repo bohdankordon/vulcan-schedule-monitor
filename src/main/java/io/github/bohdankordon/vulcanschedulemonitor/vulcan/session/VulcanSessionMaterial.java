@@ -2,7 +2,6 @@ package io.github.bohdankordon.vulcanschedulemonitor.vulcan.session;
 
 import java.net.URI;
 import java.util.*;
-import java.util.stream.Collectors;
 
 /** Minimum secret material needed to reconstruct an authenticated VULCAN HTTP session. */
 public final class VulcanSessionMaterial {
@@ -96,18 +95,6 @@ public final class VulcanSessionMaterial {
   public String legacyCookieHeader() {
     if (cookies != null) throw new IllegalStateException("Legacy cookie header unavailable");
     return cookieHeader;
-  }
-
-  /**
-   * Secret-bearing, lossy rendering for tests/diagnostics only. Never persistence or routing
-   * authority.
-   */
-  public String cookiePairsForDiagnostics() {
-    return cookies == null
-        ? cookieHeader
-        : cookies.stream()
-            .map(cookie -> cookie.name() + "=" + cookie.value())
-            .collect(Collectors.joining("; "));
   }
 
   public int cookieCount() {

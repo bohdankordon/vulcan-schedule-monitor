@@ -1,5 +1,6 @@
 package io.github.bohdankordon.vulcanschedulemonitor.vulcan.session;
 
+import static io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.SessionMaterialTestSupport.cookiePairs;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.sun.net.httpserver.HttpServer;
@@ -11,7 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
-class SessionFidelityDiagnosticsTest {
+class SessionMaterialTestSupportTest {
   private static final URI BASE = URI.create("http://127.0.0.1/SECRET_TENANT_PATH/");
 
   static VulcanSessionMaterial material(String cookies) {
@@ -27,8 +28,8 @@ class SessionFidelityDiagnosticsTest {
   void cookieOnlyDifferenceAndOrderingHaveExactMultisetSemantics() {
     var a = material("SECRET_NAME=SUPER_SECRET_COOKIE; second=B");
     var reordered = material("second=B; SECRET_NAME=SUPER_SECRET_COOKIE");
-    assertThat(SessionFidelityDiagnostics.compare(a, reordered).allSame()).isTrue();
-    var comparison = SessionFidelityDiagnostics.compare(a, material("SECRET_NAME=CHANGED"));
+    assertThat(SessionMaterialTestSupport.compare(a, reordered).allSame()).isTrue();
+    var comparison = SessionMaterialTestSupport.compare(a, material("SECRET_NAME=CHANGED"));
     assertThat(comparison.applicationBaseSame()).isTrue();
     assertThat(comparison.refererSame()).isTrue();
     assertThat(comparison.verificationTokenSame()).isTrue();
@@ -39,7 +40,7 @@ class SessionFidelityDiagnosticsTest {
     assertThat(comparison.cookieCountChanged()).isTrue();
     safe(comparison.toString());
     assertThat(
-            SessionFidelityDiagnostics.compare(
+            SessionMaterialTestSupport.compare(
                     a, material("SECRET_NAME=SUPER_SECRET_COOKIE; second=B; second=B"))
                 .allSame())
         .isFalse();
@@ -55,8 +56,8 @@ class SessionFidelityDiagnosticsTest {
             changed == 1 ? BASE.resolve("another") : original.refererUri(),
             changed == 2 ? "other" : original.requestVerificationToken(),
             changed == 3 ? "other" : original.appGuid(),
-            original.cookiePairsForDiagnostics());
-    var c = SessionFidelityDiagnostics.compare(original, other);
+            cookiePairs(original));
+    var c = SessionMaterialTestSupport.compare(original, other);
     assertThat(
             List.of(
                 c.applicationBaseSame(),
@@ -72,11 +73,11 @@ class SessionFidelityDiagnosticsTest {
   @Test
   void uniqueNamesSurviveAndHaveNoDuplicateTopology() {
     var session = VulcanSession.fromMaterial(material("SECRET_NAME=SUPER_SECRET_COOKIE; second=B"));
-    var topology = SessionFidelityDiagnostics.topology(session);
+    var topology = SessionMaterialTestSupport.topology(session);
     assertThat(topology)
-        .isEqualTo(new SessionFidelityDiagnostics.CookieTopology(2, false, false, false));
-    assertThat(SessionFidelityDiagnostics.roundTrip(session.snapshotMaterial()))
-        .isEqualTo(new SessionFidelityDiagnostics.MaterialRoundTrip(true, 2, 2));
+        .isEqualTo(new SessionMaterialTestSupport.CookieTopology(2, false, false, false));
+    assertThat(SessionMaterialTestSupport.roundTrip(session.snapshotMaterial()))
+        .isEqualTo(new SessionMaterialTestSupport.MaterialRoundTrip(true, 2, 2));
     safe(topology.toString());
   }
 
@@ -121,19 +122,19 @@ class SessionFidelityDiagnosticsTest {
                     .statusCode())
             .isEqualTo(204);
       }
-      var topology = SessionFidelityDiagnostics.topology(session);
+      var topology = SessionMaterialTestSupport.topology(session);
       assertThat(topology)
           .isEqualTo(
-              new SessionFidelityDiagnostics.CookieTopology(
+              new SessionMaterialTestSupport.CookieTopology(
                   differentPath ? 2 : 1, differentPath, differentPath, false));
       var snapshot = session.snapshotMaterial();
-      var roundTrip = SessionFidelityDiagnostics.roundTrip(snapshot);
+      var roundTrip = SessionMaterialTestSupport.roundTrip(snapshot);
       assertThat(roundTrip)
           .isEqualTo(
-              new SessionFidelityDiagnostics.MaterialRoundTrip(
+              new SessionMaterialTestSupport.MaterialRoundTrip(
                   true, differentPath ? 2 : 1, differentPath ? 2 : 1));
-      assertThat(snapshot.cookiePairsForDiagnostics().contains("SUPER_SECRET_COOKIE_NEW")).isTrue();
-      assertThat(snapshot.cookiePairsForDiagnostics().contains("SUPER_SECRET_COOKIE_OLD"))
+      assertThat(cookiePairs(snapshot).contains("SUPER_SECRET_COOKIE_NEW")).isTrue();
+      assertThat(cookiePairs(snapshot).contains("SUPER_SECRET_COOKIE_OLD"))
           .isEqualTo(differentPath);
       assertThat(calls.get()).isEqualTo(1); // No retry and reconstruction performs no request.
       safe(topology.toString() + roundTrip);
@@ -170,7 +171,7 @@ class SessionFidelityDiagnosticsTest {
         .isEqualTo(new CookieTopologyObservation(1000, true, true, false));
     String pairs = String.join("; ", Collections.nCopies(1001, "SECRET_NAME=SUPER_SECRET_COOKIE"));
     var comparison =
-        SessionFidelityDiagnostics.compare(material(pairs), material(pairs + "; extra=B"));
+        SessionMaterialTestSupport.compare(material(pairs), material(pairs + "; extra=B"));
     assertThat(comparison.expectedCookieCount()).isEqualTo(1000);
     assertThat(comparison.actualCookieCount()).isEqualTo(1000);
     assertThat(comparison.cookieCountChanged()).isTrue();

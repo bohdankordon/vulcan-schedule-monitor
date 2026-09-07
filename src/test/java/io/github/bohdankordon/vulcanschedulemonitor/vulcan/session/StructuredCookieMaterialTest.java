@@ -138,7 +138,7 @@ class StructuredCookieMaterialTest {
             new VulcanCookieMaterial(
                 COOKIE.name(), COOKIE.value(), COOKIE.path(), COOKIE.domain(), true, false))) {
       var comparison =
-          SessionFidelityDiagnostics.compare(material(List.of(COOKIE)), material(List.of(changed)));
+          SessionMaterialTestSupport.compare(material(List.of(COOKIE)), material(List.of(changed)));
       assertThat(comparison.cookieMaterialSame()).isFalse();
       safe(comparison.toString());
     }
@@ -183,7 +183,7 @@ class StructuredCookieMaterialTest {
             base, base, "SUPER_SECRET_TOKEN", "SUPER_SECRET_APPGUID", List.of(parent, child));
     var session = VulcanSession.fromMaterial(material);
     assertThat(material.sameCookiesAs(session.snapshotMaterial())).isTrue();
-    assertThat(SessionFidelityDiagnostics.topology(session).duplicateNameDifferentDomainPresent())
+    assertThat(SessionMaterialTestSupport.topology(session).duplicateNameDifferentDomainPresent())
         .isTrue();
     try (var client = session.configure(java.net.http.HttpClient.newBuilder()).build()) {
       var handler = client.cookieHandler().orElseThrow();

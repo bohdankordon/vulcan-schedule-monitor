@@ -1,7 +1,7 @@
 # Synthetic fixtures only. No provider access and no external test modules.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$scriptFile = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../sanitize-vulcan-schedule-har.ps1'))
+$scriptFile = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../diagnostics/sanitize-vulcan-schedule-har.ps1'))
 . $scriptFile
 $script:caseCount = 0
 $script:caseName = 'setup'

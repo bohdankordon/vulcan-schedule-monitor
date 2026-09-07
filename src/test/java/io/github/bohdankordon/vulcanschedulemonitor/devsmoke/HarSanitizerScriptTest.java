@@ -59,8 +59,8 @@ class HarSanitizerScriptTest {
     assertThat(new String(tracked.getInputStream().readAllBytes(), StandardCharsets.UTF_8))
         .isBlank();
     String script =
-        Files.readString(Path.of("scripts/sanitize-vulcan-schedule-har.ps1"))
-            + Files.readString(Path.of("scripts/lib/vulcan-har-prelude.ps1"));
+        Files.readString(Path.of("scripts/diagnostics/sanitize-vulcan-schedule-har.ps1"))
+            + Files.readString(Path.of("scripts/diagnostics/lib/vulcan-har-prelude.ps1"));
     assertThat(script)
         .doesNotContain(
             "Invoke-WebRequest",

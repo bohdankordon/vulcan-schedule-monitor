@@ -73,9 +73,9 @@ class StructuredCookieCaptureLocalBrowserTest {
       assertThat(material.cookies().stream().filter(VulcanCookieMaterial::httpOnly).count())
           .isEqualTo(1);
       var session = VulcanSession.fromMaterial(material);
-      assertThat(SessionFidelityDiagnostics.topology(session).duplicateNameDifferentPathPresent())
+      assertThat(SessionMaterialTestSupport.topology(session).duplicateNameDifferentPathPresent())
           .isTrue();
-      assertThat(SessionFidelityDiagnostics.compare(material, session.snapshotMaterial()).allSame())
+      assertThat(SessionMaterialTestSupport.compare(material, session.snapshotMaterial()).allSame())
           .isTrue();
       assertThat(captured.toString() + material + material.cookies())
           .doesNotContain("SUPER_SECRET", "SECRET_COOKIE_PATH", "127.0.0.1");
