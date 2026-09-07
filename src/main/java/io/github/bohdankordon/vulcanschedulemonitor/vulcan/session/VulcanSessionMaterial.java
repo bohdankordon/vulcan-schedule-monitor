@@ -45,6 +45,31 @@ public final class VulcanSessionMaterial {
     return cookieHeader;
   }
 
+  public enum UriValidationFailure {
+    NONE,
+    APPLICATION_BASE,
+    REFERER
+  }
+
+  /**
+   * Read-only diagnostic for an already rejected candidate. Reuses the exact constructor URI
+   * checks; NONE says nothing about the remaining secret material or authentication success.
+   */
+  public static UriValidationFailure diagnoseUriValidation(URI applicationBase, URI referer) {
+    URI base;
+    try {
+      base = normalize(applicationBase);
+    } catch (IllegalArgumentException | NullPointerException ignored) {
+      return UriValidationFailure.APPLICATION_BASE;
+    }
+    try {
+      requireSameOrigin(referer, base);
+    } catch (IllegalArgumentException | NullPointerException ignored) {
+      return UriValidationFailure.REFERER;
+    }
+    return UriValidationFailure.NONE;
+  }
+
   @Override
   public String toString() {
     return "VulcanSessionMaterial[secrets=[redacted]]";

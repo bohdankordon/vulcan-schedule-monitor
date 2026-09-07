@@ -1077,3 +1077,75 @@ the default run. Spotless and `git diff --check` passed. The complete
 `noLongerBlocking()` body, selector/timeout constants and existing
 discovery/ancestry/trust/action-resolution/form/page safety rules were compared
 against the pre-change HEAD and remained unchanged.
+
+## Session capture observation (2026-09-07, build/test only)
+
+A separately authorized real `/connect` attempt at approximately **2026-09-07
+10:20 local** reported `stage=SESSION_CAPTURE category=PROTOCOL_FAILURE`; the UI
+said the authenticated session could not be verified. This attempt progressed
+past the previously failing consent stage and reached session material capture,
+which then failed. The exact missing or rejected component is not yet known.
+This does not prove that consent is permanently fixed or that authentication
+definitively succeeded. It is separate from the historical schedule-429 findings.
+M-sequence remains pending until a fresh normal `/connect` succeeds.
+
+The diagnostic accumulator counts only already-allowlisted observed requests.
+Header reads occur in their existing order, once each. Their nonblank-presence
+booleans are recorded immediately; no request URI, header value, exception,
+cookie name/value, or hash enters the accumulator. Incomplete observations are
+still discarded from the production capture list. Allowed-request counts saturate
+at six; complete-request and candidate counts saturate at two. The individually
+seen header facts are aggregate facts across requests. Only an actual observation
+with all three required headers increments the complete count and sets
+`sawAllRequiredHeadersTogether`; distributed headers never form a candidate.
+
+Capture still scans newest-to-oldest, tries each eligible complete candidate once,
+and stops at the first valid material. Candidate counts describe eligible
+candidates actually reached. Candidates-with-cookies counts describe candidates
+that reached the existing cookie-filter step and produced a nonblank same-origin
+cookie header. No additional cookie filtering is performed for candidates rejected
+earlier. After material construction rejects a candidate, a read-only URI diagnosis
+reuses the exact existing `normalize()` and `requireSameOrigin()` validators to
+distinguish base/Referer rejection from other material rejection. The constructor
+and all its acceptance checks remain unchanged; diagnosis cannot accept a candidate.
+
+After exhausted candidate processing, the deterministic aggregate precedence is
+`MATERIAL_REJECTED` > `REFERER_REJECTED` > `APPLICATION_BASE_REJECTED` >
+`NO_MATCHING_COOKIES` > `OTHER_PROTOCOL_FAILURE`. If no eligible candidate failed,
+zero allowed requests yields `NO_ALLOWED_REQUEST`; allowed requests without a
+complete observation yield `NO_COMPLETE_REQUEST`. An unexpected abort before
+exhaustion with complete observations yields `OTHER_PROTOCOL_FAILURE`, so an
+earlier handled rejection cannot conceal it. A returned session material clears
+the failure classification to `NOT_APPLICABLE`; no success diagnostic is logged
+and reaching the capture stage is not itself an authentication-success claim.
+
+Cookie lookup is unchanged: the last complete observation selects the one browser
+context lookup, even when older candidates are later examined. Its returned list
+size is converted immediately to `ZERO`, `ONE`, `TWO_TO_FOUR`, or `FIVE_PLUS`.
+`UNAVAILABLE` means no completed lookup, including no complete observation or a
+lookup exception. This count is the lookup result count, not a claim that every
+cookie matched every candidate. No cookie names, values, lengths or hashes are
+diagnostic output.
+
+Only `SESSION_CAPTURE` failure logging gains the finite `captureFailure`,
+`allowedRequests`, `completeRequests`, four header-presence booleans, `candidates`,
+`candidatesWithCookies`, and `cookieCount` fields alongside the existing category.
+The logger receives only enums and booleans. Non-capture failure messages and
+ordinary success logging retain their existing shapes. Failure categories,
+allowlisted URIs, application-base derivation, same-origin/path requirements,
+cookie selection, candidate order, login timing and retries are unchanged.
+
+This is build/test only. Tests use synthetic material and mocked browser events;
+no real VULCAN request, `/connect` retry, monitoring, M-sequence, or schedule
+baseline was run. Another real attempt requires separate authorization after review.
+
+Validation: 55 new deterministic cases passed in full Maven `verify`, which
+reported 861 tests, zero failures/errors and five optional Chromium entries
+skipped. The dedicated capture/auth/privacy test run also passed. No Chromium
+test was enabled for this Java-only observation change. Tests cover incomplete
+and distributed headers, bounded buckets, each rejection kind, deterministic
+precedence, unexpected aborts, unchanged newest-first selection and last-complete
+cookie lookup, successful material capture, finite logger arguments and secret
+redaction. Spotless and `git diff --check` passed. Source comparison confirmed
+unchanged base derivation, same-origin rules, material constructor/validators,
+and cookie-selection loop apart from its count observation.

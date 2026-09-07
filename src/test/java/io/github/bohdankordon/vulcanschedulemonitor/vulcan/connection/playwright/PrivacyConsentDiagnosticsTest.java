@@ -168,6 +168,8 @@ class PrivacyConsentDiagnosticsTest {
   @Test
   void formatterAllowsOnlyFiniteValuesAndOmitsStaleConsentOutsideConsentStages() {
     for (var stage : BrowserAuthStage.values()) {
+      if (stage == BrowserAuthStage.SESSION_CAPTURE)
+        continue; // Separate capture formatter needs its observation.
       for (var operation : PrivacyConsentOperation.values()) {
         for (var category : VulcanAuthFailureCategory.values()) {
           String message =

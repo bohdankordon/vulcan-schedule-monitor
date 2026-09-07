@@ -55,13 +55,15 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
         new AtomicReference<>(PrivacyConsentOperation.NOT_STARTED);
     AtomicReference<PrivacyConsentDismissObservation> dismissal =
         new AtomicReference<>(PrivacyConsentDismissObservation.NONE);
+    SessionCaptureDiagnostics captureDiagnostics = new SessionCaptureDiagnostics();
     List<BrowserRequestObservation> observations = new CopyOnWriteArrayList<>();
     try (Playwright playwright = Playwright.create();
         Browser browser =
             playwright.chromium().launch(new BrowserType.LaunchOptions().setHeadless(headless));
         BrowserContext context = browser.newContext();
         Page page = context.newPage()) {
-      page.onRequest(observed -> observeAuthenticatedRequest(observed, observations));
+      page.onRequest(
+          observed -> observeAuthenticatedRequest(observed, observations, captureDiagnostics));
       page.navigate(request.portalUri().toASCIIString());
       requireAllowedPage(page);
       stage = BrowserAuthStage.INITIAL_PORTAL_CONSENT;
@@ -111,7 +113,10 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
       VulcanSessionCapture capture = new VulcanSessionCapture(portalUrls);
       try {
         VulcanSessionMaterial material =
-            capture.capture(observations, cookiesForObservedApplication(context, observations));
+            capture.capture(
+                observations,
+                cookiesForObservedApplication(context, observations, captureDiagnostics),
+                captureDiagnostics);
         diagnostics.pass(Stage.SESSION_CAPTURE);
         return material;
       } catch (VulcanAuthenticationException exception) {
@@ -122,17 +127,23 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
         throw exception;
       }
     } catch (VulcanAuthenticationException exception) {
-      logFailure(stage, consentOperation.get(), dismissal.get(), exception.category());
+      logFailure(
+          stage, consentOperation.get(), dismissal.get(), captureDiagnostics, exception.category());
       throw exception;
     } catch (PlaywrightException exception) {
       logFailure(
-          stage, consentOperation.get(), dismissal.get(), VulcanAuthFailureCategory.TRANSIENT);
+          stage,
+          consentOperation.get(),
+          dismissal.get(),
+          captureDiagnostics,
+          VulcanAuthFailureCategory.TRANSIENT);
       throw new VulcanAuthenticationException(VulcanAuthFailureCategory.TRANSIENT);
     } catch (RuntimeException exception) {
       logFailure(
           stage,
           consentOperation.get(),
           dismissal.get(),
+          captureDiagnostics,
           VulcanAuthFailureCategory.PROTOCOL_FAILURE);
       throw new VulcanAuthenticationException(VulcanAuthFailureCategory.PROTOCOL_FAILURE);
     }
@@ -142,8 +153,27 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
       BrowserAuthStage stage,
       PrivacyConsentOperation operation,
       PrivacyConsentDismissObservation dismissal,
+      SessionCaptureDiagnostics captureDiagnostics,
       VulcanAuthFailureCategory category) {
-    if (!isConsentStage(stage)) {
+    if (stage == BrowserAuthStage.SESSION_CAPTURE) {
+      SessionCaptureObservation capture = captureDiagnostics.snapshot();
+      logger.warn(
+          "VULCAN browser authentication failed: stage={} captureFailure={} allowedRequests={}"
+              + " completeRequests={} sawReferer={} sawVerificationToken={} sawAppGuid={}"
+              + " sawAllRequiredHeadersTogether={} candidates={} candidatesWithCookies={} cookieCount={} category={}",
+          stage,
+          capture.failure(),
+          capture.allowedRequests(),
+          capture.completeRequests(),
+          capture.sawReferer(),
+          capture.sawVerificationToken(),
+          capture.sawAppGuid(),
+          capture.sawAllRequiredHeadersTogether(),
+          capture.candidates(),
+          capture.candidatesWithCookies(),
+          capture.cookieCount(),
+          category);
+    } else if (!isConsentStage(stage)) {
       logger.warn("VULCAN browser authentication failed: stage={} category={}", stage, category);
     } else if (operation != PrivacyConsentOperation.DISMISS_WAIT) {
       logger.warn(
@@ -172,6 +202,9 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
       PrivacyConsentOperation operation,
       PrivacyConsentDismissObservation dismissal,
       VulcanAuthFailureCategory category) {
+    if (stage == BrowserAuthStage.SESSION_CAPTURE) {
+      throw new IllegalArgumentException("Capture observation required");
+    }
     return "VULCAN browser authentication failed: stage="
         + stage.name()
         + (isConsentStage(stage) ? " consentOperation=" + operation.name() : "")
@@ -187,6 +220,32 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
                 + " anyOwnerAriaHidden="
                 + dismissal.anyOwnerAriaHidden().name()
             : "")
+        + " category="
+        + category.name();
+  }
+
+  static String formatSessionCaptureFailure(
+      SessionCaptureObservation capture, VulcanAuthFailureCategory category) {
+    return "VULCAN browser authentication failed: stage=SESSION_CAPTURE captureFailure="
+        + capture.failure().name()
+        + " allowedRequests="
+        + capture.allowedRequests().name()
+        + " completeRequests="
+        + capture.completeRequests().name()
+        + " sawReferer="
+        + capture.sawReferer()
+        + " sawVerificationToken="
+        + capture.sawVerificationToken()
+        + " sawAppGuid="
+        + capture.sawAppGuid()
+        + " sawAllRequiredHeadersTogether="
+        + capture.sawAllRequiredHeadersTogether()
+        + " candidates="
+        + capture.candidates().name()
+        + " candidatesWithCookies="
+        + capture.candidatesWithCookies().name()
+        + " cookieCount="
+        + capture.cookieCount().name()
         + " category="
         + category.name();
   }
@@ -246,21 +305,27 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
     }
   }
 
-  private void observeAuthenticatedRequest(
-      Request observed, List<BrowserRequestObservation> observations) {
+  void observeAuthenticatedRequest(
+      Request observed,
+      List<BrowserRequestObservation> observations,
+      SessionCaptureDiagnostics captureDiagnostics) {
     try {
       URI uri = URI.create(observed.url());
       if (!portalUrls.isAllowedRuntimeUri(uri)) {
         return;
       }
+      captureDiagnostics.allowedRequest();
+      String referer = observed.headerValue("referer");
+      captureDiagnostics.referer(referer != null && !referer.isBlank());
+      String verification = observed.headerValue("x-v-requestverificationtoken");
+      captureDiagnostics.verificationToken(verification != null && !verification.isBlank());
+      String appGuid = observed.headerValue("x-v-appguid");
+      captureDiagnostics.appGuid(appGuid != null && !appGuid.isBlank());
       BrowserRequestObservation observation =
-          new BrowserRequestObservation(
-              uri,
-              observed.headerValue("referer"),
-              observed.headerValue("x-v-requestverificationtoken"),
-              observed.headerValue("x-v-appguid"));
+          new BrowserRequestObservation(uri, referer, verification, appGuid);
       if (observation.isComplete()) {
         observations.add(observation);
+        captureDiagnostics.completeRequest();
       }
     } catch (RuntimeException ignored) {
       // Malformed or incomplete metadata is discarded immediately.
@@ -340,7 +405,9 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
   }
 
   private static List<BrowserCookieObservation> cookiesForObservedApplication(
-      BrowserContext context, List<BrowserRequestObservation> observations) {
+      BrowserContext context,
+      List<BrowserRequestObservation> observations,
+      SessionCaptureDiagnostics captureDiagnostics) {
     for (int index = observations.size() - 1; index >= 0; index--) {
       BrowserRequestObservation observation = observations.get(index);
       if (!observation.isComplete()) {
@@ -348,6 +415,7 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
       }
       URI origin = toOrigin(observation.uri());
       List<Cookie> cookies = context.cookies(observation.uri().toASCIIString());
+      captureDiagnostics.cookies(cookies.size());
       return cookies.stream()
           .map(cookie -> new BrowserCookieObservation(origin, cookie.name, cookie.value))
           .toList();

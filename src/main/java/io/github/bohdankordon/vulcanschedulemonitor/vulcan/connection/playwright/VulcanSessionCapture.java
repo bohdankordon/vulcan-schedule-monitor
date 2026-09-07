@@ -20,6 +20,13 @@ public final class VulcanSessionCapture {
 
   public VulcanSessionMaterial capture(
       List<BrowserRequestObservation> requests, List<BrowserCookieObservation> cookies) {
+    return capture(requests, cookies, new SessionCaptureDiagnostics());
+  }
+
+  VulcanSessionMaterial capture(
+      List<BrowserRequestObservation> requests,
+      List<BrowserCookieObservation> cookies,
+      SessionCaptureDiagnostics diagnostics) {
     for (int index = requests.size() - 1; index >= 0; index--) {
       BrowserRequestObservation request = requests.get(index);
       String verification = request.requestVerificationToken();
@@ -31,22 +38,46 @@ public final class VulcanSessionCapture {
           || isBlank(referer)) {
         continue;
       }
+      diagnostics.candidate();
+      SessionCaptureFailureKind rejection = SessionCaptureFailureKind.APPLICATION_BASE_REJECTED;
       try {
         URI base = deriveApplicationBase(request.uri());
+        rejection = SessionCaptureFailureKind.REFERER_REJECTED;
         URI refererUri = URI.create(referer);
+        rejection = SessionCaptureFailureKind.OTHER_PROTOCOL_FAILURE;
         String cookieHeader =
             cookies.stream()
                 .filter(cookie -> sameOrigin(cookie.origin(), base))
                 .map(BrowserCookieObservation::headerPair)
                 .collect(Collectors.joining("; "));
         if (cookieHeader.isBlank()) {
+          diagnostics.rejected(SessionCaptureFailureKind.NO_MATCHING_COOKIES);
           continue;
         }
-        return new VulcanSessionMaterial(base, refererUri, verification, appGuid, cookieHeader);
+        diagnostics.candidateWithCookies();
+        rejection = SessionCaptureFailureKind.MATERIAL_REJECTED;
+        VulcanSessionMaterial material;
+        try {
+          material =
+              new VulcanSessionMaterial(base, refererUri, verification, appGuid, cookieHeader);
+        } catch (IllegalArgumentException exception) {
+          // Diagnose only after rejection, with the same URI validators used by the constructor.
+          rejection =
+              switch (VulcanSessionMaterial.diagnoseUriValidation(base, refererUri)) {
+                case APPLICATION_BASE -> SessionCaptureFailureKind.APPLICATION_BASE_REJECTED;
+                case REFERER -> SessionCaptureFailureKind.REFERER_REJECTED;
+                case NONE -> SessionCaptureFailureKind.MATERIAL_REJECTED;
+              };
+          throw exception;
+        }
+        diagnostics.materialCaptured();
+        return material;
       } catch (IllegalArgumentException exception) {
+        diagnostics.rejected(rejection);
         // This observation is not a safe, complete application request.
       }
     }
+    diagnostics.exhausted();
     throw new VulcanAuthenticationException(VulcanAuthFailureCategory.PROTOCOL_FAILURE);
   }
 
