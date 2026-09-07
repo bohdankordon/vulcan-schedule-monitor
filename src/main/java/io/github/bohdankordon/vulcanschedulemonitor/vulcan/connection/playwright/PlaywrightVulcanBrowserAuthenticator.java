@@ -404,7 +404,7 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
     return false;
   }
 
-  private static List<BrowserCookieObservation> cookiesForObservedApplication(
+  static List<BrowserCookieObservation> cookiesForObservedApplication(
       BrowserContext context,
       List<BrowserRequestObservation> observations,
       SessionCaptureDiagnostics captureDiagnostics) {
@@ -417,7 +417,7 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
       List<Cookie> cookies = context.cookies(observation.uri().toASCIIString());
       captureDiagnostics.cookies(cookies.size());
       return cookies.stream()
-          .map(cookie -> new BrowserCookieObservation(origin, cookie.name, cookie.value))
+          .map(cookie -> BrowserCookieObservation.fromPlaywright(origin, cookie))
           .toList();
     }
     return List.of();

@@ -154,7 +154,7 @@ public final class VulcanSchedule429Investigation {
         .keySet()
         .removeIf(
             key -> Set.of("cookie", "referer").contains(key.toLowerCase(java.util.Locale.ROOT)));
-    headers.put("Cookie", material.cookieHeader());
+    headers.put("Cookie", material.cookiePairsForDiagnostics());
     headers.put("Referer", material.refererUri().toASCIIString());
     Schedule429Structure.headers(report, "java", headers);
     report.put("java.method", "POST");

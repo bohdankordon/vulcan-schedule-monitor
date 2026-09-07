@@ -8,7 +8,6 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.List;
 import java.util.Objects;
-import java.util.stream.Collectors;
 
 public final class VulcanSessionCapture {
 
@@ -45,12 +44,9 @@ public final class VulcanSessionCapture {
         rejection = SessionCaptureFailureKind.REFERER_REJECTED;
         URI refererUri = URI.create(referer);
         rejection = SessionCaptureFailureKind.OTHER_PROTOCOL_FAILURE;
-        String cookieHeader =
-            cookies.stream()
-                .filter(cookie -> sameOrigin(cookie.origin(), base))
-                .map(BrowserCookieObservation::headerPair)
-                .collect(Collectors.joining("; "));
-        if (cookieHeader.isBlank()) {
+        var selectedCookies =
+            cookies.stream().filter(cookie -> sameOrigin(cookie.origin(), base)).toList();
+        if (selectedCookies.isEmpty()) {
           diagnostics.rejected(SessionCaptureFailureKind.NO_MATCHING_COOKIES);
           continue;
         }
@@ -59,7 +55,12 @@ public final class VulcanSessionCapture {
         VulcanSessionMaterial material;
         try {
           material =
-              new VulcanSessionMaterial(base, refererUri, verification, appGuid, cookieHeader);
+              VulcanSessionMaterial.structured(
+                  base,
+                  refererUri,
+                  verification,
+                  appGuid,
+                  selectedCookies.stream().map(BrowserCookieObservation::material).toList());
         } catch (IllegalArgumentException exception) {
           // Diagnose only after rejection, with the same URI validators used by the constructor.
           rejection =

@@ -72,23 +72,21 @@ public final class Schedule429Structure {
 
   public static void verificationDrift(
       Schedule429Report report, VulcanSessionMaterial postLogin, VulcanSessionMaterial verified) {
-    int before = cookiePairs(postLogin.cookieHeader()).size();
-    int after = cookiePairs(verified.cookieHeader()).size();
+    int before = postLogin.cookieCount();
+    int after = verified.cookieCount();
     String beforeContext = referer(postLogin.refererUri().toASCIIString());
     String afterContext = referer(verified.refererUri().toASCIIString());
     report.put("postLoginCookieCount", before);
     report.put("verifiedCookieCount", after);
     report.put("verificationChangedCookieCount", before != after);
-    report.put(
-        "verificationChangedCookieMaterial",
-        !cookiePairs(postLogin.cookieHeader()).equals(cookiePairs(verified.cookieHeader())));
+    report.put("verificationChangedCookieMaterial", !postLogin.sameCookiesAs(verified));
     report.put("postLoginRefererContext", beforeContext);
     report.put("verifiedRefererContext", afterContext);
     report.put("verificationChangedRefererContext", !beforeContext.equals(afterContext));
   }
 
   public static void initialCookies(Schedule429Report report, VulcanSessionMaterial material) {
-    report.put("postLoginCookieCount", cookiePairs(material.cookieHeader()).size());
+    report.put("postLoginCookieCount", material.cookieCount());
   }
 
   public static Map<String, String> formValues(String body) {

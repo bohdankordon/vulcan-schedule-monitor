@@ -1284,3 +1284,160 @@ material, codec, encryption, persistence and request logic were not modified.
 VULCAN requests = 0 for this work: synthetic loopback/Testcontainers only, no
 developer secrets or developer database rows inspected, and no real `/connect`,
 monitoring, M-sequence or schedule baseline run.
+
+## Confirmed cookie identity loss and VSM2 fix (2026-09-07, implementation offline)
+
+A subsequent separately authorized real M-sequence confirmed the cookie hypothesis.
+CURRENT returned **2xx JSON SUCCESS** and live cookies changed from 6 to 7.
+Safe topology reported duplicate names with different paths, but no different
+domains. The local material round-trip reduced 7 cookies to 6. Production
+persistence/reload likewise reported expected/actual counts 7/6 and cookie material
+unequal, while application base, Referer, verification token and AppGuid were all
+equal. `current.sessionPersistedAfterSuccess=false` deliberately interrupted the
+harness before NEXT. This matches the deterministic same-name/different-path
+reproduction and confirms a cookie representation/reconstruction bug. Codec,
+encryption and PostgreSQL preserve the material supplied to them.
+
+This confirms that successful VULCAN responses can create cookie topology which
+the old persistence representation corrupts. It does **not** establish whether
+that corruption caused any earlier HTTP 429. The historical initial-429 question
+is not declared solved. A fresh successful `/connect`, then a separately
+authorized M-sequence, is required after review; previously degraded legacy
+sessions cannot recover missing identities through migration alone.
+
+### Structured authority, validation and reconstruction
+
+`VulcanCookieMaterial` is an immutable, redacted record containing name, value,
+path, domain, Secure and HttpOnly. Modern `VulcanSessionMaterial` uses an immutable
+structured list as its sole cookie authority. Fresh Playwright capture and every
+live JDK session snapshot produce `STRUCTURED` material. The original string
+constructor explicitly represents `LEGACY_HEADER` material only.
+
+The structured limits are 1–1000 cookies and UTF-8 byte limits of 256 for a name,
+16384 for a value, 4096 for a path and 253 for a domain. Names must be nonblank
+HTTP tokens accepted by HttpCookie; cookie fields reject control characters,
+CR/LF and malformed Unicode. Values reject semicolon separators. Non-null paths
+must start with `/` and reject semicolons and backslashes; their literal path
+is otherwise retained, without URI normalization. Non-null domains accept DNS
+labels (including IPv4/localhost forms) and an optional leading dot, normalize
+case, and reject URI/userinfo/port syntax, empty labels and oversized labels.
+Null list entries and duplicate JDK identities (case-insensitive name/domain,
+exact path) fail closed rather than silently overwriting. Different paths or
+domains remain separate identities. All validation errors use fixed redacted
+messages without causes containing rejected values.
+
+Structured reconstruction creates each HttpCookie directly, sets all six fields,
+uses Cookie version 0 as the prior name/value seeding did, and adds it individually
+to CookieStore with the application URI association. It does not generate a
+synthetic Set-Cookie string. Non-null domains, including leading dots, retain
+their JDK domain-matching semantics; null-domain cookies are associated only with
+the application host by the JDK store. Cookie matching ignores ports, while the
+existing production request origin/port guard remains unchanged. The JDK does
+not expose a separate original host-only flag for received cookies: snapshots
+preserve its effective domain rather than inventing that history. This is not a
+replacement browser cookie engine or a relaxation of allowed request origins.
+Secure and HttpOnly are applied to the JDK cookie. Actual paths remain unchanged.
+An explicitly unavailable null path remains null and nonmatching under JDK path
+matching; it is not broadened to `/` or guessed from the application URI. Fresh
+Playwright conversion requires the metadata returned by the browser, including
+non-null path/domain and flags. The old three-argument synthetic observation API
+can still represent unavailable path/domain and the old effective false flags.
+
+### Lifetime decision
+
+This change deliberately retains the existing effective persisted session-cookie
+lifetime policy (option B), rather than claiming precise expiry preservation.
+Playwright exposes an absolute expiration timestamp in Unix seconds (or a session
+cookie indication). JDK HttpCookie exposes Max-Age relative to creation, but does
+not expose the original creation timestamp through its public API. Persisting
+that relative duration would incorrectly restart the duration at every reload.
+VSM2 therefore contains no expiry or relative Max-Age. Reconstruction uses session
+cookies (`maxAge=-1`), as V1 seeding already did. Live JDK expiration/removal still
+applies before snapshotting; this fix does not extend a live cookie's Max-Age.
+Precise durable expiry, SameSite, partitioning, Port and other cookie-engine
+features remain outside this identity/routing fix. No Java implementation
+internals are serialized.
+
+### Binary format and migration
+
+VSM2 is big-endian binary, in this exact order:
+
+```text
+int32 magic = 0x56534D32
+UTF-8 field: applicationBaseUri
+UTF-8 field: refererUri
+UTF-8 field: verification token
+UTF-8 field: AppGuid
+int32 cookie count
+repeated cookie records:
+  UTF-8 field: name
+  UTF-8 field: value
+  nullable UTF-8 field: path
+  nullable UTF-8 field: domain
+  byte Secure (only 0 or 1)
+  byte HttpOnly (only 0 or 1)
+```
+
+Each UTF-8 field has an int32 byte-length prefix. Only path/domain may use length
+`-1` for unavailable; all other negative lengths are rejected. The four session
+fields retain the codec's 1 MiB field bound. The VSM2 decoder also enforces cookie
+field/count limits, strict UTF-8, valid flags, a 32 MiB total payload limit, complete
+records, valid cookie material and no trailing bytes. It never partially accepts
+malformed records. No cookie payload is JSON-encoded or logged.
+
+VSM1 (`0x56534D31`, the existing five string fields) still decrypts and decodes as
+LEGACY material. It reconstructs with the original seeding behavior because its
+lost attributes cannot be recovered. Compatibility callers explicitly supplying
+LEGACY material can still encode V1 unchanged; all new browser captures and live
+snapshots encode V2. A successful normal `sessions.replace()` after loading V1
+persists the current structured snapshot as V2. No blind ciphertext rewrite or
+database schema migration occurs. AES keys, encrypted-envelope key version and
+account/session AAD remain unchanged: plaintext codec version is separate.
+
+### Diagnostic and caller audit
+
+The ambiguous `cookieHeader()` accessor was removed. `legacyCookieHeader()` is
+explicitly legacy-only and rejects structured access. The separately named
+`cookiePairsForDiagnostics()` is a lossy secret-bearing rendering retained only
+for test assertions and an existing diagnostic header-shape projection. It is
+never used for persistence or request routing and must never be logged. There
+are no competing stored representations.
+
+Modern fidelity comparisons include all six cookie fields, ignore order and
+retain different identities. Invalid duplicate identities are rejected on input.
+Legacy-to-legacy comparisons retain their original pair-multiset semantics;
+mixed comparisons require equal counts and compare effective JDK reconstruction,
+without claiming recovery of missing legacy attributes. The M report and cookie
+mutation observations now compare structured state and emit only their existing
+finite booleans/counts. Successful persistence is reported only when every
+material field, including the structured cookie records, survives reload.
+
+The production monitoring orchestration, `sessions.replace()` call timing,
+retry/spacing/rate-gate policy, tracking and outbox remain unchanged. The existing
+`context.cookies(lastCompleteObservedApplicationUrl)` selection, request-candidate
+order, origin filtering and portal validation are unchanged; the Playwright
+conversion now copies metadata instead of flattening name/value pairs.
+
+Validation: the recognizable same-name/different-path regression now retains
+2 cookies through snapshot/reconstruction with structured equality true. The
+loopback M harness reports persistence true and proceeds to NEXT without a retry.
+A separate real-JDK request test follows a response rotation through production
+session replacement, V2/AES, PostgreSQL flush/clear and a separate read: the
+schedule path sends both same-name cookies (longer path first), while the root
+path sends only the root cookie. Different-domain and null-domain routing are
+also checked locally without sockets. V2 codec and AES existing-row replacement
+preserve exact material; V1 fixtures decode unchanged and upgrade through a
+structured snapshot. Malformed flags/counts/fields/identities, every truncated
+V2 prefix, oversized payloads and trailing data fail closed with fixed errors.
+Cookie/material/observation toString, capture logs and diagnostic output pass
+secret-marker redaction checks.
+
+The dedicated session/codec/encryption/PostgreSQL/capture/diagnostic suite passed
+256 tests with no failures, errors or skips. The opt-in Chromium fixture passed
+its real browser cookie lookup/conversion/reconstruction test using one loopback
+page request with other destinations blocked; no browser test was skipped in that
+explicit run. Final Maven `verify` passed 927 tests, zero failures/errors and six
+opt-in browser entries skipped in the default run. Spotless and `git diff --check`
+passed. This implementation used **VULCAN requests = 0**: no real `/connect`,
+M-sequence, monitoring or schedule baseline, and no developer secrets/database
+rows inspected. Real validation remains separately authorized after review.

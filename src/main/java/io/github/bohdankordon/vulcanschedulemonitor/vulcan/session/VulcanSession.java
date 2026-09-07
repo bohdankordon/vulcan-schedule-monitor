@@ -10,7 +10,6 @@ import java.net.http.HttpClient;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.stream.Collectors;
 import org.springframework.http.HttpHeaders;
 
 /** An already authenticated, isolated VULCAN browser session. */
@@ -53,26 +52,42 @@ public final class VulcanSession {
 
   public static VulcanSession fromMaterial(VulcanSessionMaterial material) {
     Objects.requireNonNull(material, "material must not be null");
-    return new VulcanSession(
-        material.applicationBaseUri(),
-        material.requestVerificationToken(),
-        material.appGuid(),
-        material.cookieHeader(),
-        material.refererUri());
+    if (material.cookieRepresentation()
+        == VulcanSessionMaterial.CookieRepresentation.LEGACY_HEADER) {
+      return new VulcanSession(
+          material.applicationBaseUri(),
+          material.requestVerificationToken(),
+          material.appGuid(),
+          material.legacyCookieHeader(),
+          material.refererUri());
+    }
+    return new VulcanSession(material);
   }
 
-  /** Captures current cookies too, including rotations received by the HTTP client. */
+  private VulcanSession(VulcanSessionMaterial material) {
+    applicationBaseUri = normalizeApplicationUri(material.applicationBaseUri());
+    origin = toOrigin(applicationBaseUri);
+    refererUri = requireSameOrigin(material.refererUri(), origin, "Referer URI");
+    requestVerificationToken = new SecretValue(material.requestVerificationToken());
+    appGuid = new SecretValue(material.appGuid());
+    cookieManager = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
+    for (VulcanCookieMaterial cookie : material.cookies()) {
+      // URI association binds null-domain cookies to this host. Non-null domains and paths
+      // remain exactly as supplied; no synthetic Set-Cookie parser can collapse identities.
+      cookieManager.getCookieStore().add(applicationBaseUri, cookie.toCookie());
+    }
+  }
+
+  /** Captures actual current identities, including rotations; never flattens them for storage. */
   public VulcanSessionMaterial snapshotMaterial() {
-    String cookieHeader =
-        cookieManager.getCookieStore().getCookies().stream()
-            .map(cookie -> cookie.getName() + "=" + cookie.getValue())
-            .collect(Collectors.joining("; "));
-    return new VulcanSessionMaterial(
+    return VulcanSessionMaterial.structured(
         applicationBaseUri,
         refererUri,
         requestVerificationToken.value(),
         appGuid.value(),
-        cookieHeader);
+        cookieManager.getCookieStore().getCookies().stream()
+            .map(VulcanCookieMaterial::fromCookie)
+            .toList());
   }
 
   /** Local diagnostics only; never exposes the store or cookie identities. */

@@ -50,6 +50,11 @@ class PersistedMonitoringSequenceTest {
         ex -> {
           int slot = calls.getAndIncrement();
           try (ex) {
+            if (ex.getRequestMethod().equals("GET")) {
+              cookies.add(ex.getRequestHeaders().getFirst("Cookie"));
+              ex.sendResponseHeaders(204, -1);
+              return;
+            }
             assertThat(ex.getRequestMethod()).isEqualTo("POST");
             assertThat(ex.getRequestURI().getPath())
                 .isEqualTo("/SECRET_TENANT/PlanLekcji.mvc/GetPlanLekcjiContext");
@@ -180,39 +185,99 @@ class PersistedMonitoringSequenceTest {
   }
 
   @Test
-  void duplicatePathCookieReproducesPostSuccessMismatchBeforeNextWithoutRetry() throws Exception {
+  void structuredCookiesRouteAfterRealResponseEncryptionPostgresReloadAndReconstruction()
+      throws Exception {
+    responseCookie = "original=SUPER_SECRET_COOKIE_B; Path=/; HttpOnly";
+    var store = context.getBean(VulcanSecretStore.class);
+    assertThat(store.loadSession(1).cookieRepresentation())
+        .isEqualTo(VulcanSessionMaterial.CookieRepresentation.LEGACY_HEADER);
+    var manager = context.getBean(VulcanSessionManager.class);
+    var live = manager.loadCurrent(1);
+    new VulcanClient(live).getWeekSchedule(101, LocalDate.of(2026, 9, 7));
+    var expected = live.snapshotMaterial();
+    assertThat(expected.cookieCount()).isEqualTo(2);
+    var tx =
+        new org.springframework.transaction.support.TransactionTemplate(
+            context.getBean(org.springframework.transaction.PlatformTransactionManager.class));
+    tx.executeWithoutResult(
+        status -> {
+          manager.replace(1, live);
+          var em = context.getBean(jakarta.persistence.EntityManager.class);
+          em.flush();
+          em.clear();
+          assertThat(SessionFidelityDiagnostics.compare(expected, store.loadSession(1)).allSame())
+              .isTrue();
+        });
+    var loaded = store.loadSession(1); // Separate transaction after flush/clear/commit.
+    assertThat(loaded.cookieRepresentation())
+        .isEqualTo(VulcanSessionMaterial.CookieRepresentation.STRUCTURED);
+    assertThat(SessionFidelityDiagnostics.compare(expected, loaded).allSame()).isTrue();
+    var reconstructed = manager.loadCurrent(1);
+    assertThat(
+            SessionFidelityDiagnostics.compare(expected, reconstructed.snapshotMaterial())
+                .allSame())
+        .isTrue();
+    try (var client = reconstructed.configure(java.net.http.HttpClient.newBuilder()).build()) {
+      for (URI uri :
+          List.of(
+              base.resolve("PlanLekcji.mvc/GetPlanLekcjiContext"), base.resolve("/root-check"))) {
+        assertThat(
+                client
+                    .send(
+                        java.net.http.HttpRequest.newBuilder(uri).build(),
+                        java.net.http.HttpResponse.BodyHandlers.discarding())
+                    .statusCode())
+            .isEqualTo(204);
+      }
+    }
+    String scheduleHeader = cookies.get(1), rootHeader = cookies.get(2);
+    assertThat(scheduleHeader.contains("original=SUPER_SECRET_COOKIE_A")).isTrue();
+    assertThat(scheduleHeader.contains("original=SUPER_SECRET_COOKIE_B")).isTrue();
+    assertThat(
+            scheduleHeader.indexOf("SUPER_SECRET_COOKIE_A")
+                < scheduleHeader.indexOf("SUPER_SECRET_COOKIE_B"))
+        .isTrue();
+    assertThat(rootHeader.contains("original=SUPER_SECRET_COOKIE_B")).isTrue();
+    assertThat(rootHeader.contains("SUPER_SECRET_COOKIE_A")).isFalse();
+    assertThat(calls.get()).isEqualTo(3); // One rotation response, two route checks, no retry.
+  }
+
+  @Test
+  void duplicatePathCookieSurvivesPostSuccessPersistenceAndNextWithoutRetry() throws Exception {
     responseCookie = "original=SUPER_SECRET_COOKIE_B; Path=/";
     var report = execute();
     assertThat(report.facts())
-        .containsEntry("result", "FAIL")
+        .containsEntry("result", "SUCCESS")
         .containsEntry("category", "SEQUENCE_COMPLETED")
-        .containsEntry("current.sessionPersistedAfterSuccess", false)
+        .containsEntry("current.sessionPersistedAfterSuccess", true)
         .containsEntry("current.persistence.applicationBaseSame", true)
         .containsEntry("current.persistence.refererSame", true)
         .containsEntry("current.persistence.verificationTokenSame", true)
         .containsEntry("current.persistence.appGuidSame", true)
-        .containsEntry("current.persistence.cookieMaterialSame", false)
+        .containsEntry("current.persistence.cookieMaterialSame", true)
         .containsEntry("current.persistence.expectedCookieCount", 2)
-        .containsEntry("current.persistence.actualCookieCount", 1)
-        .containsEntry("current.persistence.cookieCountChanged", true)
+        .containsEntry("current.persistence.actualCookieCount", 2)
+        .containsEntry("current.persistence.cookieCountChanged", false)
         .containsEntry("current.liveCookieTopology.totalCookieCount", 2)
         .containsEntry("current.liveCookieTopology.duplicateNamePresent", true)
         .containsEntry("current.liveCookieTopology.duplicateNameDifferentPathPresent", true)
         .containsEntry("current.liveCookieTopology.duplicateNameDifferentDomainPresent", false)
-        .containsEntry("current.materialRoundTrip.cookieMaterialSame", false)
+        .containsEntry("current.materialRoundTrip.cookieMaterialSame", true)
         .containsEntry("current.materialRoundTrip.cookieCountBefore", 2)
-        .containsEntry("current.materialRoundTrip.cookieCountAfter", 1)
-        .containsEntry("current.outcome", "INTERRUPTED")
-        .containsEntry("next.disposition", "SKIPPED_INTERRUPTED")
-        .containsEntry("spacingAppliedBeforeNext", false)
-        .containsEntry("next.loadedPostCurrentSession", "UNAVAILABLE")
+        .containsEntry("current.materialRoundTrip.cookieCountAfter", 2)
+        .containsEntry("current.outcome", "BASELINE_ESTABLISHED")
+        .containsEntry("next.disposition", "DISPATCHED")
+        .containsEntry("spacingAppliedBeforeNext", true)
+        .containsEntry("next.loadedPostCurrentSession", true)
         .containsEntry("databaseSessionRestoredAfterRollback", true)
-        .containsEntry("totalScheduleRequests", 1)
+        .containsEntry("totalScheduleRequests", 2)
         .containsEntry("retries", 0);
-    assertThat(requests(report)).hasSize(1);
+    assertThat(requests(report)).hasSize(2);
     assertThat(requests(report).getFirst()).containsEntry("outcome", "SUCCESS");
-    assertThat(calls.get()).isEqualTo(1);
-    assertThat(delays).isEmpty();
+    assertThat(calls.get()).isEqualTo(2);
+    assertThat(delays).containsExactly(Duration.ofMillis(500));
+    assertThat(cookies.getLast().contains("original=SUPER_SECRET_COOKIE_A")).isTrue();
+    assertThat(cookies.getLast().contains("original=SUPER_SECRET_COOKIE_B")).isTrue();
     assertPowerShellReport(report);
   }
 
@@ -237,12 +302,15 @@ class PersistedMonitoringSequenceTest {
           em.clear();
           var actual = store.loadSession(1);
           assertThat(SessionFidelityDiagnostics.compare(expected, actual).allSame()).isTrue();
-          assertThat(expected.cookieHeader().equals(actual.cookieHeader())).isTrue();
+          assertThat(
+                  expected.cookiePairsForDiagnostics().equals(actual.cookiePairsForDiagnostics()))
+              .isTrue();
         });
     // A separate transaction/repository read still preserves exact material.
     var actual = store.loadSession(1);
     assertThat(SessionFidelityDiagnostics.compare(expected, actual).allSame()).isTrue();
-    assertThat(expected.cookieHeader().equals(actual.cookieHeader())).isTrue();
+    assertThat(expected.cookiePairsForDiagnostics().equals(actual.cookiePairsForDiagnostics()))
+        .isTrue();
     var reconstructed =
         context.getBean(VulcanSessionManager.class).loadCurrent(1).snapshotMaterial();
     assertThat(SessionFidelityDiagnostics.compare(expected, reconstructed).allSame())

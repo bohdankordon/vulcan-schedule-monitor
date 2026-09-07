@@ -61,7 +61,7 @@ class DefaultVulcanSessionVerifierWireMockTest {
             .withHeader("Cookie", containing("session=rotated")));
     assertThat(verified.classes()).hasSize(1);
     assertThatThrownBy(verified.classes()::clear).isInstanceOf(UnsupportedOperationException.class);
-    assertThat(verified.sessionMaterial().cookieHeader())
+    assertThat(verified.sessionMaterial().cookiePairsForDiagnostics())
         .contains("session=final")
         .doesNotContain("session=old", "session=rotated");
     assertThat(verified.toString())

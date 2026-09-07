@@ -138,7 +138,8 @@ class AccountAwareMonitoringEndToEndPostgresTests extends PostgresIntegrationTes
     var result = productionCoordinator().refreshSuccessfulWeek(current);
 
     assertThat(result.baselineEstablishedNow()).isTrue();
-    assertThat(sessions.loadCurrent(owner.accountId()).snapshotMaterial().cookieHeader())
+    assertThat(
+            sessions.loadCurrent(owner.accountId()).snapshotMaterial().cookiePairsForDiagnostics())
         .contains("rotated=after-weekly");
     byte[] ciphertext =
         jdbc.queryForObject(
@@ -283,7 +284,8 @@ class AccountAwareMonitoringEndToEndPostgresTests extends PostgresIntegrationTes
     assertThat(result.baselineEstablishedNow()).isTrue();
     assertThat(fakes.authenticationCalls).hasValue(1);
     server.verify(2, postRequestedFor(urlPathEqualTo(owner.applicationPath() + SCHEDULE_ENDPOINT)));
-    assertThat(sessions.loadCurrent(owner.accountId()).snapshotMaterial().cookieHeader())
+    assertThat(
+            sessions.loadCurrent(owner.accountId()).snapshotMaterial().cookiePairsForDiagnostics())
         .contains("session=recovered", "rotated=after-recovery")
         .doesNotContain("session=expired");
     assertThat(

@@ -13,6 +13,62 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 class SessionMaterialStorageFidelityTest {
+  @org.junit.jupiter.api.Test
+  void structuredV2SurvivesEncryptionExistingRowReplacementAndReconstruction() {
+    URI base = URI.create("https://secret-cookie-domain.invalid/SECRET_COOKIE_PATH/");
+    var material =
+        VulcanSessionMaterial.structured(
+            base,
+            base,
+            "SUPER_SECRET_TOKEN",
+            "SUPER_SECRET_APPGUID",
+            List.of(
+                new VulcanCookieMaterial(
+                    "SUPER_SECRET_COOKIE_NAME",
+                    "SUPER_SECRET_COOKIE_VALUE",
+                    "/",
+                    ".secret-cookie-domain.invalid",
+                    true,
+                    true),
+                new VulcanCookieMaterial(
+                    "SUPER_SECRET_COOKIE_NAME",
+                    "other",
+                    "/SECRET_COOKIE_PATH/",
+                    "secret-cookie-domain.invalid",
+                    false,
+                    false)));
+    var codec = new SecretPayloadCodec();
+    var repository = mock(VulcanAccountSecretRepository.class);
+    var row = new AtomicReference<VulcanAccountSecretEntity>();
+    when(repository.findById(1L)).thenAnswer(i -> Optional.ofNullable(row.get()));
+    when(repository.save(any()))
+        .thenAnswer(
+            i -> {
+              row.set(i.getArgument(0));
+              return row.get();
+            });
+    var store =
+        new EncryptedVulcanSecretStore(
+            repository,
+            new AesGcmCipher(
+                VulcanMasterKey.fromBase64(Base64.getEncoder().encodeToString(new byte[32]))),
+            codec);
+    for (int i = 0; i < 2; i++) {
+      store.replace(1, material, null, Instant.EPOCH.plusSeconds(i));
+      var loaded = store.loadSession(1);
+      assertThat(loaded.cookieRepresentation())
+          .isEqualTo(VulcanSessionMaterial.CookieRepresentation.STRUCTURED);
+      assertThat(Arrays.equals(codec.encodeSession(material), codec.encodeSession(loaded)))
+          .isTrue();
+      assertThat(
+              SessionFidelityDiagnostics.compare(
+                      material, VulcanSession.fromMaterial(loaded).snapshotMaterial())
+                  .allSame())
+          .isTrue();
+    }
+    verify(repository, times(2)).save(any());
+  }
+
   @ParameterizedTest
   @ValueSource(booleans = {false, true})
   void codecAndAesEncryptedStorePreserveExactMaterialBeforeSessionReconstruction(
@@ -58,6 +114,7 @@ class SessionMaterialStorageFidelityTest {
   private static void assertExact(VulcanSessionMaterial expected, VulcanSessionMaterial actual) {
     // Boolean assertions deliberately avoid rendering secret-bearing payloads on failure.
     assertThat(SessionFidelityDiagnostics.compare(expected, actual).allSame()).isTrue();
-    assertThat(expected.cookieHeader().equals(actual.cookieHeader())).isTrue();
+    assertThat(expected.cookiePairsForDiagnostics().equals(actual.cookiePairsForDiagnostics()))
+        .isTrue();
   }
 }

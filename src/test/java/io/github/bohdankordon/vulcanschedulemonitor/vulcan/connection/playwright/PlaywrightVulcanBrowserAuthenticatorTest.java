@@ -52,12 +52,23 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
   private final ListAppender<ILoggingEvent> logs = new ListAppender<>();
   private final Logger logger =
       (Logger) LoggerFactory.getLogger(PlaywrightVulcanBrowserAuthenticator.class);
+  private ch.qos.logback.classic.Level previousLevel;
   private Locator username;
   private Locator password;
   private Locator submitter;
 
+  private static Cookie syntheticCookie(String name, String value) {
+    return new Cookie(name, value)
+        .setPath("/")
+        .setDomain("school.vulcan.net.pl")
+        .setSecure(true)
+        .setHttpOnly(true);
+  }
+
   @BeforeEach
   void setUp() {
+    previousLevel = logger.getLevel();
+    logger.setLevel(ch.qos.logback.classic.Level.WARN);
     logs.start();
     logger.addAppender(logs);
     when(playwright.chromium().launch(any(BrowserType.LaunchOptions.class))).thenReturn(browser);
@@ -87,6 +98,7 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
   void tearDown() {
     logger.detachAppender(logs);
     logs.stop();
+    logger.setLevel(previousLevel);
   }
 
   @Test
@@ -181,7 +193,7 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
     when(observed.headerValue("x-v-requestverificationtoken")).thenReturn("synthetic-token");
     when(observed.headerValue("x-v-appguid")).thenReturn("synthetic-guid");
     when(context.cookies(application))
-        .thenReturn(List.of(new Cookie("SyntheticCookie", "synthetic-value")));
+        .thenReturn(List.of(syntheticCookie("SyntheticCookie", "synthetic-value")));
     doAnswer(
             invocation -> {
               when(page.url()).thenReturn(URL + "#schedule");
@@ -196,7 +208,7 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
       var session = authenticator.authenticate(request);
       assertThat(session.applicationBaseUri())
           .isEqualTo(URI.create("https://school.vulcan.net.pl/synthetic/"));
-      assertThat(session.cookieHeader()).isEqualTo("SyntheticCookie=synthetic-value");
+      assertThat(session.cookiePairsForDiagnostics()).isEqualTo("SyntheticCookie=synthetic-value");
       assertThat(logs.list).isEmpty();
       verify(diagnostics).pass(Stage.SESSION_CAPTURE);
     }
@@ -268,6 +280,43 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
   }
 
   @ParameterizedTest
+  @ValueSource(strings = {"name", "path", "domain"})
+  void rejectedStructuredCookieMetadataNeverEntersTheFailureLog(String field) {
+    emitDuringSubmission(
+        SessionCaptureDiagnosticsTest.request(
+            SessionCaptureDiagnosticsTest.REQUEST,
+            SessionCaptureDiagnosticsTest.REFERER,
+            "SUPER_SECRET_TOKEN",
+            "SUPER_SECRET_APPGUID"));
+    var cookie = syntheticCookie("SUPER_SECRET_COOKIE_NAME", "SUPER_SECRET_COOKIE_VALUE");
+    switch (field) {
+      case "name" -> cookie.name += "\r";
+      case "path" -> cookie.path = "SECRET_COOKIE_PATH";
+      case "domain" -> cookie.domain = "https://SECRET_COOKIE_DOMAIN";
+    }
+    when(context.cookies(SessionCaptureDiagnosticsTest.REQUEST)).thenReturn(List.of(cookie));
+    authenticateExpecting(VulcanAuthFailureCategory.PROTOCOL_FAILURE);
+    assertCaptureLog(
+        new SessionCaptureObservation(
+            SessionCaptureFailureKind.MATERIAL_REJECTED,
+            SessionCaptureObservation.AllowedRequestCount.ONE,
+            SessionCaptureObservation.CompleteRequestCount.ONE,
+            true,
+            true,
+            true,
+            true,
+            SessionCaptureObservation.CompleteRequestCount.ONE,
+            SessionCaptureObservation.CompleteRequestCount.ONE,
+            SessionCaptureObservation.CookieCount.ONE),
+        VulcanAuthFailureCategory.PROTOCOL_FAILURE);
+    for (var event : logs.list) {
+      assertThat(event.getThrowableProxy()).isNull();
+      assertThat(event.getFormattedMessage())
+          .doesNotContain("SUPER_SECRET", "SECRET_COOKIE_PATH", "SECRET_COOKIE_DOMAIN");
+    }
+  }
+
+  @ParameterizedTest
   @CsvSource({
     "NO_MATCHING_COOKIES,ZERO,ZERO",
     "APPLICATION_BASE_REJECTED,ONE,ZERO",
@@ -298,7 +347,7 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
             reason == SessionCaptureFailureKind.NO_MATCHING_COOKIES
                 ? List.of()
                 : List.of(
-                    new Cookie(
+                    syntheticCookie(
                         SessionCaptureDiagnosticsTest.COOKIE_NAME,
                         SessionCaptureDiagnosticsTest.COOKIE_VALUE)));
     authenticateExpecting(VulcanAuthFailureCategory.PROTOCOL_FAILURE);
@@ -339,7 +388,7 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
     when(context.cookies(last))
         .thenReturn(
             List.of(
-                new Cookie(
+                syntheticCookie(
                     SessionCaptureDiagnosticsTest.COOKIE_NAME,
                     SessionCaptureDiagnosticsTest.COOKIE_VALUE)));
     authenticateExpecting(VulcanAuthFailureCategory.PROTOCOL_FAILURE);

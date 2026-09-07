@@ -363,7 +363,7 @@ class Schedule429InvestigationTest {
             calls.incrementAndGet();
             var headers = exchange.getRequestHeaders();
             originalUsed.set(
-                postLogin.cookieHeader().equals(headers.getFirst("Cookie"))
+                postLogin.cookiePairsForDiagnostics().equals(headers.getFirst("Cookie"))
                     && postLogin
                         .requestVerificationToken()
                         .equals(headers.getFirst("X-V-RequestVerificationToken"))
@@ -391,7 +391,7 @@ class Schedule429InvestigationTest {
           report, budget, postLogin, 1, LocalDate.of(2026, 8, 31));
       assertThat(originalUsed).isTrue();
       assertThat(calls).hasValue(1);
-      assertThat(postLogin.cookieHeader()).isEqualTo("Original=before");
+      assertThat(postLogin.cookiePairsForDiagnostics()).isEqualTo("Original=before");
       assertThatThrownBy(
               () ->
                   VulcanSchedule429Investigation.compareJavaFromPostLogin(

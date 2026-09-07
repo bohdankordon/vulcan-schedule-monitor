@@ -599,7 +599,7 @@ public final class Schedule429Browser implements AutoCloseable {
       URI origin = toOrigin(observation.uri());
       List<Cookie> cookies = context.cookies(observation.uri().toASCIIString());
       return cookies.stream()
-          .map(cookie -> new BrowserCookieObservation(origin, cookie.name, cookie.value))
+          .map(cookie -> BrowserCookieObservation.fromPlaywright(origin, cookie))
           .toList();
     }
     return List.of();

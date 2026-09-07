@@ -1,7 +1,8 @@
 package io.github.bohdankordon.vulcanschedulemonitor.vulcan.session;
 
 import java.net.URI;
-import java.util.Objects;
+import java.util.*;
+import java.util.stream.Collectors;
 
 /** Minimum secret material needed to reconstruct an authenticated VULCAN HTTP session. */
 public final class VulcanSessionMaterial {
@@ -10,7 +11,14 @@ public final class VulcanSessionMaterial {
   private final URI refererUri;
   private final String requestVerificationToken;
   private final String appGuid;
+
+  public enum CookieRepresentation {
+    LEGACY_HEADER,
+    STRUCTURED
+  }
+
   private final String cookieHeader;
+  private final List<VulcanCookieMaterial> cookies;
 
   public VulcanSessionMaterial(
       URI applicationBaseUri,
@@ -23,6 +31,7 @@ public final class VulcanSessionMaterial {
     this.requestVerificationToken = requireSecret(requestVerificationToken);
     this.appGuid = requireSecret(appGuid);
     this.cookieHeader = requireSecret(cookieHeader);
+    this.cookies = null;
   }
 
   public URI applicationBaseUri() {
@@ -41,8 +50,90 @@ public final class VulcanSessionMaterial {
     return appGuid;
   }
 
-  public String cookieHeader() {
+  private VulcanSessionMaterial(
+      URI base, URI referer, String token, String guid, List<VulcanCookieMaterial> cookies) {
+    this.applicationBaseUri = normalize(base);
+    this.refererUri = requireSameOrigin(referer, this.applicationBaseUri);
+    this.requestVerificationToken = requireSecret(token);
+    this.appGuid = requireSecret(guid);
+    if (cookies == null || cookies.isEmpty() || cookies.size() > VulcanCookieMaterial.MAX_COOKIES)
+      throw VulcanCookieMaterial.invalid();
+    Set<HttpCookieIdentity> identities = new HashSet<>();
+    for (VulcanCookieMaterial cookie : cookies) {
+      if (cookie == null
+          || !identities.add(
+              new HttpCookieIdentity(
+                  cookie.name().toLowerCase(Locale.ROOT), cookie.domain(), cookie.path())))
+        throw VulcanCookieMaterial.invalid();
+    }
+    this.cookies = List.copyOf(cookies);
+    this.cookieHeader = null;
+  }
+
+  public static VulcanSessionMaterial structured(
+      URI base, URI referer, String token, String guid, List<VulcanCookieMaterial> cookies) {
+    return new VulcanSessionMaterial(base, referer, token, guid, cookies);
+  }
+
+  // This ephemeral key must never render secret identity fields.
+  private record HttpCookieIdentity(String name, String domain, String path) {
+    @Override
+    public String toString() {
+      return "CookieIdentity[redacted]";
+    }
+  }
+
+  public CookieRepresentation cookieRepresentation() {
+    return cookies == null ? CookieRepresentation.LEGACY_HEADER : CookieRepresentation.STRUCTURED;
+  }
+
+  public List<VulcanCookieMaterial> cookies() {
+    if (cookies == null) throw new IllegalStateException("Structured cookies unavailable");
+    return cookies;
+  }
+
+  /** VSM1 compatibility only. Modern callers must use cookies(). */
+  public String legacyCookieHeader() {
+    if (cookies != null) throw new IllegalStateException("Legacy cookie header unavailable");
     return cookieHeader;
+  }
+
+  /**
+   * Secret-bearing, lossy rendering for tests/diagnostics only. Never persistence or routing
+   * authority.
+   */
+  public String cookiePairsForDiagnostics() {
+    return cookies == null
+        ? cookieHeader
+        : cookies.stream()
+            .map(cookie -> cookie.name() + "=" + cookie.value())
+            .collect(Collectors.joining("; "));
+  }
+
+  public int cookieCount() {
+    return cookies == null ? cookieHeader.split(";", -1).length : cookies.size();
+  }
+
+  /** Order-independent secret comparison; modern equality includes every retained attribute. */
+  public boolean sameCookiesAs(VulcanSessionMaterial other) {
+    if (cookies != null && other.cookies != null) {
+      return cookies.size() == other.cookies.size()
+          && new HashSet<>(cookies).equals(new HashSet<>(other.cookies));
+    }
+    if (cookies == null && other.cookies == null) {
+      return Arrays.stream(cookieHeader.split(";", -1))
+          .map(String::trim)
+          .sorted()
+          .toList()
+          .equals(
+              Arrays.stream(other.cookieHeader.split(";", -1)).map(String::trim).sorted().toList());
+    }
+    if (cookieCount() != other.cookieCount()) return false;
+    // Legacy has no original attributes. Compare its effective JDK reconstruction, not invented
+    // metadata.
+    return VulcanSession.fromMaterial(this)
+        .snapshotMaterial()
+        .sameCookiesAs(VulcanSession.fromMaterial(other).snapshotMaterial());
   }
 
   public enum UriValidationFailure {

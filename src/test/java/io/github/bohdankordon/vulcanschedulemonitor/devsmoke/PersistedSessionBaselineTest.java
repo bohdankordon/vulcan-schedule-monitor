@@ -223,7 +223,7 @@ class PersistedSessionBaselineTest {
                 .getBean(VulcanSessionManager.class)
                 .loadCurrent(1)
                 .snapshotMaterial()
-                .cookieHeader())
+                .cookiePairsForDiagnostics())
         .doesNotContain("COOKIE_B");
     assertThat(Schedule429Structure.formValues(body.get()))
         .containsExactlyInAnyOrderEntriesOf(

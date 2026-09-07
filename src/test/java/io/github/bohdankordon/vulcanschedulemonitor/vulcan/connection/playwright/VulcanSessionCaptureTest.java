@@ -45,7 +45,7 @@ class VulcanSessionCaptureTest {
     assertThat(material.refererUri().getPath()).startsWith("/tenant/unit/");
     assertThat(material.requestVerificationToken()).isEqualTo("synthetic-verification");
     assertThat(material.appGuid()).isEqualTo("synthetic-guid");
-    assertThat(material.cookieHeader())
+    assertThat(material.cookiePairsForDiagnostics())
         .contains("UnexpectedCookie=one", "FutureCookie=two")
         .doesNotContain("Foreign");
   }

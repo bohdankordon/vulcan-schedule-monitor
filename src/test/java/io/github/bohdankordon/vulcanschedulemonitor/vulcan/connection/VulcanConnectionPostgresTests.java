@@ -159,7 +159,7 @@ class VulcanConnectionPostgresTests extends PostgresIntegrationTestSupport {
 
     assertThat(connect(issue(userId)).status()).isEqualTo(ConnectOutcome.Status.SUCCESS);
 
-    assertThat(sessions.loadCurrent(accountId()).snapshotMaterial().cookieHeader())
+    assertThat(sessions.loadCurrent(accountId()).snapshotMaterial().cookiePairsForDiagnostics())
         .contains("session=after-connect-verification")
         .doesNotContain("session=before-connect-verification");
   }
@@ -182,7 +182,7 @@ class VulcanConnectionPostgresTests extends PostgresIntegrationTestSupport {
 
     assertThat(sessions.recover(accountId()))
         .isEqualTo(VulcanSessionManager.RecoveryResult.RECOVERED);
-    assertThat(sessions.loadCurrent(accountId()).snapshotMaterial().cookieHeader())
+    assertThat(sessions.loadCurrent(accountId()).snapshotMaterial().cookiePairsForDiagnostics())
         .contains("session=after-recovery-verification")
         .doesNotContain("session=before-recovery-verification");
   }

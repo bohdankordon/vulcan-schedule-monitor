@@ -14,7 +14,7 @@ final class NativeSessionCookieObservation {
       NativeSessionBaselineReport report,
       Runnable request) {
     var before = capture(snapshot);
-    if (before != null) report.put("session.cookieCountBefore", before.pairs.size());
+    if (before != null) report.put("session.cookieCountBefore", before.cookieCount());
     boolean responseObserved = false;
     try {
       request.run();
@@ -31,41 +31,24 @@ final class NativeSessionCookieObservation {
       // Transport errors do not establish dispatch. Keep post fields unavailable
       // rather than turning an unchanged local store into evidence of no rotation.
       if (responseObserved && before != null && after != null) {
-        report.put("session.cookieCountAfter", after.pairs.size());
-        report.put("session.cookieCountChanged", before.pairs.size() != after.pairs.size());
-        report.put("session.cookieMaterialChanged", !before.pairs.equals(after.pairs));
+        report.put("session.cookieCountAfter", after.cookieCount());
+        report.put("session.cookieCountChanged", before.cookieCount() != after.cookieCount());
+        report.put("session.cookieMaterialChanged", !before.sameCookiesAs(after));
       }
     }
   }
 
-  private static CookiePairs capture(Supplier<VulcanSessionMaterial> snapshot) {
+  private static VulcanSessionMaterial capture(Supplier<VulcanSessionMaterial> snapshot) {
     try {
       var material = snapshot.get();
-      var pairs = new ArrayList<String>();
-      for (String pair : material.cookieHeader().split(";", -1)) {
-        String normalized = pair.trim();
-        if (normalized.indexOf('=') <= 0 || pairs.size() == 1000) return null;
-        pairs.add(normalized);
-      }
-      // Multiset comparison: preserves duplicate pairs but ignores their ordering.
-      Collections.sort(pairs);
-      return new CookiePairs(pairs);
+      if (material.cookieCount() > 1000) return null;
+      if (material.cookieRepresentation()
+              == VulcanSessionMaterial.CookieRepresentation.LEGACY_HEADER
+          && Arrays.stream(material.legacyCookieHeader().split(";", -1))
+              .anyMatch(pair -> pair.trim().indexOf('=') <= 0)) return null;
+      return material;
     } catch (RuntimeException ignored) {
-      // A local snapshot/parse failure must not obscure the schedule outcome.
       return null;
-    }
-  }
-
-  private static final class CookiePairs {
-    private final List<String> pairs;
-
-    private CookiePairs(List<String> pairs) {
-      this.pairs = pairs;
-    }
-
-    @Override
-    public String toString() {
-      return "CookiePairs[redacted]";
     }
   }
 }

@@ -55,7 +55,7 @@ class SessionFidelityDiagnosticsTest {
             changed == 1 ? BASE.resolve("another") : original.refererUri(),
             changed == 2 ? "other" : original.requestVerificationToken(),
             changed == 3 ? "other" : original.appGuid(),
-            original.cookieHeader());
+            original.cookiePairsForDiagnostics());
     var c = SessionFidelityDiagnostics.compare(original, other);
     assertThat(
             List.of(
@@ -82,7 +82,7 @@ class SessionFidelityDiagnosticsTest {
 
   @ParameterizedTest
   @ValueSource(booleans = {true, false})
-  void realJdkSetCookieDifferentPathLosesIdentityButSamePathReplacesDeterministically(
+  void realJdkSetCookieDifferentPathSurvivesAndSamePathReplacesDeterministically(
       boolean differentPath) throws Exception {
     var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
     var calls = new AtomicInteger();
@@ -131,9 +131,9 @@ class SessionFidelityDiagnosticsTest {
       assertThat(roundTrip)
           .isEqualTo(
               new SessionFidelityDiagnostics.MaterialRoundTrip(
-                  !differentPath, differentPath ? 2 : 1, 1));
-      assertThat(snapshot.cookieHeader().contains("SUPER_SECRET_COOKIE_NEW")).isTrue();
-      assertThat(snapshot.cookieHeader().contains("SUPER_SECRET_COOKIE_OLD"))
+                  true, differentPath ? 2 : 1, differentPath ? 2 : 1));
+      assertThat(snapshot.cookiePairsForDiagnostics().contains("SUPER_SECRET_COOKIE_NEW")).isTrue();
+      assertThat(snapshot.cookiePairsForDiagnostics().contains("SUPER_SECRET_COOKIE_OLD"))
           .isEqualTo(differentPath);
       assertThat(calls.get()).isEqualTo(1); // No retry and reconstruction performs no request.
       safe(topology.toString() + roundTrip);

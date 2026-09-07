@@ -122,7 +122,7 @@ class Schedule429JavaBaselineTest {
   }
 
   @Test
-  void exactDriftDetectsChangesWithinSameRefererCategoryAndCookieReordering() {
+  void exactDriftDetectsChangesWithinSameRefererCategoryButIgnoresCookieOrdering() {
     URI base = URI.create("https://school.vulcan.net.pl/private/");
     var before =
         new VulcanSessionMaterial(
@@ -138,7 +138,7 @@ class Schedule429JavaBaselineTest {
             "refererChangedExact=true",
             "verificationTokenChanged=true",
             "appGuidChanged=true",
-            "cookieMaterialChanged=true",
+            "cookieMaterialChanged=false",
             "cookieCountChanged=false",
             "postLoginCookieCount=2",
             "verifiedCookieCount=2",
@@ -198,7 +198,7 @@ class Schedule429JavaBaselineTest {
             calls.incrementAndGet();
             var headers = exchange.getRequestHeaders();
             originalUsed.set(
-                postLogin.cookieHeader().equals(headers.getFirst("Cookie"))
+                postLogin.cookiePairsForDiagnostics().equals(headers.getFirst("Cookie"))
                     && postLogin.appGuid().equals(headers.getFirst("X-V-AppGuid"))
                     && postLogin
                         .requestVerificationToken()
@@ -224,7 +224,7 @@ class Schedule429JavaBaselineTest {
           report, budget, postLogin, 1, LocalDate.of(2026, 8, 31));
       assertThat(originalUsed).isTrue();
       assertThat(calls).hasValue(1);
-      assertThat(postLogin.cookieHeader()).isEqualTo("Original=before");
+      assertThat(postLogin.cookiePairsForDiagnostics()).isEqualTo("Original=before");
       String text = render(report);
       assertThat(text)
           .contains(

@@ -152,10 +152,9 @@ public final class VulcanSchedule429JavaBaseline {
         "verificationTokenChanged",
         !before.requestVerificationToken().equals(after.requestVerificationToken()));
     report.put("appGuidChanged", !before.appGuid().equals(after.appGuid()));
-    // Exact material comparison intentionally includes cookie order/serialization differences.
-    report.put("cookieMaterialChanged", !before.cookieHeader().equals(after.cookieHeader()));
-    int beforeCount = cookieCount(before.cookieHeader()),
-        afterCount = cookieCount(after.cookieHeader());
+    // Structured identity/attribute comparison ignores cookie ordering.
+    report.put("cookieMaterialChanged", !before.sameCookiesAs(after));
+    int beforeCount = before.cookieCount(), afterCount = after.cookieCount();
     report.put("cookieCountChanged", beforeCount != afterCount);
     report.put("postLoginCookieCount", beforeCount);
     report.put("verifiedCookieCount", afterCount);
@@ -164,10 +163,5 @@ public final class VulcanSchedule429JavaBaseline {
         Schedule429Structure.referer(before.refererUri().toASCIIString()));
     report.put(
         "verifiedRefererContext", Schedule429Structure.referer(after.refererUri().toASCIIString()));
-  }
-
-  private static int cookieCount(String header) {
-    return (int)
-        java.util.Arrays.stream(header.split(";")).filter(pair -> pair.contains("=")).count();
   }
 }
