@@ -53,6 +53,8 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
     BrowserAuthStage stage = BrowserAuthStage.INITIAL_NAVIGATION;
     AtomicReference<PrivacyConsentOperation> consentOperation =
         new AtomicReference<>(PrivacyConsentOperation.NOT_STARTED);
+    AtomicReference<PrivacyConsentDismissObservation> dismissal =
+        new AtomicReference<>(PrivacyConsentDismissObservation.NONE);
     List<BrowserRequestObservation> observations = new CopyOnWriteArrayList<>();
     try (Playwright playwright = Playwright.create();
         Browser browser =
@@ -64,7 +66,9 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
       requireAllowedPage(page);
       stage = BrowserAuthStage.INITIAL_PORTAL_CONSENT;
       consentOperation.set(PrivacyConsentOperation.NOT_STARTED);
-      VulcanPrivacyConsent.dismissIfPresent(page, portalUrls, consentOperation::set);
+      dismissal.set(PrivacyConsentDismissObservation.NONE);
+      VulcanPrivacyConsent.dismissIfPresent(
+          page, portalUrls, consentOperation::set, dismissal::set);
       stage = BrowserAuthStage.DIRECT_LOGIN_DISCOVERY;
       Locator directLogin = locateDirectLogin(page);
       if (directLogin != null) {
@@ -76,7 +80,9 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
       requireAllowedPage(page);
       stage = BrowserAuthStage.POST_DIRECT_LOGIN_CONSENT;
       consentOperation.set(PrivacyConsentOperation.NOT_STARTED);
-      VulcanPrivacyConsent.dismissIfPresent(page, portalUrls, consentOperation::set);
+      dismissal.set(PrivacyConsentDismissObservation.NONE);
+      VulcanPrivacyConsent.dismissIfPresent(
+          page, portalUrls, consentOperation::set, dismissal::set);
       stage = BrowserAuthStage.LOGIN_FORM_VALIDATION;
       rejectInteractiveSecurity(page);
 
@@ -116,13 +122,18 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
         throw exception;
       }
     } catch (VulcanAuthenticationException exception) {
-      logFailure(stage, consentOperation.get(), exception.category());
+      logFailure(stage, consentOperation.get(), dismissal.get(), exception.category());
       throw exception;
     } catch (PlaywrightException exception) {
-      logFailure(stage, consentOperation.get(), VulcanAuthFailureCategory.TRANSIENT);
+      logFailure(
+          stage, consentOperation.get(), dismissal.get(), VulcanAuthFailureCategory.TRANSIENT);
       throw new VulcanAuthenticationException(VulcanAuthFailureCategory.TRANSIENT);
     } catch (RuntimeException exception) {
-      logFailure(stage, consentOperation.get(), VulcanAuthFailureCategory.PROTOCOL_FAILURE);
+      logFailure(
+          stage,
+          consentOperation.get(),
+          dismissal.get(),
+          VulcanAuthFailureCategory.PROTOCOL_FAILURE);
       throw new VulcanAuthenticationException(VulcanAuthFailureCategory.PROTOCOL_FAILURE);
     }
   }
@@ -130,23 +141,59 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
   private static void logFailure(
       BrowserAuthStage stage,
       PrivacyConsentOperation operation,
+      PrivacyConsentDismissObservation dismissal,
       VulcanAuthFailureCategory category) {
-    logger.warn("{}", formatFailure(stage, operation, category));
+    if (!isConsentStage(stage)) {
+      logger.warn("VULCAN browser authentication failed: stage={} category={}", stage, category);
+    } else if (operation != PrivacyConsentOperation.DISMISS_WAIT) {
+      logger.warn(
+          "VULCAN browser authentication failed: stage={} consentOperation={} category={}",
+          stage,
+          operation,
+          category);
+    } else {
+      logger.warn(
+          "VULCAN browser authentication failed: stage={} consentOperation={} dismissFailure={}"
+              + " dismissState={} headingPresent={} containerVisible={} anyOwnerAriaHidden={} category={}",
+          stage,
+          operation,
+          dismissal.failure(),
+          dismissal.state(),
+          dismissal.headingPresent(),
+          dismissal.containerVisible(),
+          dismissal.anyOwnerAriaHidden(),
+          category);
+    }
   }
 
   /** This boundary accepts only finite values, never an exception or browser/account data. */
   static String formatFailure(
       BrowserAuthStage stage,
       PrivacyConsentOperation operation,
+      PrivacyConsentDismissObservation dismissal,
       VulcanAuthFailureCategory category) {
     return "VULCAN browser authentication failed: stage="
         + stage.name()
-        + (stage == BrowserAuthStage.INITIAL_PORTAL_CONSENT
-                || stage == BrowserAuthStage.POST_DIRECT_LOGIN_CONSENT
-            ? " consentOperation=" + operation.name()
+        + (isConsentStage(stage) ? " consentOperation=" + operation.name() : "")
+        + (isConsentStage(stage) && operation == PrivacyConsentOperation.DISMISS_WAIT
+            ? " dismissFailure="
+                + dismissal.failure().name()
+                + " dismissState="
+                + dismissal.state().name()
+                + " headingPresent="
+                + dismissal.headingPresent().name()
+                + " containerVisible="
+                + dismissal.containerVisible().name()
+                + " anyOwnerAriaHidden="
+                + dismissal.anyOwnerAriaHidden().name()
             : "")
         + " category="
         + category.name();
+  }
+
+  private static boolean isConsentStage(BrowserAuthStage stage) {
+    return stage == BrowserAuthStage.INITIAL_PORTAL_CONSENT
+        || stage == BrowserAuthStage.POST_DIRECT_LOGIN_CONSENT;
   }
 
   private VerifiedLoginForm requireSafeLoginForm(Page page) {

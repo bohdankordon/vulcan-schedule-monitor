@@ -492,6 +492,62 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
     verify(password, never()).fill(anyString());
   }
 
+  @ParameterizedTest
+  @CsvSource({
+    "WAIT_TIMEOUT,TRANSIENT",
+    "SURFACE_STATE_READ_FAILURE,TRANSIENT",
+    "TRUST_VALIDATION_FAILURE,UNSUPPORTED_AUTH_FLOW",
+    "OTHER_PLAYWRIGHT_FAILURE,TRANSIENT",
+    "OTHER_FAILURE,PROTOCOL_FAILURE"
+  })
+  void dismissalFaultsKeepExistingExternalCategoriesAndLogOnlyEnums(
+      PrivacyConsentDismissFailureKind failure, VulcanAuthFailureCategory category) {
+    var consent = VulcanPrivacyConsentFrameTest.knownFrameConsent(page);
+    doAnswer(
+            invocation -> {
+              switch (failure) {
+                case SURFACE_STATE_READ_FAILURE ->
+                    when(consent.owner().isVisible())
+                        .thenThrow(
+                            new PlaywrightException(PrivacyConsentDismissDiagnosticsTest.SECRETS));
+                case TRUST_VALIDATION_FAILURE ->
+                    when(consent.frame().url())
+                        .thenReturn("https://external.example/SECRET_FRAME_URL");
+                case OTHER_PLAYWRIGHT_FAILURE ->
+                    doThrow(new PlaywrightException(PrivacyConsentDismissDiagnosticsTest.SECRETS))
+                        .when(page)
+                        .waitForCondition(any(), argThat(options -> options.timeout == 3_000));
+                case OTHER_FAILURE ->
+                    doThrow(new IllegalStateException(PrivacyConsentDismissDiagnosticsTest.SECRETS))
+                        .when(page)
+                        .waitForCondition(any(), argThat(options -> options.timeout == 3_000));
+                default -> {}
+              }
+              return null;
+            })
+        .when(consent.accept())
+        .click(any(Locator.ClickOptions.class));
+    authenticateExpecting(category);
+    assertThat(logs.list)
+        .singleElement()
+        .satisfies(
+            event -> {
+              PrivacyConsentDismissDiagnosticsTest.assertFiniteLog(event.getFormattedMessage());
+              assertThat(event.getFormattedMessage())
+                  .contains(
+                      "stage=INITIAL_PORTAL_CONSENT consentOperation=DISMISS_WAIT dismissFailure="
+                          + failure.name())
+                  .endsWith(" category=" + category.name());
+              assertThat(event.getArgumentArray())
+                  .allSatisfy(value -> assertThat(value).isInstanceOf(Enum.class));
+              assertThat(event.getThrowableProxy()).isNull();
+            });
+    verify(consent.accept()).click(any(Locator.ClickOptions.class));
+    verify(page).waitForCondition(any(), argThat(options -> options.timeout == 3_000));
+    verify(username, never()).fill(anyString());
+    verify(password, never()).fill(anyString());
+  }
+
   @Test
   void unsafeLoginFormFailsBeforeCredentialEntryWithItsOwnStage() {
     when(page.locator(PASSWORD_SELECTOR).count()).thenReturn(0);
@@ -662,7 +718,13 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
         .singleElement()
         .satisfies(
             event -> {
-              assertThat(event.getFormattedMessage())
+              assertThat(
+                      event
+                          .getFormattedMessage()
+                          .replaceAll(
+                              " dismissFailure=[A-Z_]+ dismissState=[A-Z_]+ headingPresent=[A-Z_]+"
+                                  + " containerVisible=[A-Z_]+ anyOwnerAriaHidden=[A-Z_]+",
+                              ""))
                   .isEqualTo(
                       "VULCAN browser authentication failed: stage="
                           + stage
@@ -683,7 +745,14 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
                       USERNAME,
                       PASSWORD);
               assertThat(event.getThrowableProxy()).isNull();
-              assertThat(event.getArgumentArray()).containsExactly(event.getFormattedMessage());
+              assertThat(event.getArgumentArray())
+                  .allSatisfy(value -> assertThat(value).isInstanceOf(Enum.class));
+              if (operation == PrivacyConsentOperation.DISMISS_WAIT) {
+                assertThat(event.getFormattedMessage()).contains(" dismissFailure=WAIT_TIMEOUT ");
+              } else {
+                assertThat(event.getFormattedMessage())
+                    .doesNotContain("dismissFailure=", "dismissState=");
+              }
             });
   }
 }

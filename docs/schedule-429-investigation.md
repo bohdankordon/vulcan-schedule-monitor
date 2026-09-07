@@ -1007,3 +1007,73 @@ browser-auth/privacy suite passed all 152 cases. Full Maven `verify` passed with
 and `git diff --check` passed. Consent constants/selectors/timeouts and existing
 frame discovery, ancestry, action-resolution, and safety-rule bodies were also
 compared against the pre-change HEAD and remained unchanged.
+
+## Post-accept dismissal observation (2026-09-07, build/test only)
+
+A separately authorized real `/connect` attempt at approximately **2026-09-07
+09:58 local** reported `stage=INITIAL_PORTAL_CONSENT`,
+`consentOperation=DISMISS_WAIT`, `category=TRANSIENT`. This establishes that the
+first privacy-consent action was reached and `accept.click()` returned before
+failure during dismissal verification. It does not establish the exact post-click
+iframe state, whether a deadline or a state read failed, or that VULCAN changed
+its iframe implementation. The M monitoring-sequence experiment remains paused
+until normal `/connect` works. This evidence is separate from the historical
+schedule-429 findings.
+
+The next diagnostic adds finite dismissal failure kinds: `WAIT_TIMEOUT` for a
+deadline from the wait itself, `TRUST_VALIDATION_FAILURE` for existing safety
+rejection, `SURFACE_STATE_READ_FAILURE` for a Playwright failure within the
+existing blocking callback (owner visibility or frame/trust metadata inspection),
+`OTHER_PLAYWRIGHT_FAILURE`, and `OTHER_FAILURE`. `NOT_APPLICABLE` covers a wait
+that did not fault. A timeout thrown by a callback read is a read failure, not
+misreported as the wait deadline. These observations do not change external
+category mapping or replace exceptions; safety failures still take precedence
+exactly as before.
+
+Before clicking, best-effort, non-waiting `elementHandles()` calls pin only the
+already-known heading and container. At the end, after the existing dismissal
+decision and before handle cleanup, a best-effort snapshot checks trust before
+DOM inspection and uses those pinned elements and existing trusted owner handles.
+It does not re-resolve heading-relative selectors after click. A fixed function
+returns only boolean zero-area, pointer-events-none, inert and aria-hidden facts;
+no CSS strings, dimensions, coordinates, HTML, attributes or text are returned.
+Unexpected keys/types/results are discarded. Heading presence means that the
+pinned heading is still connected; container visibility uses the pinned element.
+These are sequential observations, not an atomic snapshot or a reconstruction of
+an earlier instant. Trust loss or failed reads yield finite unavailable/read-failed
+states and cannot change the already-determined consent outcome.
+
+The compact state distinguishes detached frames, hidden owners, visible owners
+with zero area, visible owners with pointer-events-none/inert signals, and visible
+owners without those signals. `INTERACTIVE` means plausibly interactive based on
+these limited checks, not proven hit testing. Heading presence and container
+visibility are separately `TRUE`/`FALSE`/`UNAVAILABLE`. `anyOwnerAriaHidden` is
+reported separately: aria-hidden alone does not imply non-interactivity. No iframe
+and unavailable/read-failed states are explicit. Only these enums reach the logger
+on `DISMISS_WAIT` failure. Other failure shapes and ordinary success logging stay
+unchanged. Each outer consent invocation resets its observation to avoid stale data.
+
+`noLongerBlocking()` remains untouched: only detachment or an owner becoming
+Playwright-invisible permits iframe dismissal. Pointer-events, inert, heading
+absence and hidden inner UI are diagnostic facts only. Existing selectors,
+ancestry/allowlist checks, 2000ms discovery and 3000ms dismissal timeouts, clicks,
+waits and retry policy remain unchanged. Observer and diagnostic-read runtime
+exceptions are isolated, including diagnostic handle cleanup.
+
+This implementation uses synthetic mocks and browser-local fixtures only, with
+zero real VULCAN requests. No real `/connect` was retried, and no monitoring,
+persisted monitoring sequence or schedule baseline was run. A further real
+connection attempt requires separate authorization after review.
+
+Validation: 32 new deterministic cases passed; the dedicated mock-based
+privacy/auth suite passed all 184 cases. All eight optional Chromium scenarios
+also passed when explicitly enabled, using only the in-process loopback fixture
+with all other requests blocked. They cover retained inner UI, removed inner UI,
+pointer-events-none, inert, aria-hidden, zero area, hidden owners and detachment.
+An actual zero-width Chromium owner is invisible and succeeds under the original
+rule; the mocked visible/zero-area edge case still fails. Full Maven `verify`
+passed with 806 tests, zero failures/errors and five opt-in entries skipped in
+the default run. Spotless and `git diff --check` passed. The complete
+`noLongerBlocking()` body, selector/timeout constants and existing
+discovery/ancestry/trust/action-resolution/form/page safety rules were compared
+against the pre-change HEAD and remained unchanged.

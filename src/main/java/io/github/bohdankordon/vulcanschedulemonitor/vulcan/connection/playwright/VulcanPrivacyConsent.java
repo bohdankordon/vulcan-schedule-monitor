@@ -77,6 +77,14 @@ final class VulcanPrivacyConsent {
       Page page,
       PortalUrlValidator portalUrls,
       Consumer<PrivacyConsentOperation> operationObserver) {
+    dismissIfPresent(page, portalUrls, operationObserver, dismissal -> {});
+  }
+
+  static void dismissIfPresent(
+      Page page,
+      PortalUrlValidator portalUrls,
+      Consumer<PrivacyConsentOperation> operationObserver,
+      Consumer<PrivacyConsentDismissObservation> dismissObserver) {
     // The observer is diagnostic only: no return value, browser data or exception propagation.
     Consumer<PrivacyConsentOperation> observe =
         operation -> {
@@ -114,7 +122,13 @@ final class VulcanPrivacyConsent {
       readiness.finish();
       if (readiness.action != null) {
         dismissTrustedSurface(
-            page, readiness.surface, readiness.action, portalUrls, unsafeNavigations, observe);
+            page,
+            readiness.surface,
+            readiness.action,
+            portalUrls,
+            unsafeNavigations,
+            observe,
+            dismissObserver);
       }
     } finally {
       page.offFrameNavigated(navigation);
@@ -352,7 +366,8 @@ final class VulcanPrivacyConsent {
       ConsentAction action,
       PortalUrlValidator portalUrls,
       Set<Frame> unsafeNavigations,
-      Consumer<PrivacyConsentOperation> observe) {
+      Consumer<PrivacyConsentOperation> observe,
+      Consumer<PrivacyConsentDismissObservation> dismissObserver) {
     observe.accept(PrivacyConsentOperation.TRUST_VALIDATION);
     requireTrustedSurface(page, surface, portalUrls, unsafeNavigations);
     if (surface.detached()) return;
@@ -368,14 +383,25 @@ final class VulcanPrivacyConsent {
                 new Locator.ElementHandleOptions().setTimeout(DISMISS_TIMEOUT_MS))
             : null;
     if (surface.frame() == null && originalContainer == null) throw unsupported();
+    PrivacyConsentDismissDiagnostics dismissal =
+        new PrivacyConsentDismissDiagnostics(
+            () -> requireTrustedSurface(page, surface, portalUrls, unsafeNavigations),
+            surface::detached,
+            surface.owners(),
+            headings,
+            container,
+            originalContainer,
+            dismissObserver);
     try {
       observe.accept(PrivacyConsentOperation.ACCEPT_CLICK);
       accept.click(new Locator.ClickOptions().setTimeout(DISMISS_TIMEOUT_MS));
       observe.accept(PrivacyConsentOperation.DISMISS_WAIT);
       if (surface.frame() == null) {
-        originalContainer.waitForElementState(
-            ElementState.HIDDEN,
-            new ElementHandle.WaitForElementStateOptions().setTimeout(DISMISS_TIMEOUT_MS));
+        dismissal.waitFor(
+            () ->
+                originalContainer.waitForElementState(
+                    ElementState.HIDDEN,
+                    new ElementHandle.WaitForElementStateOptions().setTimeout(DISMISS_TIMEOUT_MS)));
         observe.accept(PrivacyConsentOperation.FINAL_VALIDATION);
         requireTrustedSurface(page, surface, portalUrls, unsafeNavigations);
         if (headings.count() != 0) throw unsupported();
@@ -383,18 +409,25 @@ final class VulcanPrivacyConsent {
         // Hiding the inner dialog alone is insufficient: a transparent iframe can still intercept
         // input. A detached frame or hidden owner (including an ancestor owner) removes the
         // blocker.
-        page.waitForCondition(
-            () -> noLongerBlocking(page, surface, portalUrls, unsafeNavigations),
-            new Page.WaitForConditionOptions().setTimeout(DISMISS_TIMEOUT_MS));
+        dismissal.waitFor(
+            () ->
+                page.waitForCondition(
+                    () ->
+                        dismissal.inspectBlocking(
+                            () -> noLongerBlocking(page, surface, portalUrls, unsafeNavigations)),
+                    new Page.WaitForConditionOptions().setTimeout(DISMISS_TIMEOUT_MS)));
         observe.accept(PrivacyConsentOperation.FINAL_VALIDATION);
         if (!noLongerBlocking(page, surface, portalUrls, unsafeNavigations)) throw unsupported();
       }
     } catch (PlaywrightException exception) {
-      requireTrustedSurface(page, surface, portalUrls, unsafeNavigations);
+      dismissal.validateAfterFailure(
+          () -> requireTrustedSurface(page, surface, portalUrls, unsafeNavigations));
       // A click can detach its own frame before Playwright finishes waiting for the action.
       // Do not inspect stale DOM handles afterward; navigation outside the boundary still fails.
       if (!surface.detached()) throw exception;
     } finally {
+      // Inspect after the existing success/failure decision, before disposing pinned handles.
+      dismissal.finish();
       dispose(originalContainer);
     }
   }

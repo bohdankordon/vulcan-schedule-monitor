@@ -171,7 +171,8 @@ class PrivacyConsentDiagnosticsTest {
       for (var operation : PrivacyConsentOperation.values()) {
         for (var category : VulcanAuthFailureCategory.values()) {
           String message =
-              PlaywrightVulcanBrowserAuthenticator.formatFailure(stage, operation, category);
+              PlaywrightVulcanBrowserAuthenticator.formatFailure(
+                  stage, operation, PrivacyConsentDismissObservation.NONE, category);
           boolean consent =
               stage == BrowserAuthStage.INITIAL_PORTAL_CONSENT
                   || stage == BrowserAuthStage.POST_DIRECT_LOGIN_CONSENT;
@@ -180,12 +181,18 @@ class PrivacyConsentDiagnosticsTest {
                   "VULCAN browser authentication failed: stage="
                       + stage.name()
                       + (consent ? " consentOperation=" + operation.name() : "")
+                      + (consent && operation == PrivacyConsentOperation.DISMISS_WAIT
+                          ? " dismissFailure=NOT_APPLICABLE dismissState=UNAVAILABLE"
+                              + " headingPresent=UNAVAILABLE containerVisible=UNAVAILABLE anyOwnerAriaHidden=UNAVAILABLE"
+                          : "")
                       + " category="
                       + category.name());
           assertThat(message)
               .matches(
                   "VULCAN browser authentication failed: stage=[A-Z_]+"
-                      + "( consentOperation=[A-Z_]+)? category=[A-Z_]+");
+                      + "( consentOperation=[A-Z_]+)?"
+                      + "( dismissFailure=[A-Z_]+ dismissState=[A-Z_]+ headingPresent=[A-Z_]+"
+                      + " containerVisible=[A-Z_]+ anyOwnerAriaHidden=[A-Z_]+)? category=[A-Z_]+");
         }
       }
     }
