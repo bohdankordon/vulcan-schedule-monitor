@@ -6,6 +6,7 @@ import static com.github.tomakehurst.wiremock.client.WireMock.get;
 import static com.github.tomakehurst.wiremock.client.WireMock.getRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlPathEqualTo;
 import static io.github.bohdankordon.vulcanschedulemonitor.testsupport.VulcanFixtures.text;
+import static io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.SessionMaterialTestSupport.cookiePairs;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -61,7 +62,7 @@ class DefaultVulcanSessionVerifierWireMockTest {
             .withHeader("Cookie", containing("session=rotated")));
     assertThat(verified.classes()).hasSize(1);
     assertThatThrownBy(verified.classes()::clear).isInstanceOf(UnsupportedOperationException.class);
-    assertThat(verified.sessionMaterial().cookieHeader())
+    assertThat(cookiePairs(verified.sessionMaterial()))
         .contains("session=final")
         .doesNotContain("session=old", "session=rotated");
     assertThat(verified.toString())

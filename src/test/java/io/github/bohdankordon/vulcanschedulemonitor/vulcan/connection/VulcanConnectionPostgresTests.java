@@ -1,5 +1,6 @@
 package io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection;
 
+import static io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.SessionMaterialTestSupport.cookiePairs;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -159,7 +160,7 @@ class VulcanConnectionPostgresTests extends PostgresIntegrationTestSupport {
 
     assertThat(connect(issue(userId)).status()).isEqualTo(ConnectOutcome.Status.SUCCESS);
 
-    assertThat(sessions.loadCurrent(accountId()).snapshotMaterial().cookieHeader())
+    assertThat(cookiePairs(sessions.loadCurrent(accountId()).snapshotMaterial()))
         .contains("session=after-connect-verification")
         .doesNotContain("session=before-connect-verification");
   }
@@ -182,7 +183,7 @@ class VulcanConnectionPostgresTests extends PostgresIntegrationTestSupport {
 
     assertThat(sessions.recover(accountId()))
         .isEqualTo(VulcanSessionManager.RecoveryResult.RECOVERED);
-    assertThat(sessions.loadCurrent(accountId()).snapshotMaterial().cookieHeader())
+    assertThat(cookiePairs(sessions.loadCurrent(accountId()).snapshotMaterial()))
         .contains("session=after-recovery-verification")
         .doesNotContain("session=before-recovery-verification");
   }

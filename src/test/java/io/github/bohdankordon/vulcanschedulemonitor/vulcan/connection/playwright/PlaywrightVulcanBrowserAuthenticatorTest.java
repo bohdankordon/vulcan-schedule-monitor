@@ -1,5 +1,6 @@
 package io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.playwright;
 
+import static io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.SessionMaterialTestSupport.cookiePairs;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.*;
@@ -22,6 +23,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.slf4j.LoggerFactory;
 
@@ -30,6 +32,9 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
   private static final String URL = "https://school.vulcan.net.pl/synthetic/login?secret=query";
   private static final String USERNAME = "synthetic-login";
   private static final String PASSWORD = "synthetic-password";
+  private static final String SECRET_DETAILS =
+      "https://school.vulcan.net.pl/SECRET_TENANT_PATH SUPER_SECRET_PASSWORD "
+          + "SUPER_SECRET_COOKIE SECRET_APPGUID private exception text <div>private DOM</div>";
   private static final String PASSWORD_SELECTOR =
       "input[autocomplete='current-password'], input[type='password']";
   private static final String USERNAME_SELECTOR =
@@ -48,12 +53,23 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
   private final ListAppender<ILoggingEvent> logs = new ListAppender<>();
   private final Logger logger =
       (Logger) LoggerFactory.getLogger(PlaywrightVulcanBrowserAuthenticator.class);
+  private ch.qos.logback.classic.Level previousLevel;
   private Locator username;
   private Locator password;
   private Locator submitter;
 
+  private static Cookie syntheticCookie(String name, String value) {
+    return new Cookie(name, value)
+        .setPath("/")
+        .setDomain("school.vulcan.net.pl")
+        .setSecure(true)
+        .setHttpOnly(true);
+  }
+
   @BeforeEach
   void setUp() {
+    previousLevel = logger.getLevel();
+    logger.setLevel(ch.qos.logback.classic.Level.WARN);
     logs.start();
     logger.addAppender(logs);
     when(playwright.chromium().launch(any(BrowserType.LaunchOptions.class))).thenReturn(browser);
@@ -83,6 +99,7 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
   void tearDown() {
     logger.detachAppender(logs);
     logs.stop();
+    logger.setLevel(previousLevel);
   }
 
   @Test
@@ -141,7 +158,10 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
     verify(context, never()).route(anyString(), any());
     verify(username, never()).fill(anyString());
     verify(password, never()).fill(anyString());
-    assertFailureLog(BrowserAuthStage.COOKIE_CONSENT, VulcanAuthFailureCategory.TRANSIENT);
+    assertFailureLog(
+        BrowserAuthStage.INITIAL_PORTAL_CONSENT,
+        PrivacyConsentOperation.DISMISS_WAIT,
+        VulcanAuthFailureCategory.TRANSIENT);
   }
 
   @Test
@@ -174,7 +194,7 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
     when(observed.headerValue("x-v-requestverificationtoken")).thenReturn("synthetic-token");
     when(observed.headerValue("x-v-appguid")).thenReturn("synthetic-guid");
     when(context.cookies(application))
-        .thenReturn(List.of(new Cookie("SyntheticCookie", "synthetic-value")));
+        .thenReturn(List.of(syntheticCookie("SyntheticCookie", "synthetic-value")));
     doAnswer(
             invocation -> {
               when(page.url()).thenReturn(URL + "#schedule");
@@ -189,7 +209,7 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
       var session = authenticator.authenticate(request);
       assertThat(session.applicationBaseUri())
           .isEqualTo(URI.create("https://school.vulcan.net.pl/synthetic/"));
-      assertThat(session.cookieHeader()).isEqualTo("SyntheticCookie=synthetic-value");
+      assertThat(cookiePairs(session)).isEqualTo("SyntheticCookie=synthetic-value");
       assertThat(logs.list).isEmpty();
       verify(diagnostics).pass(Stage.SESSION_CAPTURE);
     }
@@ -203,6 +223,361 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
         BrowserAuthStage.DIRECT_LOGIN_DISCOVERY, VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
   }
 
+  @ParameterizedTest
+  @ValueSource(strings = {"referer", "verification", "appGuid"})
+  void incompleteRequestsHavePresenceDiagnosticsButNeverTriggerCookieLookup(String missing) {
+    emitDuringSubmission(
+        SessionCaptureDiagnosticsTest.request(
+            SessionCaptureDiagnosticsTest.REQUEST,
+            missing.equals("referer") ? null : SessionCaptureDiagnosticsTest.REFERER,
+            missing.equals("verification") ? null : SessionCaptureDiagnosticsTest.TOKEN,
+            missing.equals("appGuid") ? null : SessionCaptureDiagnosticsTest.GUID));
+    authenticateExpecting(VulcanAuthFailureCategory.PROTOCOL_FAILURE);
+    assertCaptureLog(
+        new SessionCaptureObservation(
+            SessionCaptureFailureKind.NO_COMPLETE_REQUEST,
+            SessionCaptureObservation.AllowedRequestCount.ONE,
+            SessionCaptureObservation.CompleteRequestCount.ZERO,
+            !missing.equals("referer"),
+            !missing.equals("verification"),
+            !missing.equals("appGuid"),
+            false,
+            SessionCaptureObservation.CompleteRequestCount.ZERO,
+            SessionCaptureObservation.CompleteRequestCount.ZERO,
+            SessionCaptureObservation.CookieCount.UNAVAILABLE),
+        VulcanAuthFailureCategory.PROTOCOL_FAILURE);
+    verify(context, never()).cookies(anyString());
+  }
+
+  @Test
+  void distributedHeadersStillFailWithoutCookieLookupOrAnotherRequest() {
+    emitDuringSubmission(
+        SessionCaptureDiagnosticsTest.request(
+            SessionCaptureDiagnosticsTest.REQUEST,
+            SessionCaptureDiagnosticsTest.REFERER,
+            null,
+            null),
+        SessionCaptureDiagnosticsTest.request(
+            SessionCaptureDiagnosticsTest.REQUEST, null, SessionCaptureDiagnosticsTest.TOKEN, null),
+        SessionCaptureDiagnosticsTest.request(
+            SessionCaptureDiagnosticsTest.REQUEST, null, null, SessionCaptureDiagnosticsTest.GUID));
+    authenticateExpecting(VulcanAuthFailureCategory.PROTOCOL_FAILURE);
+    assertCaptureLog(
+        new SessionCaptureObservation(
+            SessionCaptureFailureKind.NO_COMPLETE_REQUEST,
+            SessionCaptureObservation.AllowedRequestCount.TWO_TO_FIVE,
+            SessionCaptureObservation.CompleteRequestCount.ZERO,
+            true,
+            true,
+            true,
+            false,
+            SessionCaptureObservation.CompleteRequestCount.ZERO,
+            SessionCaptureObservation.CompleteRequestCount.ZERO,
+            SessionCaptureObservation.CookieCount.UNAVAILABLE),
+        VulcanAuthFailureCategory.PROTOCOL_FAILURE);
+    verify(context, never()).cookies(anyString());
+    verify(page).navigate(URL);
+    verify(submitter).click();
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"name", "path", "domain"})
+  void rejectedStructuredCookieMetadataNeverEntersTheFailureLog(String field) {
+    emitDuringSubmission(
+        SessionCaptureDiagnosticsTest.request(
+            SessionCaptureDiagnosticsTest.REQUEST,
+            SessionCaptureDiagnosticsTest.REFERER,
+            "SUPER_SECRET_TOKEN",
+            "SUPER_SECRET_APPGUID"));
+    var cookie = syntheticCookie("SUPER_SECRET_COOKIE_NAME", "SUPER_SECRET_COOKIE_VALUE");
+    switch (field) {
+      case "name" -> cookie.name += "\r";
+      case "path" -> cookie.path = "SECRET_COOKIE_PATH";
+      case "domain" -> cookie.domain = "https://SECRET_COOKIE_DOMAIN";
+    }
+    when(context.cookies(SessionCaptureDiagnosticsTest.REQUEST)).thenReturn(List.of(cookie));
+    authenticateExpecting(VulcanAuthFailureCategory.PROTOCOL_FAILURE);
+    assertCaptureLog(
+        new SessionCaptureObservation(
+            SessionCaptureFailureKind.MATERIAL_REJECTED,
+            SessionCaptureObservation.AllowedRequestCount.ONE,
+            SessionCaptureObservation.CompleteRequestCount.ONE,
+            true,
+            true,
+            true,
+            true,
+            SessionCaptureObservation.CompleteRequestCount.ONE,
+            SessionCaptureObservation.CompleteRequestCount.ONE,
+            SessionCaptureObservation.CookieCount.ONE),
+        VulcanAuthFailureCategory.PROTOCOL_FAILURE);
+    for (var event : logs.list) {
+      assertThat(event.getThrowableProxy()).isNull();
+      assertThat(event.getFormattedMessage())
+          .doesNotContain("SUPER_SECRET", "SECRET_COOKIE_PATH", "SECRET_COOKIE_DOMAIN");
+    }
+  }
+
+  @ParameterizedTest
+  @CsvSource({
+    "NO_MATCHING_COOKIES,ZERO,ZERO",
+    "APPLICATION_BASE_REJECTED,ONE,ZERO",
+    "REFERER_REJECTED,ONE,ONE",
+    "MATERIAL_REJECTED,ONE,ONE"
+  })
+  void actualCaptureRejectionsHaveFiniteLogsAndOriginalProtocolCategory(
+      SessionCaptureFailureKind reason,
+      SessionCaptureObservation.CookieCount cookieCount,
+      SessionCaptureObservation.CompleteRequestCount withCookies) {
+    String uri =
+        reason == SessionCaptureFailureKind.APPLICATION_BASE_REJECTED
+            ? "https://school.vulcan.net.pl"
+            : SessionCaptureDiagnosticsTest.REQUEST;
+    String referer =
+        reason == SessionCaptureFailureKind.REFERER_REJECTED
+            ? "https://school.vulcan.net.pl/outside/SUPER_SECRET_REFERER"
+            : SessionCaptureDiagnosticsTest.REFERER;
+    String token =
+        reason == SessionCaptureFailureKind.MATERIAL_REJECTED
+            ? SessionCaptureDiagnosticsTest.TOKEN + "\n"
+            : SessionCaptureDiagnosticsTest.TOKEN;
+    emitDuringSubmission(
+        SessionCaptureDiagnosticsTest.request(
+            uri, referer, token, SessionCaptureDiagnosticsTest.GUID));
+    when(context.cookies(uri))
+        .thenReturn(
+            reason == SessionCaptureFailureKind.NO_MATCHING_COOKIES
+                ? List.of()
+                : List.of(
+                    syntheticCookie(
+                        SessionCaptureDiagnosticsTest.COOKIE_NAME,
+                        SessionCaptureDiagnosticsTest.COOKIE_VALUE)));
+    authenticateExpecting(VulcanAuthFailureCategory.PROTOCOL_FAILURE);
+    assertCaptureLog(
+        new SessionCaptureObservation(
+            reason,
+            SessionCaptureObservation.AllowedRequestCount.ONE,
+            SessionCaptureObservation.CompleteRequestCount.ONE,
+            true,
+            true,
+            true,
+            true,
+            SessionCaptureObservation.CompleteRequestCount.ONE,
+            withCookies,
+            cookieCount),
+        VulcanAuthFailureCategory.PROTOCOL_FAILURE);
+    verify(context).cookies(uri);
+    verify(context, times(1)).cookies(anyString());
+    verify(submitter).click();
+  }
+
+  @Test
+  void cookieLookupStillUsesOnlyLastCompleteObservationAndDoesNotRefetchForOlderCandidates() {
+    String last = "https://other.vulcan.net.pl/SECRET_TENANT_PATH/Call.mvc/Run";
+    emitDuringSubmission(
+        SessionCaptureDiagnosticsTest.request(
+            SessionCaptureDiagnosticsTest.REQUEST,
+            SessionCaptureDiagnosticsTest.REFERER,
+            SessionCaptureDiagnosticsTest.TOKEN,
+            SessionCaptureDiagnosticsTest.GUID),
+        SessionCaptureDiagnosticsTest.request(
+            last,
+            "https://other.vulcan.net.pl/outside/SUPER_SECRET_REFERER",
+            SessionCaptureDiagnosticsTest.TOKEN,
+            SessionCaptureDiagnosticsTest.GUID),
+        SessionCaptureDiagnosticsTest.request(
+            "https://third.vulcan.net.pl/SECRET_TENANT_PATH/", null, null, null));
+    when(context.cookies(last))
+        .thenReturn(
+            List.of(
+                syntheticCookie(
+                    SessionCaptureDiagnosticsTest.COOKIE_NAME,
+                    SessionCaptureDiagnosticsTest.COOKIE_VALUE)));
+    authenticateExpecting(VulcanAuthFailureCategory.PROTOCOL_FAILURE);
+    assertCaptureLog(
+        new SessionCaptureObservation(
+            SessionCaptureFailureKind.REFERER_REJECTED,
+            SessionCaptureObservation.AllowedRequestCount.TWO_TO_FIVE,
+            SessionCaptureObservation.CompleteRequestCount.TWO_PLUS,
+            true,
+            true,
+            true,
+            true,
+            SessionCaptureObservation.CompleteRequestCount.TWO_PLUS,
+            SessionCaptureObservation.CompleteRequestCount.ONE,
+            SessionCaptureObservation.CookieCount.ONE),
+        VulcanAuthFailureCategory.PROTOCOL_FAILURE);
+    verify(context).cookies(last);
+    verify(context, times(1)).cookies(anyString());
+    verify(page).navigate(URL);
+  }
+
+  @Test
+  void cookieLookupExceptionHasUnavailableCountWithoutLeakingItsMessageOrChangingCategory() {
+    emitDuringSubmission(
+        SessionCaptureDiagnosticsTest.request(
+            SessionCaptureDiagnosticsTest.REQUEST,
+            SessionCaptureDiagnosticsTest.REFERER,
+            SessionCaptureDiagnosticsTest.TOKEN,
+            SessionCaptureDiagnosticsTest.GUID));
+    when(context.cookies(SessionCaptureDiagnosticsTest.REQUEST))
+        .thenThrow(new PlaywrightException(SessionCaptureDiagnosticsTest.DETAILS));
+    authenticateExpecting(VulcanAuthFailureCategory.TRANSIENT);
+    assertCaptureLog(
+        new SessionCaptureObservation(
+            SessionCaptureFailureKind.OTHER_PROTOCOL_FAILURE,
+            SessionCaptureObservation.AllowedRequestCount.ONE,
+            SessionCaptureObservation.CompleteRequestCount.ONE,
+            true,
+            true,
+            true,
+            true,
+            SessionCaptureObservation.CompleteRequestCount.ZERO,
+            SessionCaptureObservation.CompleteRequestCount.ZERO,
+            SessionCaptureObservation.CookieCount.UNAVAILABLE),
+        VulcanAuthFailureCategory.TRANSIENT);
+    verify(context).cookies(SessionCaptureDiagnosticsTest.REQUEST);
+  }
+
+  private void emitDuringSubmission(Request... requests) {
+    AtomicReference<Consumer<Request>> observer = new AtomicReference<>();
+    doAnswer(
+            invocation -> {
+              observer.set(invocation.getArgument(0));
+              return null;
+            })
+        .when(page)
+        .onRequest(any());
+    doAnswer(
+            invocation -> {
+              for (Request request : requests) observer.get().accept(request);
+              return null;
+            })
+        .when(submitter)
+        .click();
+  }
+
+  private void assertCaptureLog(
+      SessionCaptureObservation expected, VulcanAuthFailureCategory category) {
+    assertThat(logs.list)
+        .singleElement()
+        .satisfies(
+            event -> {
+              assertThat(event.getFormattedMessage())
+                  .isEqualTo(
+                      PlaywrightVulcanBrowserAuthenticator.formatSessionCaptureFailure(
+                          expected, category));
+              SessionCaptureDiagnosticsTest.assertFiniteLog(event.getFormattedMessage());
+              assertThat(event.getArgumentArray()).isNull();
+              assertThat(event.getThrowableProxy()).isNull();
+            });
+  }
+
+  @ParameterizedTest
+  @CsvSource({"false,false", "true,false", "true,true"})
+  void discoveryFailureIdentifiesInvocationWithOrWithoutDirectNavigation(
+      boolean secondInvocation, boolean directNavigation) {
+    Locator direct =
+        page.locator("a[title*='nauczyciel'], a[title*='pracownik'], a[href*='LoginEndpoint.aspx']")
+            .first();
+    when(page.locator(USERNAME_SELECTOR).count()).thenReturn(directNavigation ? 0 : 1);
+    when(direct.count()).thenReturn(1);
+    var calls = new java.util.concurrent.atomic.AtomicInteger();
+    doAnswer(
+            invocation -> {
+              if (calls.incrementAndGet() == (secondInvocation ? 2 : 1)) {
+                throw new PlaywrightException(SECRET_DETAILS);
+              }
+              return null;
+            })
+        .when(page)
+        .waitForCondition(any(), any(Page.WaitForConditionOptions.class));
+    clearInvocations(page, direct);
+
+    authenticateExpecting(VulcanAuthFailureCategory.TRANSIENT);
+
+    assertFailureLog(
+        secondInvocation
+            ? BrowserAuthStage.POST_DIRECT_LOGIN_CONSENT
+            : BrowserAuthStage.INITIAL_PORTAL_CONSENT,
+        PrivacyConsentOperation.DISCOVERY,
+        VulcanAuthFailureCategory.TRANSIENT);
+    var order = inOrder(page, direct);
+    order.verify(page).navigate(URL);
+    order.verify(page).waitForCondition(any(), argThat(options -> options.timeout == 2_000));
+    if (secondInvocation) {
+      order.verify(page).locator(USERNAME_SELECTOR);
+      if (directNavigation) {
+        order.verify(direct).click(any(Locator.ClickOptions.class));
+        order
+            .verify(page)
+            .waitForLoadState(
+                eq(com.microsoft.playwright.options.LoadState.DOMCONTENTLOADED),
+                any(Page.WaitForLoadStateOptions.class));
+      }
+      order.verify(page).waitForCondition(any(), argThat(options -> options.timeout == 2_000));
+    }
+    verify(page, times(secondInvocation ? 2 : 1))
+        .waitForCondition(any(), any(Page.WaitForConditionOptions.class));
+    verify(page).navigate(URL);
+    verify(playwright.chromium()).launch(any(BrowserType.LaunchOptions.class));
+    verify(direct, times(directNavigation ? 1 : 0)).click(any(Locator.ClickOptions.class));
+    verify(context, never()).route(anyString(), any());
+    verify(password, never()).fill(anyString());
+  }
+
+  @ParameterizedTest
+  @CsvSource({
+    "false,ACTION_RESOLUTION",
+    "false,ACCEPT_CLICK",
+    "false,DISMISS_WAIT",
+    "true,ACTION_RESOLUTION",
+    "true,ACCEPT_CLICK",
+    "true,DISMISS_WAIT"
+  })
+  void innerFailureIsPropagatedAtEitherConsentInvocation(
+      boolean secondInvocation, PrivacyConsentOperation operation) {
+    var consent = VulcanPrivacyConsentTest.knownConsent(page);
+    if (secondInvocation) {
+      Locator headings =
+          page.getByText(VulcanPrivacyConsent.HEADING)
+              .filter(new Locator.FilterOptions().setVisible(true));
+      when(page.locator(USERNAME_SELECTOR).count())
+          .thenAnswer(
+              invocation -> {
+                when(headings.count()).thenReturn(1);
+                return 1;
+              });
+      when(headings.count()).thenReturn(0);
+    }
+    switch (operation) {
+      case ACTION_RESOLUTION ->
+          when(consent.candidates().count()).thenThrow(new PlaywrightException(SECRET_DETAILS));
+      case ACCEPT_CLICK ->
+          doThrow(new PlaywrightException(SECRET_DETAILS))
+              .when(consent.accept())
+              .click(any(Locator.ClickOptions.class));
+      case DISMISS_WAIT ->
+          doThrow(new TimeoutError(SECRET_DETAILS))
+              .when(consent.originalContainer())
+              .waitForElementState(
+                  eq(ElementState.HIDDEN), any(ElementHandle.WaitForElementStateOptions.class));
+      default -> throw new AssertionError(operation);
+    }
+    authenticateExpecting(VulcanAuthFailureCategory.TRANSIENT);
+    assertFailureLog(
+        secondInvocation
+            ? BrowserAuthStage.POST_DIRECT_LOGIN_CONSENT
+            : BrowserAuthStage.INITIAL_PORTAL_CONSENT,
+        operation,
+        VulcanAuthFailureCategory.TRANSIENT);
+    verify(consent.accept(), times(operation == PrivacyConsentOperation.ACTION_RESOLUTION ? 0 : 1))
+        .click(any(Locator.ClickOptions.class));
+    verify(page, times(secondInvocation ? 2 : 1))
+        .waitForCondition(any(), any(Page.WaitForConditionOptions.class));
+    verify(context, never()).route(anyString(), any());
+    verify(password, never()).fill(anyString());
+  }
+
   @Test
   void unresolvedKnownConsentFailsAtConsentWithoutAttemptingDirectLogin() {
     var consent = VulcanPrivacyConsentTest.knownConsent(page);
@@ -214,7 +589,9 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
     verify(username, never()).fill(anyString());
     verify(password, never()).fill(anyString());
     assertFailureLog(
-        BrowserAuthStage.COOKIE_CONSENT, VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
+        BrowserAuthStage.INITIAL_PORTAL_CONSENT,
+        PrivacyConsentOperation.ACTION_RESOLUTION,
+        VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
   }
 
   @Test
@@ -332,7 +709,7 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
   }
 
   @Test
-  void readinessDomTimeoutLogsOnlyConsentStageAndCategory() {
+  void readinessDomTimeoutLogsConsentStageOperationAndCategory() {
     var consent = VulcanPrivacyConsentFrameTest.knownFrameConsent(page);
     when(consent
             .frame()
@@ -341,7 +718,10 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
             .count())
         .thenThrow(new TimeoutError(VulcanPrivacyConsentFrameTest.FRAME_URL + " " + PASSWORD));
     authenticateExpecting(VulcanAuthFailureCategory.TRANSIENT);
-    assertFailureLog(BrowserAuthStage.COOKIE_CONSENT, VulcanAuthFailureCategory.TRANSIENT);
+    assertFailureLog(
+        BrowserAuthStage.INITIAL_PORTAL_CONSENT,
+        PrivacyConsentOperation.DISCOVERY,
+        VulcanAuthFailureCategory.TRANSIENT);
     verify(context, never()).route(anyString(), any());
     verify(username, never()).fill(anyString());
     verify(password, never()).fill(anyString());
@@ -353,7 +733,9 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
     when(consent.candidates().count()).thenReturn(0);
     authenticateExpecting(VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
     assertFailureLog(
-        BrowserAuthStage.COOKIE_CONSENT, VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
+        BrowserAuthStage.INITIAL_PORTAL_CONSENT,
+        PrivacyConsentOperation.ACTION_RESOLUTION,
+        VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
     verify(context, never()).route(anyString(), any());
     verify(username, never()).fill(anyString());
     verify(password, never()).fill(anyString());
@@ -364,8 +746,66 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
     var consent = VulcanPrivacyConsentFrameTest.knownFrameConsent(page);
     doNothing().when(consent.accept()).click(any(Locator.ClickOptions.class));
     authenticateExpecting(VulcanAuthFailureCategory.TRANSIENT);
-    assertFailureLog(BrowserAuthStage.COOKIE_CONSENT, VulcanAuthFailureCategory.TRANSIENT);
+    assertFailureLog(
+        BrowserAuthStage.INITIAL_PORTAL_CONSENT,
+        PrivacyConsentOperation.DISMISS_WAIT,
+        VulcanAuthFailureCategory.TRANSIENT);
     verify(context, never()).route(anyString(), any());
+    verify(password, never()).fill(anyString());
+  }
+
+  @ParameterizedTest
+  @CsvSource({
+    "WAIT_TIMEOUT,TRANSIENT",
+    "SURFACE_STATE_READ_FAILURE,TRANSIENT",
+    "TRUST_VALIDATION_FAILURE,UNSUPPORTED_AUTH_FLOW",
+    "OTHER_PLAYWRIGHT_FAILURE,TRANSIENT",
+    "OTHER_FAILURE,PROTOCOL_FAILURE"
+  })
+  void dismissalFaultsKeepExistingExternalCategoriesAndLogOnlyEnums(
+      PrivacyConsentDismissFailureKind failure, VulcanAuthFailureCategory category) {
+    var consent = VulcanPrivacyConsentFrameTest.knownFrameConsent(page);
+    doAnswer(
+            invocation -> {
+              switch (failure) {
+                case SURFACE_STATE_READ_FAILURE ->
+                    when(consent.owner().isVisible())
+                        .thenThrow(
+                            new PlaywrightException(PrivacyConsentDismissDiagnosticsTest.SECRETS));
+                case TRUST_VALIDATION_FAILURE ->
+                    when(consent.frame().url())
+                        .thenReturn("https://external.example/SECRET_FRAME_URL");
+                case OTHER_PLAYWRIGHT_FAILURE ->
+                    doThrow(new PlaywrightException(PrivacyConsentDismissDiagnosticsTest.SECRETS))
+                        .when(page)
+                        .waitForCondition(any(), argThat(options -> options.timeout == 3_000));
+                case OTHER_FAILURE ->
+                    doThrow(new IllegalStateException(PrivacyConsentDismissDiagnosticsTest.SECRETS))
+                        .when(page)
+                        .waitForCondition(any(), argThat(options -> options.timeout == 3_000));
+                default -> {}
+              }
+              return null;
+            })
+        .when(consent.accept())
+        .click(any(Locator.ClickOptions.class));
+    authenticateExpecting(category);
+    assertThat(logs.list)
+        .singleElement()
+        .satisfies(
+            event -> {
+              PrivacyConsentDismissDiagnosticsTest.assertFiniteLog(event.getFormattedMessage());
+              assertThat(event.getFormattedMessage())
+                  .contains(
+                      "stage=INITIAL_PORTAL_CONSENT consentOperation=DISMISS_WAIT dismissFailure="
+                          + failure.name())
+                  .endsWith(" category=" + category.name());
+              assertThat(event.getArgumentArray()).isNull();
+              assertThat(event.getThrowableProxy()).isNull();
+            });
+    verify(consent.accept()).click(any(Locator.ClickOptions.class));
+    verify(page).waitForCondition(any(), argThat(options -> options.timeout == 3_000));
+    verify(username, never()).fill(anyString());
     verify(password, never()).fill(anyString());
   }
 
@@ -528,18 +968,56 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
   }
 
   private void assertFailureLog(BrowserAuthStage stage, VulcanAuthFailureCategory category) {
+    assertFailureLog(stage, null, category);
+  }
+
+  private void assertFailureLog(
+      BrowserAuthStage stage,
+      PrivacyConsentOperation operation,
+      VulcanAuthFailureCategory category) {
     assertThat(logs.list)
         .singleElement()
         .satisfies(
             event -> {
-              assertThat(event.getFormattedMessage())
+              assertThat(
+                      event
+                          .getFormattedMessage()
+                          .replaceAll(
+                              " dismissFailure=[A-Z_]+ dismissState=[A-Z_]+ headingPresent=[A-Z_]+"
+                                  + " containerVisible=[A-Z_]+ anyOwnerAriaHidden=[A-Z_]+",
+                              ""))
                   .isEqualTo(
                       "VULCAN browser authentication failed: stage="
                           + stage
+                          + (stage == BrowserAuthStage.SESSION_CAPTURE
+                              ? " captureFailure=NO_ALLOWED_REQUEST allowedRequests=ZERO completeRequests=ZERO"
+                                  + " sawReferer=false sawVerificationToken=false sawAppGuid=false"
+                                  + " sawAllRequiredHeadersTogether=false candidates=ZERO candidatesWithCookies=ZERO cookieCount=UNAVAILABLE"
+                              : "")
+                          + (operation == null ? "" : " consentOperation=" + operation)
                           + " category="
                           + category);
+              assertThat(event.getFormattedMessage())
+                  .doesNotContain(
+                      "SUPER_SECRET_PASSWORD",
+                      "SUPER_SECRET_COOKIE",
+                      "SECRET_TENANT_PATH",
+                      "SECRET_APPGUID",
+                      "private exception text",
+                      "private DOM",
+                      "https://",
+                      "http://",
+                      URL,
+                      USERNAME,
+                      PASSWORD);
               assertThat(event.getThrowableProxy()).isNull();
-              assertThat(event.getArgumentArray()).containsExactly(stage, category);
+              assertThat(event.getArgumentArray()).isNull();
+              if (operation == PrivacyConsentOperation.DISMISS_WAIT) {
+                assertThat(event.getFormattedMessage()).contains(" dismissFailure=WAIT_TIMEOUT ");
+              } else {
+                assertThat(event.getFormattedMessage())
+                    .doesNotContain("dismissFailure=", "dismissState=");
+              }
             });
   }
 }
