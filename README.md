@@ -52,6 +52,8 @@ See [Operational health](docs/operations.md) for public probes, health privacy, 
 
 See [Container deployment](docs/container-deployment.md) for the production image, private Compose topology, and isolated container verification.
 
+See [Database backup and restore](docs/database-backup-restore.md) for online backups, guarded recovery, and the separately preserved encryption key.
+
 - A Java 21 JDK
 - PostgreSQL configured through standard Spring datasource properties
 - No system Maven installation is required

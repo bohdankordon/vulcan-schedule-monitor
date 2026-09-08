@@ -2,10 +2,12 @@
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 from pathlib import Path
 import secrets
+import shutil
 import socket
 import subprocess
 import tarfile
@@ -179,6 +181,208 @@ def validate_config(config):
     print("Compose topology, safe defaults, persistence, security and stop budget: PASS", flush=True)
 
 
+def verify_database_operations(directory, env_file, project, compose, app, db, port):
+    # Git Bash lets Windows developers exercise the exact Linux production scripts.
+    # Linux CI uses system Bash. No alternative production implementation exists.
+    bash = shutil.which("bash")
+    if os.name == "nt":
+        git = shutil.which("git")
+        candidate = Path(git).resolve().parents[1] / "bin/bash.exe" if git else Path("missing")
+        bash = str(candidate) if candidate.is_file() else None
+    require(bash is not None, "Bash required for real backup/restore verification (Git Bash on Windows)")
+    output = directory / "backup artifacts"
+    common = ["--env-file", env_file.as_posix(), "--project-name", project,
+              "--output-dir", output.as_posix()]
+
+    def script(name, *args, failure=None):
+        script_env = dict(ENV)
+        if os.name == "nt":
+            # Preserve the container's null-device argument for curl while still
+            # translating host Compose/env paths for native docker.exe.
+            script_env["MSYS2_ARG_CONV_EXCL"] = "/dev/null"
+        result = subprocess.run([bash, (ROOT / "scripts/database" / name).as_posix(), *common, *args],
+                                cwd=ROOT, env=script_env, capture_output=True, text=True,
+                                encoding="utf-8", errors="replace", timeout=480)
+        transcript = result.stdout + result.stderr
+        require(all(marker not in transcript for marker in MARKERS), "Secret in backup/restore output")
+        if failure:
+            require(result.returncode != 0 and failure in transcript,
+                    "Expected restore guard: " + failure + "\n" + transcript[-4000:])
+        else:
+            require(result.returncode == 0, name + " failed:\n" + transcript[-6000:])
+        return transcript
+
+    def marker():
+        return application_sql(db, "SELECT id, value FROM recovery_probe ORDER BY id;")
+
+    def unchanged(before, expected):
+        after = inspect(app)
+        require(after["State"]["Running"] and after["State"]["StartedAt"] == before["State"]["StartedAt"]
+                and after["RestartCount"] == before["RestartCount"], "Rejected restore stopped/restarted app")
+        require(marker() == expected, "Rejected restore mutated the database")
+        require(status(port, "/readiness") == 200, "Rejected restore affected readiness")
+
+    def fixture(name, contents, original):
+        path = output / name
+        path.write_bytes(contents)
+        Path(str(path) + ".sha256").write_text(hashlib.sha256(contents).hexdigest() + "  " + name + "\n", newline="\n")
+        shutil.copyfile(str(original) + ".meta", str(path) + ".meta")
+        return path
+
+    application_sql(db, """
+        CREATE TABLE recovery_probe (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, value text NOT NULL);
+        INSERT INTO recovery_probe(value) VALUES ('original-synthetic-state');
+    """)
+    original_marker = marker()
+    history = application_sql(db, "SELECT installed_rank, version, checksum, success FROM flyway_schema_history ORDER BY installed_rank;")
+    before = inspect(app)
+    transcript = script("backup.sh")
+    archives = list(output.glob("*.dump"))
+    require(len(archives) == 1 and "BACKUP SUCCESS" in transcript, "Backup artifact missing")
+    archive = archives[0]
+    unchanged(before, original_marker)
+    require(archive.read_bytes().startswith(b"PGDMP"), "Expected PostgreSQL custom archive")
+    require(Path(str(archive) + ".sha256").read_text() == hashlib.sha256(archive.read_bytes()).hexdigest()
+            + "  " + archive.name + "\n", "Checksum must match final archive bytes")
+    require(not list(output.glob("*.partial")), "Backup left partial files")
+    if os.name != "nt":
+        require(all(p.stat().st_mode & 0o077 == 0 for p in output.iterdir()), "Backup permissions too broad")
+    print("Real online custom backup as non-superuser; app uninterrupted; checksum/sidecars/permissions: PASS", flush=True)
+    application_sql(db, "UPDATE recovery_probe SET value='post-backup-mutation'; INSERT INTO recovery_probe(value) VALUES ('new-row');")
+    mutated = marker()
+
+    # Every pre-destructive guard checks the live DB and original app process.
+    script("restore.sh", "--archive", archive.as_posix(), failure="requires --confirm")
+    unchanged(before, mutated)
+    require(len(list(output.glob("*.dump"))) == 1, "Confirmation guard made a safety backup")
+    print("Missing confirmation rejected before safety backup/app stop/DB mutation: PASS", flush=True)
+    tampered = fixture("tampered.dump", archive.read_bytes() + b"tamper", archive)
+    Path(str(tampered) + ".sha256").write_text(
+        hashlib.sha256(archive.read_bytes()).hexdigest() + "  " + tampered.name + "\n", newline="\n")
+    script("restore.sh", "--archive", tampered.as_posix(), "--confirm", "schedule_monitor", failure="Checksum mismatch")
+    unchanged(before, mutated)
+    print("Checksum tamper rejected; data/app unchanged: PASS", flush=True)
+    invalid = fixture("invalid.dump", b"not a PostgreSQL archive\n", archive)
+    script("restore.sh", "--archive", invalid.as_posix(), "--confirm", "schedule_monitor", failure="pg_restore: error")
+    unchanged(before, mutated)
+    print("Invalid archive with matching checksum/metadata rejected; data/app unchanged: PASS", flush=True)
+    for missing in (".sha256", ".meta"):
+        sidecar = Path(str(invalid) + missing)
+        saved = sidecar.read_bytes()
+        sidecar.unlink()
+        script("restore.sh", "--archive", invalid.as_posix(), "--confirm", "schedule_monitor", failure="sidecars are required")
+        unchanged(before, mutated)
+        sidecar.write_bytes(saved)
+    for replacement in ("database=wrong", "server_major=17", "pg_dump_major=17", "format=VSM_DB_BACKUP_V2"):
+        key = replacement.split("=", 1)[0]
+        meta = Path(str(archive) + ".meta").read_text()
+        lines = [replacement if line.startswith(key + "=") else line for line in meta.splitlines()]
+        Path(str(invalid) + ".meta").write_text("\n".join(lines) + "\n", newline="\n")
+        script("restore.sh", "--archive", invalid.as_posix(), "--confirm", "schedule_monitor", failure="Invalid backup metadata")
+        unchanged(before, mutated)
+    print("Missing sidecars and metadata format/database/major guards: PASS", flush=True)
+    destination_file = directory / "not-a-directory"
+    destination_file.write_text("synthetic fixture")
+    script("restore.sh", "--archive", archive.as_posix(), "--confirm", "schedule_monitor",
+           "--output-dir", destination_file.as_posix(), failure="mkdir:")
+    unchanged(before, mutated)
+    print("Safety backup destination failure aborts before app stop/DB mutation: PASS", flush=True)
+
+    # Exercise actual container config while the normal env file remains disabled.
+    # Enabled fixtures never run Java: running cases use only sleep with no network;
+    # missing/malformed cases are created but never started. PostgreSQL is untouched.
+    db_before = inspect(db)
+    override = directory / "provider-fixture.json"
+    for provider in ("TELEGRAM_BOT_ENABLED", "VULCAN_CONNECTION_ENABLED", "VULCAN_MONITORING_ENABLED"):
+        for value in ("true", None, "FALSE"):
+            override.write_text(json.dumps({"services": {"app": {
+                "environment": {provider: value}, "entrypoint": ["sleep", "infinity"],
+                "network_mode": "none", "restart": "no", "healthcheck": {"disable": True},
+            }}}), encoding="utf-8")
+            try:
+                run(*compose, "-f", str(override), "up", "--no-start", "--no-deps",
+                    "--force-recreate", "--no-build", "app")
+                fixture_app = run(*compose, "ps", "--all", "--quiet", "app")
+                selected = run("docker", "inspect", "--format",
+                               '{{range .Config.Env}}{{if eq (index (split . "=") 0) "' + provider
+                               + '"}}{{println .}}{{end}}{{end}}', fixture_app)
+                # Compose/Docker may retain an unset key without an assignment.
+                expected = ("", provider, provider + "=") if value is None else (provider + "=" + value,)
+                require(selected in expected,
+                        "Provider fixture environment mismatch (values withheld)")
+                require(run("docker", "inspect", "--format", '{{json .Config.Entrypoint}}', fixture_app)
+                        == '["sleep","infinity"]'
+                        and run("docker", "inspect", "--format", '{{.HostConfig.NetworkMode}}', fixture_app)
+                        == "none", "Provider fixture must be inert and network-isolated")
+                if value == "true":
+                    run("docker", "start", fixture_app)  # Starts sleep only, never the app.
+                state_before = run("docker", "inspect", "--format", '{{json .State}}', fixture_app)
+                require(json.loads(state_before)["Running"] == (value == "true"), "Fixture process state mismatch")
+                artifacts_before = {p.name: p.read_bytes() for p in output.iterdir()}
+                for options in ((), ("--skip-safety-backup",)):
+                    script("restore.sh", "--archive", archive.as_posix(), "--confirm", "schedule_monitor",
+                           *options, failure="Restore requires the app container to have VULCAN and Telegram providers disabled.")
+                    require(run("docker", "inspect", "--format", '{{json .State}}', fixture_app) == state_before,
+                            "Provider rejection stopped/started/changed the app process")
+                    require(marker() == mutated, "Provider rejection mutated the database")
+                    require({p.name: p.read_bytes() for p in output.iterdir()} == artifacts_before,
+                            "Provider rejection created/changed backup artifacts")
+                label = "enabled/running" if value == "true" else "missing/stopped" if value is None else "malformed/stopped"
+                print(f"Provider guard {provider} {label}: PASS; process/data/backups unchanged; skip cannot bypass", flush=True)
+            finally:
+                # Restore real app configuration to false after every fixture, but
+                # defer Java startup until all negative cases are finished.
+                run(*compose, "up", "--no-start", "--no-deps", "--force-recreate", "--no-build", "app")
+    # Exercise the documented operator command: recreate ONLY app, then prove the
+    # PostgreSQL container, process and volume were neither restarted nor replaced.
+    run(*compose, "up", "-d", "--no-deps", "--force-recreate", "--no-build", "app")
+    app = run(*compose, "ps", "--quiet", "app")
+    wait_for("Provider-disabled app recreation readiness HTTP 200", lambda: status(port, "/readiness") == 200)
+    db_after = inspect(db)
+    require(run(*compose, "ps", "--quiet", "postgres") == db
+            and db_after["State"]["StartedAt"] == db_before["State"]["StartedAt"]
+            and db_after["RestartCount"] == db_before["RestartCount"]
+            and {m["Destination"]: m for m in db_after["Mounts"]}
+            == {m["Destination"]: m for m in db_before["Mounts"]}, "App-only recreation changed PostgreSQL")
+    require(marker() == mutated, "App-only recreation mutated probe data")
+    print("Documented app-only provider-disable recreation preserves PostgreSQL process/volume/data: PASS", flush=True)
+
+    previous = set(output.glob("*.dump"))
+    transcript = script("restore.sh", "--archive", archive.as_posix(), "--confirm", "schedule_monitor")
+    safety = set(output.glob("*.dump")) - previous
+    require(len(safety) == 1 and "RESTORE SUCCESS" in transcript, "Automatic safety backup/restore missing")
+    safety_archive = safety.pop()
+    require(marker() == original_marker, "Original marker not recovered or post-backup mutation remains")
+    require(application_sql(db, "SELECT installed_rank, version, checksum, success FROM flyway_schema_history ORDER BY installed_rank;")
+            == history, "Flyway history changed during recovery")
+    require(status(port, "/readiness") == 200, "Post-restore readiness failed")
+    verify_application_role(db)
+    application_sql(db, "INSERT INTO recovery_probe(value) VALUES ('sequence-check');")
+    require(marker().splitlines()[-1] == "2|sequence-check", "Sequence state did not restore")
+    print("Real restore + automatic safety backup; original data/sequences/Flyway/JPA/readiness/role/session checks: PASS", flush=True)
+
+    # A custom archive TOC is at the front: removing its final byte preserves --list
+    # but makes payload restore fail. No production failure-injection flag is needed.
+    damaged = fixture("damaged-payload.dump", archive.read_bytes()[:-1], archive)
+    previous = set(output.glob("*.dump"))
+    transcript = script("restore.sh", "--archive", damaged.as_posix(), "--confirm", "schedule_monitor",
+                        failure="RESTORE FAILURE")
+    recovery = set(output.glob("*.dump")) - previous
+    require(len(recovery) == 1 and not inspect(app)["State"]["Running"], "Failed destructive restore must leave app stopped")
+    require(recovery.pop().name in transcript, "Failure must report safety backup path")
+    print("Damaged payload after DROP: explicit failure, app stopped, safety backup reported: PASS", flush=True)
+    # Deliberate next operator decision: recover the earlier safety snapshot. This
+    # also verifies that safety backup captured the post-backup mutation.
+    script("restore.sh", "--archive", safety_archive.as_posix(), "--confirm", "schedule_monitor", "--skip-safety-backup")
+    require(marker() == mutated, "Safety backup did not preserve pre-restore current data")
+    verify_application_role(db)
+    require(status(port, "/readiness") == 200, "Recovery after failed restore not ready")
+    print("Explicit recovery from safety archive with dangerous skip override; pre-restore data recovered: PASS", flush=True)
+    logs = run(*compose, "logs", "--no-color")
+    require(all(secret not in logs for secret in MARKERS), "Secret leaked during backup/restore")
+    return app
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--skip-build", action="store_true", help="Use an already built production image")
@@ -299,6 +503,7 @@ def main():
             require(db_logs.count("10-create-application-role.sh") == 1, "Initialization must run only once")
             require(all(marker not in startup_logs + db_logs for marker in MARKERS), "Secret leaked to startup/DB logs")
             print("Same-volume restart preserves non-superuser role; init ran once; no secrets in startup/DB logs: PASS", flush=True)
+            app = verify_database_operations(directory, env_file, project, compose, app, db, port)
             started = time.monotonic()
             run(*compose, "stop", "app", timeout=135)
             elapsed = time.monotonic() - started
@@ -313,6 +518,10 @@ def main():
             # Unique generated project only. This never targets developer or production volumes.
             run(*compose, "down", "--volumes", "--remove-orphans", timeout=150)
     print("All container checks passed; disposable containers/network/database removed.", flush=True)
+    git_status = run("git", "status", "--short", "--untracked-files=all")
+    require(not any(line.endswith((".dump", ".sha256", ".meta", ".partial")) for line in git_status.splitlines()),
+            "Generated database artifacts leaked into git status")
+    print("Generated dump/checksum/metadata git-status audit: PASS", flush=True)
 
 
 if __name__ == "__main__":

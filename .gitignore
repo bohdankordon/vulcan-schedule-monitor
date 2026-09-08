@@ -2,6 +2,9 @@
 target/
 *.log
 
+# Confidential generated database backups and their sidecars
+backups/
+
 # Local configuration and credentials
 .dev/
 .env
