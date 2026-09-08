@@ -44,6 +44,15 @@ class OperationalHealthTests extends PostgresIntegrationTestSupport {
   @Autowired private WebEndpointsSupplier webEndpoints;
   @Autowired private ApplicationContext context;
 
+  @Test
+  void directDevelopmentDoesNotTrustForwardedHttps() throws Exception {
+    mvc.perform(get("/actuator/health/liveness").header("X-Forwarded-Proto", "https"))
+        .andExpect(status().isOk())
+        .andExpect(
+            org.springframework.test.web.servlet.result.MockMvcResultMatchers.header()
+                .doesNotExist("Strict-Transport-Security"));
+  }
+
   @ParameterizedTest
   @ValueSource(
       strings = {"/actuator/health", "/actuator/health/liveness", "/actuator/health/readiness"})

@@ -14,6 +14,7 @@
 !scripts/
 !scripts/container/
 !scripts/container/ChromiumSmoke.java
+!scripts/container/HeaderEcho.java
 # Defense in depth for sensitive files accidentally placed beneath src/main.
 **/.env*
 **/secrets/**

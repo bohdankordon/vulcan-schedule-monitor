@@ -9,6 +9,8 @@ from pathlib import Path
 import secrets
 import shutil
 import socket
+import ssl
+import ipaddress
 import subprocess
 import tarfile
 import tempfile
@@ -25,7 +27,7 @@ SMOKE_IMAGE = "vulcan-schedule-monitor:browser-smoke"
 # Never inherit operator credentials, provider switches, JVM agents or Compose overrides.
 ENV = {
     key: value for key, value in os.environ.items()
-    if not key.upper().startswith(("VULCAN_", "TELEGRAM_", "SPRING_", "POSTGRES_", "COMPOSE_"))
+    if not key.upper().startswith(("VULCAN_", "TELEGRAM_", "SPRING_", "POSTGRES_", "COMPOSE_", "EDGE_", "CADDY_", "SERVER_"))
     and key.upper() not in {
         "APP_IMAGE", "APP_PORT", "PUBLIC_BASE_URL", "JAVA_TOOL_OPTIONS",
         "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS",
@@ -35,7 +37,45 @@ ENV = {
 MARKERS = ["synthetic-admin-" + secrets.token_hex(16),
            "synthetic-app-" + secrets.token_hex(16) + "';--",
            base64.b64encode(secrets.token_bytes(32)).decode()]
-HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+CADDY_IMAGE = "caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648"
+CA_PATH = "/data/caddy/pki/authorities/local/root.crt"
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+HTTPS = None
+
+
+def request(url, headers=None, timeout=10):
+    client = HTTPS if url.startswith("https:") else HTTP
+    try:
+        response = client.open(urllib.request.Request(url, headers=headers or {}), timeout=timeout)
+    except urllib.error.HTTPError as error:
+        response = error
+    with response:
+        return response.code, response.headers, response.read()
+
+
+def free_port():
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def trust_caddy(container, directory):
+    global HTTPS
+    certificate = directory / "caddy-root.crt"
+    # Export ONLY the public root, never any private key or the whole data volume.
+    run("docker", "cp", container + ":" + CA_PATH, str(certificate))
+    context = ssl.create_default_context(cafile=str(certificate))
+    HTTPS = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect(),
+                                       urllib.request.HTTPSHandler(context=context))
+    return hashlib.sha256(certificate.read_bytes()).hexdigest()
+
 
 
 def run(*args, timeout=180, check=True):
@@ -136,20 +176,47 @@ def verify_application_role(container):
 
 def status(port, path):
     try:
-        with HTTP.open(f"http://127.0.0.1:{port}/actuator/health{path}", timeout=40) as response:
-            return response.status
-    except urllib.error.HTTPError as error:
-        return error.code
+        code, _, body = request(f"https://localhost:{port}/actuator/health{path}", timeout=40)
+        if code in (200, 503):
+            expected = {"status": "UP" if code == 200 else "DOWN"}
+            if not path:
+                expected["groups"] = ["liveness", "readiness"]
+            require(json.loads(body) == expected, "Health must disclose only status/public group names")
+        return code
     except (OSError, urllib.error.URLError):
         return 0
 
 
 def validate_config(config):
     app, db = config["services"]["app"], config["services"]["postgres"]
-    require(set(config["services"]) == {"app", "postgres"}, "Unexpected service")
+    caddy = config["services"]["caddy"]
+    require(set(config["services"]) == {"caddy", "app", "postgres"}, "Unexpected service")
     require(not db.get("ports"), "PostgreSQL must not publish ports")
-    require(len(app["ports"]) == 1 and app["ports"][0]["host_ip"] == "127.0.0.1"
-            and app["ports"][0]["target"] == 8080, "App must publish loopback only")
+    require(not app.get("ports"), "Spring must not publish any host port")
+    require(caddy["image"] == CADDY_IMAGE, "Pinned Caddy version/index drift")
+    ports = caddy["ports"]
+    require(len(ports) == 3 and all(p["host_ip"] == "127.0.0.1" for p in ports), "Edge loopback binding")
+    tls_port = 8443
+    require({(p["target"], p["protocol"]) for p in ports}
+            == {(8080, "tcp"), (tls_port, "tcp"), (tls_port, "udp")}, "Unexpected edge listeners")
+    require(set(config["networks"]) == {"edge", "backend"}
+            and config["networks"]["backend"]["internal"]
+            and not config["networks"]["edge"].get("internal"), "Network boundary")
+    require(set(caddy["networks"]) == {"edge"} and set(app["networks"]) == {"edge", "backend"}
+            and set(db["networks"]) == {"backend"}
+            and app["networks"]["edge"]["gw_priority"] == 1, "Network membership/outbound gateway")
+    require(app["environment"]["SERVER_FORWARD_HEADERS_STRATEGY"] == "FRAMEWORK", "Production forwarding")
+    require(set(caddy["environment"]) == {"CADDY_SITE_ADDRESS", "EDGE_HTTPS_PORT"}, "Caddy secret separation")
+    require(caddy["read_only"] and caddy["cap_drop"] == ["ALL"]
+            and "no-new-privileges:true" in caddy["security_opt"], "Caddy hardening")
+    require(caddy["restart"] == "unless-stopped" and caddy["stop_grace_period"] == "30s"
+            and caddy["depends_on"]["app"]["condition"] == "service_healthy", "Caddy lifecycle")
+    require({(v["source"], v["target"]) for v in caddy["volumes"] if v["type"] == "volume"}
+            == {("caddy_data", "/data"), ("caddy_config", "/config")}, "Caddy state persistence")
+    binds = [v for v in caddy["volumes"] if v["type"] == "bind"]
+    require(len(caddy["volumes"]) == 3 and len(binds) == 1 and binds[0]["read_only"]
+            and Path(binds[0]["source"]).resolve() == (ROOT / "docker/caddy/Caddyfile").resolve()
+            and binds[0]["target"] == "/etc/caddy/Caddyfile", "Unexpected Caddy host mount")
     require(app["depends_on"]["postgres"]["condition"] == "service_healthy", "DB startup gate missing")
     require(app["restart"] == db["restart"] == "unless-stopped", "Restart policy mismatch")
     require(app["stop_grace_period"] == "2m0s" and app["init"], "Shutdown contract missing")
@@ -164,9 +231,10 @@ def validate_config(config):
     require(not app.get("volumes") and app["read_only"] and app["tmpfs"], "App storage must be ephemeral")
     require(app["shm_size"] == "268435456", "Bounded shared memory missing")
     require(app["cap_drop"] == ["ALL"] and "no-new-privileges:true" in app["security_opt"], "App isolation missing")
-    for service in (app, db):
-        require(not service.get("privileged") and not service.get("cap_add"), "Excess privilege")
-        require(service.get("network_mode") != "host" and service.get("ipc") != "host", "Host namespace")
+    for service in (app, db, caddy):
+        require(not service.get("privileged")
+                and service.get("cap_add", []) == (["NET_BIND_SERVICE"] if service is caddy else []), "Excess privilege")
+        require(service.get("network_mode") != "host" and service.get("ipc") != "host" and service.get("pid") != "host", "Host namespace")
         require(service["logging"]["options"] == {"max-size": "10m", "max-file": "3"}, "Log rotation missing")
     env = app["environment"]
     require(all(env[k] == "false" for k in (
@@ -292,13 +360,13 @@ def verify_database_operations(directory, env_file, project, compose, app, db, p
     # Enabled fixtures never run Java: running cases use only sleep with no network;
     # missing/malformed cases are created but never started. PostgreSQL is untouched.
     db_before = inspect(db)
-    override = directory / "provider-fixture.json"
+    override = directory / "provider-fixture.yml"
     for provider in ("TELEGRAM_BOT_ENABLED", "VULCAN_CONNECTION_ENABLED", "VULCAN_MONITORING_ENABLED"):
         for value in ("true", None, "FALSE"):
-            override.write_text(json.dumps({"services": {"app": {
+            override.write_text("services:\n  app:\n    networks: !reset {}\n    <<: " + json.dumps({
                 "environment": {provider: value}, "entrypoint": ["sleep", "infinity"],
                 "network_mode": "none", "restart": "no", "healthcheck": {"disable": True},
-            }}}), encoding="utf-8")
+            }) + "\n", encoding="utf-8")
             try:
                 run(*compose, "-f", str(override), "up", "--no-start", "--no-deps",
                     "--force-recreate", "--no-build", "app")
@@ -337,7 +405,7 @@ def verify_database_operations(directory, env_file, project, compose, app, db, p
     # PostgreSQL container, process and volume were neither restarted nor replaced.
     run(*compose, "up", "-d", "--no-deps", "--force-recreate", "--no-build", "app")
     app = run(*compose, "ps", "--quiet", "app")
-    wait_for("Provider-disabled app recreation readiness HTTP 200", lambda: status(port, "/readiness") == 200)
+    wait_for("Provider-disabled app recreation readiness HTTPS 200", lambda: status(port, "/readiness") == 200)
     db_after = inspect(db)
     require(run(*compose, "ps", "--quiet", "postgres") == db
             and db_after["State"]["StartedAt"] == db_before["State"]["StartedAt"]
@@ -383,6 +451,169 @@ def verify_database_operations(directory, env_file, project, compose, app, db, p
     return app
 
 
+def require_same_process(container, before, message):
+    after = inspect(container)
+    require(after["State"]["Running"]
+            and after["State"]["StartedAt"] == before["State"]["StartedAt"]
+            and after["RestartCount"] == before["RestartCount"], message)
+
+
+def verify_edge(directory, compose, app, db, caddy, port, http_port):
+    version = run("docker", "exec", caddy, "caddy", "version")
+    require(version.split()[0] == "v2.11.4", "Runtime Caddy version drift")
+    run("docker", "exec", caddy, "caddy", "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile")
+    adapted = json.loads(run("docker", "exec", caddy, "caddy", "adapt", "--config", "/etc/caddy/Caddyfile"))
+    require(adapted["admin"]["disabled"], "Admin API must be disabled")
+    server = next(server for server in adapted["apps"]["http"]["servers"].values()
+                  if server["listen"] == [":8443"])
+    handlers = server["routes"][0]["handle"][0]["routes"][0]["handle"][0]["routes"][0]["handle"]
+    require(handlers[0]["handler"] == "headers" and handlers[0]["request"]["delete"] == ["Forwarded"]
+            and handlers[1]["handler"] == "headers" and handlers[1]["request"]["delete"] == ["X-Forwarded-*"]
+            and handlers[2]["handler"] == "reverse_proxy"
+            and handlers[2]["upstreams"] == [{"dial": "app:8080"}], "Sanitization must precede proxy generation")
+    require("logs" not in server and "trusted_proxies" not in json.dumps(adapted), "Unsafe request logging/proxy trust")
+    runtime = inspect(caddy)
+    require(not inspect(app)["HostConfig"]["PortBindings"]
+            and not inspect(db)["HostConfig"]["PortBindings"], "Direct app/DB host port")
+    require(all(not bindings for bindings in inspect(app)["NetworkSettings"]["Ports"].values())
+            and all(not bindings for bindings in inspect(db)["NetworkSettings"]["Ports"].values()), "Runtime publication")
+    require({k for k, v in runtime["HostConfig"]["PortBindings"].items() if v}
+            == {"8080/tcp", "8443/tcp", "8443/udp"}
+            and all(v["HostIp"] == "127.0.0.1" for bindings in runtime["HostConfig"]["PortBindings"].values()
+                    for v in bindings), "Only loopback edge ports may be published")
+    edge_networks = runtime["NetworkSettings"]["Networks"]
+    db_networks = inspect(db)["NetworkSettings"]["Networks"]
+    app_networks = inspect(app)["NetworkSettings"]["Networks"]
+    require(len(edge_networks) == len(db_networks) == 1 and not set(edge_networks) & set(db_networks)
+            and set(app_networks) == set(edge_networks) | set(db_networks), "Runtime network segmentation")
+    edge_name = next(iter(edge_networks))
+    gateway = app_networks[edge_name]["Gateway"]
+    routes = run("docker", "exec", app, "cat", "/proc/net/route")
+    gateway_hex = socket.inet_aton(gateway)[::-1].hex().upper()
+    require(any(row.split()[1:3] == ["00000000", gateway_hex] for row in routes.splitlines()[1:]),
+            "App default egress route must use edge gateway (no provider request)")
+    names = {item.split("=", 1)[0] for item in runtime["Config"]["Env"]}
+    require(not any(name.startswith(("POSTGRES_", "VULCAN_", "TELEGRAM_", "SPRING_")) for name in names),
+            "Caddy contains app/database secret names")
+    require(not any(marker in json.dumps(runtime["Config"]) for marker in MARKERS), "Caddy secret value leak")
+    host = runtime["HostConfig"]
+    require(host["ReadonlyRootfs"] and host["CapDrop"] == ["ALL"] and [cap.removeprefix("CAP_") for cap in host["CapAdd"]] == ["NET_BIND_SERVICE"]
+            and "no-new-privileges:true" in host["SecurityOpt"] and not host["Privileged"]
+            and host["PidMode"] != "host" and host["NetworkMode"] != "host", "Runtime edge hardening")
+    require({m["Destination"] for m in runtime["Mounts"] if m["RW"]} == {"/data", "/config"}
+            and len(runtime["Mounts"]) == 3, "Unexpected writable/host mounts")
+    trust_caddy(caddy, directory)
+    wait_for("Trusted local CA chain + localhost hostname TLS handshake / readiness", lambda: status(port, "/readiness") == 200)
+    code, headers, _ = request(f"http://localhost:{http_port}/actuator/health/readiness?synthetic=1")
+    require(code == 308 and headers["Location"] == f"https://localhost:{port}/actuator/health/readiness?synthetic=1",
+            f"HTTP redirect mismatch: status={code}, location={headers.get('Location')}")
+    require(request(f"https://localhost:{port}/unrelated-route")[0] == 403, "Spring route authorization bypass")
+    malicious = {
+        "Forwarded": "for=203.0.113.7;proto=http;host=attacker.invalid",
+        "X-Forwarded-For": "203.0.113.7", "X-Forwarded-Proto": "http",
+        "X-Forwarded-Host": "attacker.invalid", "X-Forwarded-Port": "80",
+        "X-Forwarded-Prefix": "/attacker", "X-Forwarded-Unknown": "attacker",
+    }
+    code, headers, _ = request(f"https://localhost:{port}/actuator/health/liveness", malicious)
+    require(code == 200 and "max-age=" in headers.get("Strict-Transport-Security", ""), "Spoofing changed Spring secure semantics")
+    print("Caddy 2.11.4/config; admin off; no direct app/DB ports; networks/egress; hardening/secrets; redirect/authorization/HSTS: PASS", flush=True)
+    verify_header_boundary(directory, compose, app, db, caddy, port, malicious)
+
+
+def verify_header_boundary(directory, compose, app, db, caddy, port, malicious):
+    # Replace ONLY the disposable app with the existing small smoke image. This
+    # exercises the byte-identical production Caddyfile and app:8080 upstream.
+    override = directory / "header-echo.json"
+    override.write_text(json.dumps({"services": {"app": {
+        "image": SMOKE_IMAGE, "entrypoint": ["java", "-cp", "/smoke", "HeaderEcho"],
+        "healthcheck": {"disable": True},
+    }}}), encoding="utf-8")
+    db_before, edge_before = inspect(db), inspect(caddy)
+    try:
+        run(*compose, "-f", str(override), "up", "-d", "--no-deps", "--force-recreate", "--no-build", "app")
+
+        def sanitized():
+            try:
+                code, _, body = request(f"https://localhost:{port}/", malicious)
+            except (OSError, urllib.error.URLError):
+                return False
+            if code != 200:
+                return False
+            received = dict(line.split(": ", 1) for line in body.decode().splitlines())
+            require("forwarded" not in received, "Attacker Forwarded reached upstream")
+            require({name for name in received if name.startswith("x-forwarded-")}
+                    == {"x-forwarded-for", "x-forwarded-proto", "x-forwarded-host"}, "Attacker forwarding extension reached upstream")
+            require(received["x-forwarded-proto"] == "https"
+                    and received["x-forwarded-host"] == f"localhost:{port}"
+                    and received["host"] == f"localhost:{port}", "Proxy scheme/host mismatch")
+            client = ipaddress.ip_address(received["x-forwarded-for"])
+            require(str(client) != "203.0.113.7" and b"attacker" not in body, "Attacker client chain preserved")
+            return True
+
+        wait_for("Same production Caddyfile removes every spoofed forwarding header; safe HTTPS/host/client reach upstream", sanitized)
+    finally:
+        run(*compose, "up", "-d", "--no-deps", "--force-recreate", "--no-build", "app")
+        wait_for("Provider-disabled Spring restored after header echo", lambda: status(port, "/readiness") == 200)
+    require_same_process(db, db_before, "Header fixture changed DB")
+    require_same_process(caddy, edge_before, "Header fixture changed Caddy")
+
+
+def verify_connect(directory, compose, app, db, caddy, port):
+    override = directory / "connect-fixture.json"
+    override.write_text(json.dumps({"services": {"app": {"environment": {
+        "VULCAN_CONNECTION_ENABLED": "true", "VULCAN_MONITORING_ENABLED": "false",
+        "TELEGRAM_BOT_ENABLED": "false", "VULCAN_CONNECTION_PUBLICBASEURL": f"https://localhost:{port}",
+    }}}}), encoding="utf-8")
+    db_before, edge_before = inspect(db), inspect(caddy)
+    try:
+        run(*compose, "-f", str(override), "up", "-d", "--no-deps", "--force-recreate", "--no-build", "app")
+        wait_for("Synthetic connection-only app ready", lambda: status(port, "/readiness") == 200)
+        code, headers, body = request(f"https://localhost:{port}/connect")
+        require(code == 200 and b"<!doctype html>" in body.lower(), "Connect page over HTTPS")
+        require("no-store" in headers.get("Cache-Control", "")
+                and headers.get("Referrer-Policy") == "no-referrer"
+                and headers.get("Content-Security-Policy")
+                and headers.get("X-Content-Type-Options") == "nosniff"
+                and headers.get("X-Frame-Options") == "DENY"
+                and headers.get("Strict-Transport-Security"), "Connect security headers")
+        cookie = headers.get("Set-Cookie", "")
+        require(all(part in cookie for part in ("Secure", "HttpOnly", "SameSite=Strict", "Max-Age=0", "Path=/connect")),
+                "Connect cookie clearing security")
+        marker = "synthetic-edge-" + uuid.uuid4().hex
+        code, headers, _ = request(f"https://localhost:{port}/connect/{marker}")
+        require(code == 303 and headers["Location"].endswith("/connect?invalid"), "Synthetic token path")
+        require(marker not in run(*compose, "logs", "--no-color", "caddy"), "Connect marker in Caddy logs")
+        print("Connect HTTPS GET/security/cookie clearing + synthetic token redirect/log privacy; no credential POST: PASS", flush=True)
+    finally:
+        run(*compose, "up", "-d", "--no-deps", "--force-recreate", "--no-build", "app")
+        wait_for("All-provider-disabled HTTPS readiness before recovery suite", lambda: status(port, "/readiness") == 200)
+    app = run(*compose, "ps", "--quiet", "app")
+    require(all(k + "=false" in inspect(app)["Config"]["Env"] for k in (
+        "VULCAN_CONNECTION_ENABLED", "VULCAN_MONITORING_ENABLED", "TELEGRAM_BOT_ENABLED")), "Provider reset failed")
+    require_same_process(db, db_before, "App-only recreation changed DB")
+    require_same_process(caddy, edge_before, "App-only recreation changed Caddy")
+    return app
+
+
+def verify_caddy_restart(directory, compose, caddy, port):
+    fingerprint = trust_caddy(caddy, directory)
+    mounts = {m["Destination"]: m for m in inspect(caddy)["Mounts"]}
+    started = time.monotonic()
+    run(*compose, "stop", "caddy", timeout=40)
+    stopped = inspect(caddy)
+    require(time.monotonic() - started < 30 and stopped["State"]["ExitCode"] == 0
+            and not stopped["State"]["OOMKilled"], "Caddy SIGTERM/graceful stop failed")
+    require('"signal":"SIGTERM"' in run(*compose, "logs", "--no-color", "caddy"), "Caddy signal evidence missing")
+    run(*compose, "start", "caddy")
+    wait_for("Caddy clean stop/start with original CA trust", lambda: status(port, "/readiness") == 200)
+    run(*compose, "up", "-d", "--no-deps", "--force-recreate", "--no-build", "caddy")
+    recreated = run(*compose, "ps", "--quiet", "caddy")
+    require(recreated != caddy and {m["Destination"]: m for m in inspect(recreated)["Mounts"]} == mounts, "Caddy recreation/state mounts")
+    wait_for("Caddy recreation TLS verified with ORIGINAL trusted CA", lambda: status(port, "/readiness") == 200)
+    require(trust_caddy(recreated, directory) == fingerprint, "Local CA identity changed")
+    print("Caddy graceful SIGTERM, restart/recreation, persistent public CA fingerprint and trusted TLS: PASS", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--skip-build", action="store_true", help="Use an already built production image")
@@ -391,20 +622,34 @@ def main():
     with tempfile.TemporaryDirectory(prefix="container-smoke-", dir=ROOT / "target") as directory:
         directory = Path(directory)
         env_file = directory / "synthetic.env"
-        # Choose a free loopback port; Compose fails safely if another process claims it.
-        with socket.socket() as sock:
-            sock.bind(("127.0.0.1", 0))
-            port = sock.getsockname()[1]
+        # Distinct free loopback ports; Compose fails safely on a concurrent claim.
+        port, http_port = free_port(), free_port()
+        while http_port == port:
+            http_port = free_port()
         quoted_app_password = MARKERS[1].replace("'", "\\'")
         env_file.write_text(f"POSTGRES_ADMIN_PASSWORD={MARKERS[0]}\n"
                             f"POSTGRES_APP_PASSWORD='{quoted_app_password}'\nVULCAN_MASTER_KEY={MARKERS[2]}\n"
-                            f"APP_PORT={port}\nAPP_IMAGE={IMAGE}\n", encoding="utf-8")
+                            f"EDGE_HTTPS_PORT={port}\nEDGE_HTTP_PORT={http_port}\n"
+                            "CADDY_SITE_ADDRESS=localhost\n"
+                            f"APP_IMAGE={IMAGE}\n", encoding="utf-8")
         project = "vsm-smoke-" + uuid.uuid4().hex[:12]
         base = ["docker", "compose", "--project-name", project, "--env-file", str(env_file),
                 "-f", str(ROOT / "compose.production.yml")]
         compose = base
         config = json.loads(run(*base, "config", "--format", "json"))
         validate_config(config)
+        default_env = directory / "defaults.env"
+        default_env.write_text("\n".join(line for line in env_file.read_text().splitlines()
+                                          if not line.startswith(("EDGE_", "CADDY_"))), encoding="utf-8")
+        defaults = json.loads(run("docker", "compose", "--env-file", str(default_env),
+                                  "-f", str(ROOT / "compose.production.yml"), "config", "--format", "json"))
+        validate_config(defaults)
+        default_edge = defaults["services"]["caddy"]
+        require(default_edge["environment"] == {"CADDY_SITE_ADDRESS": "localhost",
+                                                "EDGE_HTTPS_PORT": "8443"}
+                and {(p["published"], p["target"], p["protocol"]) for p in default_edge["ports"]}
+                == {("8080", 8080, "tcp"), ("8443", 8443, "tcp"), ("8443", 8443, "udp")},
+                "Safe production edge defaults drifted")
         # All mandatory secrets must fail clearly on their own; output stays private.
         for missing in ("POSTGRES_ADMIN_PASSWORD", "POSTGRES_APP_PASSWORD", "VULCAN_MASTER_KEY"):
             absent = directory / "missing.env"
@@ -471,10 +716,13 @@ def main():
                 "Provider defaults must remain disabled in the running container")
             require(inspect(app)["State"]["Health"]["Status"] == "healthy"
                     and inspect(db)["State"]["Health"]["Status"] == "healthy", "Container health")
+            caddy = run(*compose, "ps", "--quiet", "caddy")
+            startup_logs = run(*compose, "logs", "--no-color", "app")
+            verify_edge(directory, compose, app, db, caddy, port, http_port)
+            app = run(*compose, "ps", "--quiet", "app")
             for path in ("", "/liveness", "/readiness"):
                 require(status(port, path) == 200, "Healthy endpoint failed: " + path)
-            print("App + PostgreSQL healthy; root/liveness/readiness HTTP 200: PASS", flush=True)
-            startup_logs = run(*compose, "logs", "--no-color", "app")
+            print("App + PostgreSQL healthy; root/liveness/readiness HTTPS 200: PASS", flush=True)
             require("Successfully applied" in startup_logs and "Initialized JPA EntityManagerFactory" in startup_logs,
                     "Flyway migration/JPA initialization evidence missing")
             verify_application_role(db)
@@ -483,8 +731,9 @@ def main():
             print("Application CREATE DATABASE and CREATE ROLE: denied (SQLSTATE 42501): PASS", flush=True)
             db_volume = next(m["Name"] for m in inspect(db)["Mounts"] if m["Type"] == "volume")
             before = inspect(app)
+            edge_before = inspect(caddy)
             run(*compose, "stop", "postgres")
-            wait_for("DB outage readiness HTTP 503", lambda: status(port, "/readiness") == 503)
+            wait_for("DB outage readiness HTTPS 503", lambda: status(port, "/readiness") == 503)
             require(status(port, "/liveness") == 200, "DB outage changed liveness")
             wait_for("Docker liveness healthcheck continues during DB outage",
                      lambda: inspect(app)["State"]["Health"]["Log"][-1]["Start"]
@@ -493,17 +742,25 @@ def main():
             require(after["State"]["Health"]["Status"] == "healthy"
                     and after["RestartCount"] == before["RestartCount"] == 0
                     and after["State"]["StartedAt"] == before["State"]["StartedAt"], "App restarted during DB outage")
-            print("DB outage liveness HTTP 200; container healthy; restart count=0: PASS", flush=True)
+            print("DB outage liveness HTTPS 200; container healthy; restart count=0: PASS", flush=True)
             run(*compose, "start", "postgres")
-            wait_for("DB restart readiness HTTP 200", lambda: status(port, "/readiness") == 200)
+            wait_for("DB restart readiness HTTPS 200", lambda: status(port, "/readiness") == 200)
             require(db_volume == next(m["Name"] for m in inspect(db)["Mounts"] if m["Type"] == "volume"),
                     "PostgreSQL restart must reuse its named volume")
+            require_same_process(caddy, edge_before, "DB outage restarted Caddy")
             verify_application_role(db)
             db_logs = run(*compose, "logs", "--no-color", "postgres")
             require(db_logs.count("10-create-application-role.sh") == 1, "Initialization must run only once")
             require(all(marker not in startup_logs + db_logs for marker in MARKERS), "Secret leaked to startup/DB logs")
             print("Same-volume restart preserves non-superuser role; init ran once; no secrets in startup/DB logs: PASS", flush=True)
+            app = verify_connect(directory, compose, app, db, caddy, port)
+            edge_before = inspect(caddy)
             app = verify_database_operations(directory, env_file, project, compose, app, db, port)
+            require_same_process(caddy, edge_before, "Recovery recreated/restarted Caddy")
+            require({m["Destination"]: m for m in inspect(caddy)["Mounts"]}
+                    == {m["Destination"]: m for m in edge_before["Mounts"]}, "Recovery changed Caddy state mounts")
+            require(status(port, "/readiness") == 200, "HTTPS readiness after recovery")
+            verify_caddy_restart(directory, compose, caddy, port)
             started = time.monotonic()
             run(*compose, "stop", "app", timeout=135)
             elapsed = time.monotonic() - started
@@ -517,7 +774,7 @@ def main():
         finally:
             # Unique generated project only. This never targets developer or production volumes.
             run(*compose, "down", "--volumes", "--remove-orphans", timeout=150)
-    print("All container checks passed; disposable containers/network/database removed.", flush=True)
+    print("All container checks passed; disposable containers/networks/database/Caddy volumes and public CA removed.", flush=True)
     git_status = run("git", "status", "--short", "--untracked-files=all")
     require(not any(line.endswith((".dump", ".sha256", ".meta", ".partial")) for line in git_status.splitlines()),
             "Generated database artifacts leaked into git status")

@@ -1,0 +1,26 @@
+{
+	admin off
+	http_port 8080
+	https_port 8443
+	grace_period 20s
+	# Trust is installed explicitly in clients, never in the immutable container.
+	skip_install_trust
+}
+
+# Automatic redirects normalize the global HTTPS listener port to public 443.
+# Use the configured external authority for coherent localhost high-port URLs.
+# Automatic HTTPS remains enabled, including its ACME challenge handling.
+http://{$CADDY_SITE_ADDRESS:localhost}:8080 {
+	redir https://{$CADDY_SITE_ADDRESS:localhost}:{$EDGE_HTTPS_PORT:8443}{uri} 308
+}
+
+https://{$CADDY_SITE_ADDRESS:localhost} {
+	# First public edge: discard client metadata BEFORE reverse_proxy generates
+	# its own X-Forwarded-For, X-Forwarded-Proto and X-Forwarded-Host.
+	route {
+		request_header -Forwarded
+		request_header -X-Forwarded-*
+		reverse_proxy app:8080
+	}
+	# No request access log: /connect/<token> contains a secret capability.
+}
