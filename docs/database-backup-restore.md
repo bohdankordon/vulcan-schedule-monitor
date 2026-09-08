@@ -161,8 +161,10 @@ in this command, the restore command, and all later commands for that stack.
 Keep the existing project selection; never substitute a new project during recovery.
 This [Compose command](https://docs.docker.com/reference/cli/docker/compose/up/)
 recreates only `app` with the current configuration and existing image. `--no-deps`
-leaves PostgreSQL running; the harness verifies its container, process and volume
-are unchanged with the current topology. Do not use `down` or remove any volume.
+leaves PostgreSQL and Caddy running; the harness verifies their containers, processes
+and state mounts are unchanged. Spring has no host port; Caddy may return 502 while
+app is unavailable. Restore still probes readiness internally in the exact app
+container; the harness also requires readiness 200 through trusted Caddy HTTPS. Do not use `down` or remove any volume.
 
 Restore inspects the actual existing container with `docker inspect`, without
 executing anything inside it. For each of `VULCAN_CONNECTION_ENABLED`,
@@ -280,7 +282,8 @@ state manually. Do not share raw logs or dump contents publicly.
 output directories must also stay outside tracked content and image layers.
 
 No cron/systemd timer, retention pruning, off-host upload, backup encryption
-tooling, reverse proxy/TLS, or VPS deployment is implemented. Old backups are never
+tooling or VPS deployment is implemented. The [HTTPS edge](https-reverse-proxy.md)
+is available locally; real public deployment remains deferred. Old backups are never
 automatically deleted. Operators must account for disk space and establish these
 policies separately.
 

@@ -40,7 +40,8 @@ ENTRYPOINT ["java", "-jar", "application.jar"]
 # Optional test target: same runtime, with only a compiled offline smoke helper added.
 FROM build AS smoke-classes
 COPY scripts/container/ChromiumSmoke.java /smoke/ChromiumSmoke.java
-RUN javac -cp 'extracted/dependencies/lib/*' -d /smoke/classes /smoke/ChromiumSmoke.java
+COPY scripts/container/HeaderEcho.java /smoke/HeaderEcho.java
+RUN javac -cp 'extracted/dependencies/lib/*' -d /smoke/classes /smoke/ChromiumSmoke.java /smoke/HeaderEcho.java
 
 FROM runtime AS browser-smoke
 COPY --from=smoke-classes /smoke/classes/ /smoke/

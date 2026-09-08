@@ -1,10 +1,10 @@
 # Container deployment foundation
 
-This is a single-host application + PostgreSQL foundation with [database backup and restore tooling](database-backup-restore.md). HTTPS reverse proxy/TLS is deferred. `/connect` must **not** be treated as production-public until an HTTPS reverse proxy and matching `PUBLIC_BASE_URL` are configured in the later deployment phase.
+This is a single-host Caddy HTTPS edge + application + PostgreSQL foundation with [database backup and restore tooling](database-backup-restore.md). See the focused [HTTPS runbook](https-reverse-proxy.md) for TLS trust, ports and proxy security. Defaults are local loopback only; actual public deployment remains a later phase.
 
 ## Build and start
 
-Use Docker Engine/Desktop with Linux containers, BuildKit and Docker Compose v2 or newer. The locally validated and CI platform is Linux amd64. Build from the repository root; no local JAR or JDK is required:
+Use Docker Engine/Desktop with Linux containers, BuildKit and Docker Compose 2.33.1 or newer (including v5). The locally validated and CI platform is Linux amd64. Build from the repository root; no local JAR or JDK is required:
 
 ```shell
 docker build -t vulcan-schedule-monitor:production .
@@ -17,11 +17,11 @@ docker compose --env-file .env.production -f compose.production.yml config --qui
 docker compose --env-file .env.production -f compose.production.yml up -d --wait
 ```
 
-`config --quiet` validates without displaying interpolated secrets. Plain `config` prints them. Environment variables set in the invoking shell take precedence over the file, so check that provider switches in the shell are also disabled for the initial start. Values containing `$` should be single-quoted in the environment file to prevent interpolation. There are no secret build arguments, build environment files or secret image labels. `.dockerignore` allows only the wrapper, POM, main sources/resources and the optional offline browser test source.
+`config --quiet` validates without displaying interpolated secrets. Plain `config` prints them. Environment variables set in the invoking shell take precedence over the file, so check that provider switches in the shell are also disabled for the initial start. Values containing `$` should be single-quoted in the environment file to prevent interpolation. There are no secret build arguments, build environment files or secret image labels. `.dockerignore` allows only the wrapper, POM, main sources/resources and optional offline browser/header test sources.
 
 The initial stack disables VULCAN connection, VULCAN monitoring and Telegram. A normal startup therefore makes no provider requests. Enable features deliberately with `VULCAN_CONNECTION_ENABLED`, `VULCAN_MONITORING_ENABLED` and `TELEGRAM_ENABLED`; Telegram additionally requires `TELEGRAM_BOT_TOKEN`. Secure connection requires the stable master key and a valid public HTTPS base URL. Monitoring requires secure connection. Existing configuration validation remains in force. This PR supplies no public deployment instructions or provider smoke commands.
 
-`APP_PORT` defaults to 8080; Compose publishes only `127.0.0.1:${APP_PORT}:8080`. PostgreSQL 18.6 has no host port and is reachable by the app at `postgres:5432`. The `postgres` role handles cluster bootstrap/administration; Spring, Flyway and JPA connect only as the non-superuser `schedule_monitor` role to database `schedule_monitor`. The default private Compose bridge permits outgoing provider access when explicitly enabled later. It does not isolate egress. The Compose smoke uses this same topology with a separate synthetic database and verifies all provider switches remain disabled in the running app.
+Caddy is the only host ingress: default `127.0.0.1:8080` HTTP redirects to `https://localhost:8443`, with HTTPS TCP/UDP published on loopback. Spring has no host port. PostgreSQL 18.6 also has no host port and is reachable by app at `postgres:5432`. Caddy joins `edge`, app joins `edge` and internal `backend`, and PostgreSQL joins only `backend`. App gateway priority preserves outbound routing through edge; provider switches remain false. See [edge variables and network trust](https-reverse-proxy.md).
 
 ## PostgreSQL roles and initialization
 
@@ -52,13 +52,13 @@ PostgreSQL's `pg_isready` healthcheck gates the app's **initial** startup throug
 The image's exec-form curl healthcheck calls `/actuator/health/liveness` every 30 seconds, with a 5-second timeout, 3 retries and a 60-second startup period. Readiness includes PostgreSQL; liveness excludes external dependencies. Probe responses disclose no database/account details. See [operational health](operations.md).
 
 ```shell
-curl --fail http://127.0.0.1:8080/actuator/health
-curl --fail http://127.0.0.1:8080/actuator/health/liveness
-curl --fail http://127.0.0.1:8080/actuator/health/readiness
+curl --cacert /tmp/vsm-local-root.crt --fail https://localhost:8443/actuator/health
+curl --cacert /tmp/vsm-local-root.crt --fail https://localhost:8443/actuator/health/liveness
+curl --cacert /tmp/vsm-local-root.crt --fail https://localhost:8443/actuator/health/readiness
 docker compose --env-file .env.production -f compose.production.yml ps
 ```
 
-Use the selected `APP_PORT` if different. A temporary DB outage returns readiness 503 while liveness remains 200. Both services use `restart: unless-stopped` for process exits/daemon restarts; Docker health status alone does not restart containers. No readiness/provider-based restart loop is added.
+First copy only the public local CA root using the [HTTPS trust instructions](https-reverse-proxy.md#local-startup-and-explicit-trust). Use the configured edge HTTPS port if different. A temporary DB outage returns readiness 503 while liveness remains 200. All three services use `restart: unless-stopped` for process exits/daemon restarts; Docker health status alone does not restart containers. No readiness/provider-based restart loop is added.
 
 `init: true` reaps browser children and forwards signals. Java uses an exec-form entrypoint and `STOPSIGNAL SIGTERM`. The application's `stop_grace_period: 120s` accommodates the existing 30-second Spring lifecycle phase budget and possible in-flight Telegram long polling. This is a maximum wait, not an intentional delay or a guarantee against every stalled network operation. PostgreSQL has a 60-second stop budget. No custom shutdown hooks are introduced.
 
@@ -77,7 +77,7 @@ The named `postgres_data` volume mounts `/var/lib/postgresql`, the [PostgreSQL 1
 docker compose --env-file .env.production -f compose.production.yml down
 ```
 
-`down` removes containers and the network and **retains database state**. `down -v` **destroys database state** by deleting named volumes. Do not use `-v` for routine operations. Follow the [backup/recovery runbook](database-backup-restore.md) before destructive maintenance. Automatic scheduling and retention remain deferred.
+`down` removes containers and the networks and **retains database and Caddy TLS state**. `down -v` **destroys database and Caddy TLS state** by deleting named volumes. Do not use `-v` for routine operations. Follow the [backup/recovery runbook](database-backup-restore.md) before destructive maintenance. Automatic scheduling and retention remain deferred.
 
 ## Reproducible validation
 
@@ -92,6 +92,6 @@ git diff --check
 
 On Windows use `.\mvnw.cmd` and `python`. The harness builds the production image itself; `--skip-build` reuses an already built production tag for local iteration. It validates Compose with synthetic secrets, rejects missing secrets, checks Java 21/UID/artifact/healthcheck/version consistency, and scans image history/config/environment and every exported filesystem layer for all three synthetic secret markers. Runtime-injected environment values naturally exist in running containers and are not image-layer leaks.
 
-The optional `browser-smoke` Docker target adds a compiled test helper to the exact runtime stage, launches Chromium at a data URL, and clicks a button under `--network none`. The production target contains no helper or debug endpoint. The Compose smoke uses a unique disposable project/volume/network, checks all three HTTP probes, and authenticates as `schedule_monitor` to verify all five elevated role flags are false, database/schema/table ownership, Flyway's recorded migration user, absence of role memberships, and the running application's database sessions. Both `CREATE DATABASE` and `CREATE ROLE` must fail with SQLSTATE `42501`. A synthetic password containing SQL metacharacters exercises literal quoting without exposing credentials.
+The optional `browser-smoke` Docker target adds a compiled test helper to the exact runtime stage, launches Chromium at a data URL, and clicks a button under `--network none`. The production target contains no helper or debug endpoint. The Compose smoke uses a unique disposable project/volume/network, checks all three HTTPS probes with explicit local CA trust, and authenticates as `schedule_monitor` to verify all five elevated role flags are false, database/schema/table ownership, Flyway's recorded migration user, absence of role memberships, and the running application's database sessions. Both `CREATE DATABASE` and `CREATE ROLE` must fail with SQLSTATE `42501`. A synthetic password containing SQL metacharacters exercises literal quoting without exposing credentials.
 
-The harness stops only its own PostgreSQL, verifies readiness 503/liveness 200 with no app restart, checks recovery on the same named volume, repeats the role checks, and verifies initialization ran only once with no secrets in startup/database logs. It then executes the real Bash backup/restore scripts against synthetic probe rows, verifies online backup, rejection guards, safety backup, round-trip recovery, payload failure after replacement, and explicit recovery from the safety archive. It also verifies Spring shutdown under SIGTERM. Provider switches are disabled and inherited operator configuration is filtered; provider request counts follow from disabled runtime switches and synthetic database state, not packet capture. Finally it removes **only its disposable test volume** and temporary artifacts. Developer PostgreSQL data is never selected. The same harness runs in the `Container build and smoke` PR CI job with one production image build; Maven tests and Dependency Review remain separate.
+The harness stops only its own PostgreSQL, verifies readiness 503/liveness 200 with no app or Caddy restart, checks recovery on the same named volume, repeats the role checks, and verifies initialization ran only once with no secrets in startup/database logs. It then executes the real Bash backup/restore scripts against synthetic probe rows, verifies online backup, rejection guards, safety backup, round-trip recovery, payload failure after replacement, and explicit recovery from the safety archive. It also verifies Spring shutdown under SIGTERM. Monitoring and Telegram remain disabled; the GET-only synthetic connect fixture returns to all flags false before recovery. Inherited operator configuration is filtered; provider request counts follow from disabled runtime switches and synthetic database state, not packet capture. Finally it removes **only its disposable database/Caddy test volumes** and temporary artifacts. Developer PostgreSQL data is never selected. The same harness runs in the `Container build and smoke` PR CI job with one production image build; Maven tests and Dependency Review remain separate.
