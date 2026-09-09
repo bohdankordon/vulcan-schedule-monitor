@@ -9,6 +9,7 @@ import com.microsoft.playwright.Playwright;
 import com.microsoft.playwright.PlaywrightException;
 import com.microsoft.playwright.Request;
 import com.microsoft.playwright.Route;
+import com.microsoft.playwright.TimeoutError;
 import com.microsoft.playwright.options.Cookie;
 import com.microsoft.playwright.options.LoadState;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.PortalUrlValidator;
@@ -21,6 +22,7 @@ import io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics.VulcanDia
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSessionMaterial;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -30,21 +32,42 @@ import org.slf4j.LoggerFactory;
 
 public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowserAuthenticator {
 
+  static final Duration DEFAULT_SESSION_CAPTURE_READINESS_TIMEOUT = Duration.ofSeconds(15);
   private static final Logger logger =
       LoggerFactory.getLogger(PlaywrightVulcanBrowserAuthenticator.class);
   private final PortalUrlValidator portalUrls;
   private final boolean headless;
   private final VulcanDiagnostics diagnostics;
+  private final Duration sessionCaptureReadinessTimeout;
 
   public PlaywrightVulcanBrowserAuthenticator(PortalUrlValidator portalUrls, boolean headless) {
-    this(portalUrls, headless, VulcanDiagnostics.NONE);
+    this(portalUrls, headless, VulcanDiagnostics.NONE, DEFAULT_SESSION_CAPTURE_READINESS_TIMEOUT);
   }
 
   public PlaywrightVulcanBrowserAuthenticator(
       PortalUrlValidator portalUrls, boolean headless, VulcanDiagnostics diagnostics) {
+    this(portalUrls, headless, diagnostics, DEFAULT_SESSION_CAPTURE_READINESS_TIMEOUT);
+  }
+
+  PlaywrightVulcanBrowserAuthenticator(
+      PortalUrlValidator portalUrls, boolean headless, Duration sessionCaptureReadinessTimeout) {
+    this(portalUrls, headless, VulcanDiagnostics.NONE, sessionCaptureReadinessTimeout);
+  }
+
+  PlaywrightVulcanBrowserAuthenticator(
+      PortalUrlValidator portalUrls,
+      boolean headless,
+      VulcanDiagnostics diagnostics,
+      Duration sessionCaptureReadinessTimeout) {
     this.portalUrls = portalUrls;
     this.headless = headless;
     this.diagnostics = java.util.Objects.requireNonNull(diagnostics);
+    if (sessionCaptureReadinessTimeout == null
+        || sessionCaptureReadinessTimeout.isZero()
+        || sessionCaptureReadinessTimeout.isNegative()) {
+      throw new IllegalArgumentException("sessionCaptureReadinessTimeout must be positive");
+    }
+    this.sessionCaptureReadinessTimeout = sessionCaptureReadinessTimeout;
   }
 
   @Override
@@ -97,19 +120,38 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
         requireAllowedPage(page);
         loginForm.password().fill(new String(passwordChars));
         requireSafeSubmission(page, loginForm.form(), loginForm.submitter());
+        observations.clear();
+        captureDiagnostics.reset();
         loginForm.submitter().click();
       } finally {
         Arrays.fill(passwordChars, '\0');
       }
       stage = BrowserAuthStage.POST_LOGIN_VALIDATION;
       page.waitForLoadState(LoadState.DOMCONTENTLOADED);
-      page.waitForTimeout(2_000);
+      requireAllowedPage(page);
+      rejectInteractiveSecurity(page);
+      try {
+        page.waitForCondition(
+            () -> isPostLoginTerminalState(page, observations),
+            new Page.WaitForConditionOptions()
+                .setTimeout(sessionCaptureReadinessTimeout.toMillis()));
+      } catch (TimeoutError deadline) {
+        // Bounded wait expired without observing a terminal condition.
+      }
       requireAllowedPage(page);
       rejectInteractiveSecurity(page);
 
       stage = BrowserAuthStage.SESSION_CAPTURE;
       diagnostics.pass(Stage.BROWSER_AUTH);
       diagnostics.begin(Stage.SESSION_CAPTURE);
+      if (hasInvalidCredentialsUi(page)) {
+        captureDiagnostics.exhausted();
+        throw new VulcanAuthenticationException(VulcanAuthFailureCategory.INVALID_CREDENTIALS);
+      }
+      if (!hasCompleteObservation(observations)) {
+        captureDiagnostics.exhausted();
+        throw new VulcanAuthenticationException(VulcanAuthFailureCategory.PROTOCOL_FAILURE);
+      }
       VulcanSessionCapture capture = new VulcanSessionCapture(portalUrls);
       try {
         VulcanSessionMaterial material =
@@ -120,8 +162,7 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
         diagnostics.pass(Stage.SESSION_CAPTURE);
         return material;
       } catch (VulcanAuthenticationException exception) {
-        if (isVisible(
-            page.locator("input[autocomplete='current-password'], input[type='password']"))) {
+        if (hasInvalidCredentialsUi(page)) {
           throw new VulcanAuthenticationException(VulcanAuthFailureCategory.INVALID_CREDENTIALS);
         }
         throw exception;
@@ -368,6 +409,46 @@ public final class PlaywrightVulcanBrowserAuthenticator implements VulcanBrowser
       }
     }
     return false;
+  }
+
+  private static boolean hasCompleteObservation(List<BrowserRequestObservation> observations) {
+    for (BrowserRequestObservation observation : observations) {
+      if (observation.isComplete()) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private boolean isPostLoginTerminalState(
+      Page page, List<BrowserRequestObservation> observations) {
+    try {
+      return hasCompleteObservation(observations)
+          || isDisallowedPage(page)
+          || hasInteractiveSecurity(page)
+          || hasInvalidCredentialsUi(page);
+    } catch (RuntimeException exception) {
+      return false;
+    }
+  }
+
+  private boolean isDisallowedPage(Page page) {
+    try {
+      URI current = URI.create(page.url());
+      return !portalUrls.isAllowedRuntimeUri(current);
+    } catch (IllegalArgumentException exception) {
+      return true;
+    }
+  }
+
+  private static boolean hasInteractiveSecurity(Page page) {
+    return isVisible(page.locator("iframe[src*='captcha'], [class*='captcha'], [id*='captcha']"))
+        || isVisible(page.locator("input[autocomplete='one-time-code']"));
+  }
+
+  private static boolean hasInvalidCredentialsUi(Page page) {
+    return isVisible(
+        page.locator("input[autocomplete='current-password'], input[type='password']"));
   }
 
   static List<BrowserCookieObservation> cookiesForObservedApplication(

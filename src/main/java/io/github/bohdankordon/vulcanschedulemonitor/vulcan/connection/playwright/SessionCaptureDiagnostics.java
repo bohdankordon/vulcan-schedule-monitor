@@ -56,6 +56,20 @@ final class SessionCaptureDiagnostics {
     materialCaptured = true;
   }
 
+  synchronized void reset() {
+    allowedRequests = 0;
+    completeRequests = 0;
+    candidates = 0;
+    candidatesWithCookies = 0;
+    sawReferer = false;
+    sawVerificationToken = false;
+    sawAppGuid = false;
+    exhausted = false;
+    materialCaptured = false;
+    cookieCount = CookieCount.UNAVAILABLE;
+    rejection = SessionCaptureFailureKind.NOT_APPLICABLE;
+  }
+
   synchronized void rejected(SessionCaptureFailureKind reason) {
     if (precedence(reason) > precedence(rejection)) rejection = reason;
   }
