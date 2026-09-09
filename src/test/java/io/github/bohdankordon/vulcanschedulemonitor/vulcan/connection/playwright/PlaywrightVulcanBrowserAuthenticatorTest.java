@@ -16,8 +16,10 @@ import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.*;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics.VulcanDiagnostics;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics.VulcanDiagnostics.Stage;
 import java.net.URI;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -213,6 +215,582 @@ class PlaywrightVulcanBrowserAuthenticatorTest {
       assertThat(logs.list).isEmpty();
       verify(diagnostics).pass(Stage.SESSION_CAPTURE);
     }
+  }
+
+  @Test
+  void immediateCompleteRequestSucceedsPromptlyWithoutWaitingFullTimeout() {
+    String application = "https://school.vulcan.net.pl/synthetic/Dziennik.mvc/GetTree";
+    AtomicReference<Consumer<Request>> observer = new AtomicReference<>();
+    doAnswer(
+            invocation -> {
+              observer.set(invocation.getArgument(0));
+              return null;
+            })
+        .when(page)
+        .onRequest(any());
+    Request observed = mock(Request.class);
+    when(observed.url()).thenReturn(application);
+    when(observed.headerValue("referer")).thenReturn(URL);
+    when(observed.headerValue("x-v-requestverificationtoken")).thenReturn("synthetic-token");
+    when(observed.headerValue("x-v-appguid")).thenReturn("synthetic-guid");
+    when(context.cookies(application))
+        .thenReturn(List.of(syntheticCookie("SyntheticCookie", "synthetic-value")));
+    doAnswer(
+            invocation -> {
+              when(page.url()).thenReturn(URL + "#schedule");
+              observer.get().accept(observed);
+              return null;
+            })
+        .when(submitter)
+        .click();
+    doAnswer(
+            invocation -> {
+              Page.WaitForConditionOptions options = invocation.getArgument(1);
+              if (options.timeout == 2_000.0) {
+                return null;
+              }
+              BooleanSupplier condition = invocation.getArgument(0);
+              assertThat(options.timeout).isEqualTo(15_000.0);
+              assertThat(condition.getAsBoolean()).isTrue();
+              return null;
+            })
+        .when(page)
+        .waitForCondition(any(), any(Page.WaitForConditionOptions.class));
+
+    try (var staticPlaywright = mockStatic(Playwright.class);
+        var request = new VulcanLoginRequest(URI.create(URL), USERNAME, PASSWORD.toCharArray())) {
+      staticPlaywright.when(Playwright::create).thenReturn(playwright);
+      var session = authenticator.authenticate(request);
+      assertThat(session.applicationBaseUri())
+          .isEqualTo(URI.create("https://school.vulcan.net.pl/synthetic/"));
+      assertThat(cookiePairs(session)).isEqualTo("SyntheticCookie=synthetic-value");
+      assertThat(logs.list).isEmpty();
+      verify(diagnostics).pass(Stage.SESSION_CAPTURE);
+    }
+  }
+
+  @Test
+  void delayedCompleteRequestBeyondOldTwoSecondWindowSucceeds() {
+    String application = "https://school.vulcan.net.pl/synthetic/Dziennik.mvc/GetTree";
+    AtomicReference<Consumer<Request>> observer = new AtomicReference<>();
+    doAnswer(
+            invocation -> {
+              observer.set(invocation.getArgument(0));
+              return null;
+            })
+        .when(page)
+        .onRequest(any());
+    Request observed = mock(Request.class);
+    when(observed.url()).thenReturn(application);
+    when(observed.headerValue("referer")).thenReturn(URL);
+    when(observed.headerValue("x-v-requestverificationtoken")).thenReturn("synthetic-token");
+    when(observed.headerValue("x-v-appguid")).thenReturn("synthetic-guid");
+    when(context.cookies(application))
+        .thenReturn(List.of(syntheticCookie("SyntheticCookie", "synthetic-value")));
+
+    doAnswer(
+            invocation -> {
+              when(page.url()).thenReturn(URL + "#schedule");
+              return null;
+            })
+        .when(submitter)
+        .click();
+
+    doAnswer(
+            invocation -> {
+              Page.WaitForConditionOptions options = invocation.getArgument(1);
+              if (options.timeout == 2_000.0) {
+                return null;
+              }
+              BooleanSupplier condition = invocation.getArgument(0);
+              assertThat(options.timeout).isEqualTo(15_000.0);
+              // Before delayed request arrives (~2.5s-3.0s after DOMContentLoaded), condition is
+              // false.
+              // The old implementation would have failed after 2.0s.
+              assertThat(condition.getAsBoolean()).isFalse();
+              // Simulate delayed request arrival:
+              observer.get().accept(observed);
+              // Condition becomes true, condition-based wait succeeds immediately:
+              assertThat(condition.getAsBoolean()).isTrue();
+              return null;
+            })
+        .when(page)
+        .waitForCondition(any(), any(Page.WaitForConditionOptions.class));
+
+    try (var staticPlaywright = mockStatic(Playwright.class);
+        var request = new VulcanLoginRequest(URI.create(URL), USERNAME, PASSWORD.toCharArray())) {
+      staticPlaywright.when(Playwright::create).thenReturn(playwright);
+      var session = authenticator.authenticate(request);
+      assertThat(session.applicationBaseUri())
+          .isEqualTo(URI.create("https://school.vulcan.net.pl/synthetic/"));
+      assertThat(cookiePairs(session)).isEqualTo("SyntheticCookie=synthetic-value");
+      assertThat(logs.list).isEmpty();
+      verify(diagnostics).pass(Stage.SESSION_CAPTURE);
+    }
+  }
+
+  @Test
+  void sessionCaptureTimeoutFailsClosedWithProtocolFailure() {
+    doAnswer(
+            invocation -> {
+              Page.WaitForConditionOptions options = invocation.getArgument(1);
+              if (options.timeout == 2_000.0) {
+                return null;
+              }
+              BooleanSupplier condition = invocation.getArgument(0);
+              assertThat(options.timeout).isEqualTo(15_000.0);
+              assertThat(condition.getAsBoolean()).isFalse();
+              throw new TimeoutError("Session capture readiness timeout");
+            })
+        .when(page)
+        .waitForCondition(any(), any(Page.WaitForConditionOptions.class));
+
+    authenticateExpecting(VulcanAuthFailureCategory.PROTOCOL_FAILURE);
+    assertCaptureLog(
+        new SessionCaptureObservation(
+            SessionCaptureFailureKind.NO_ALLOWED_REQUEST,
+            SessionCaptureObservation.AllowedRequestCount.ZERO,
+            SessionCaptureObservation.CompleteRequestCount.ZERO,
+            false,
+            false,
+            false,
+            false,
+            SessionCaptureObservation.CompleteRequestCount.ZERO,
+            SessionCaptureObservation.CompleteRequestCount.ZERO,
+            SessionCaptureObservation.CookieCount.UNAVAILABLE),
+        VulcanAuthFailureCategory.PROTOCOL_FAILURE);
+    verify(context, never()).cookies(anyString());
+  }
+
+  @ParameterizedTest
+  @CsvSource({
+    "true,false,false",
+    "false,true,false",
+    "false,false,true",
+    "true,true,false",
+    "true,false,true",
+    "false,true,true"
+  })
+  void partialHeaderCombinationsNeverCountAsCompleteAndFailClosed(
+      boolean referer, boolean token, boolean guid) {
+    emitDuringSubmission(
+        SessionCaptureDiagnosticsTest.request(
+            SessionCaptureDiagnosticsTest.REQUEST,
+            referer ? SessionCaptureDiagnosticsTest.REFERER : null,
+            token ? SessionCaptureDiagnosticsTest.TOKEN : null,
+            guid ? SessionCaptureDiagnosticsTest.GUID : null));
+    doAnswer(
+            invocation -> {
+              Page.WaitForConditionOptions options = invocation.getArgument(1);
+              if (options.timeout == 2_000.0) {
+                return null;
+              }
+              BooleanSupplier condition = invocation.getArgument(0);
+              assertThat(condition.getAsBoolean()).isFalse();
+              throw new TimeoutError("Condition timeout");
+            })
+        .when(page)
+        .waitForCondition(any(), any(Page.WaitForConditionOptions.class));
+
+    authenticateExpecting(VulcanAuthFailureCategory.PROTOCOL_FAILURE);
+    assertCaptureLog(
+        new SessionCaptureObservation(
+            SessionCaptureFailureKind.NO_COMPLETE_REQUEST,
+            SessionCaptureObservation.AllowedRequestCount.ONE,
+            SessionCaptureObservation.CompleteRequestCount.ZERO,
+            referer,
+            token,
+            guid,
+            false,
+            SessionCaptureObservation.CompleteRequestCount.ZERO,
+            SessionCaptureObservation.CompleteRequestCount.ZERO,
+            SessionCaptureObservation.CookieCount.UNAVAILABLE),
+        VulcanAuthFailureCategory.PROTOCOL_FAILURE);
+    verify(context, never()).cookies(anyString());
+  }
+
+  @Test
+  void stalePreLoginCompleteRequestIsClearedAndCannotSatisfyPostLoginReadiness() {
+    String preLoginApp = "https://school.vulcan.net.pl/prelogin/Dziennik.mvc/GetTree";
+    AtomicReference<Consumer<Request>> observer = new AtomicReference<>();
+    doAnswer(
+            invocation -> {
+              observer.set(invocation.getArgument(0));
+              return null;
+            })
+        .when(page)
+        .onRequest(any());
+
+    Request staleRequest = mock(Request.class);
+    when(staleRequest.url()).thenReturn(preLoginApp);
+    when(staleRequest.headerValue("referer")).thenReturn(URL);
+    when(staleRequest.headerValue("x-v-requestverificationtoken")).thenReturn("stale-token");
+    when(staleRequest.headerValue("x-v-appguid")).thenReturn("stale-guid");
+
+    // Pre-login complete request observed during initial navigation
+    doAnswer(
+            invocation -> {
+              observer.get().accept(staleRequest);
+              return null;
+            })
+        .when(page)
+        .navigate(anyString());
+
+    // During and after submission: no requests arrive
+    doAnswer(
+            invocation -> {
+              when(page.url()).thenReturn(URL + "#schedule");
+              return null;
+            })
+        .when(submitter)
+        .click();
+
+    doAnswer(
+            invocation -> {
+              Page.WaitForConditionOptions options = invocation.getArgument(1);
+              if (options.timeout == 2_000.0) {
+                return null;
+              }
+              BooleanSupplier condition = invocation.getArgument(0);
+              // Must be false because pre-login observation was cleared immediately before submit!
+              assertThat(condition.getAsBoolean()).isFalse();
+              throw new TimeoutError("Timeout");
+            })
+        .when(page)
+        .waitForCondition(any(), any(Page.WaitForConditionOptions.class));
+
+    authenticateExpecting(VulcanAuthFailureCategory.PROTOCOL_FAILURE);
+    assertCaptureLog(
+        new SessionCaptureObservation(
+            SessionCaptureFailureKind.NO_ALLOWED_REQUEST,
+            SessionCaptureObservation.AllowedRequestCount.ZERO,
+            SessionCaptureObservation.CompleteRequestCount.ZERO,
+            false,
+            false,
+            false,
+            false,
+            SessionCaptureObservation.CompleteRequestCount.ZERO,
+            SessionCaptureObservation.CompleteRequestCount.ZERO,
+            SessionCaptureObservation.CookieCount.UNAVAILABLE),
+        VulcanAuthFailureCategory.PROTOCOL_FAILURE);
+    verify(context, never()).cookies(anyString());
+  }
+
+  @Test
+  void fastRequestEmittedDuringSubmissionIsNotLost() {
+    String application = "https://school.vulcan.net.pl/synthetic/Dziennik.mvc/GetTree";
+    AtomicReference<Consumer<Request>> observer = new AtomicReference<>();
+    doAnswer(
+            invocation -> {
+              observer.set(invocation.getArgument(0));
+              return null;
+            })
+        .when(page)
+        .onRequest(any());
+    Request fastRequest = mock(Request.class);
+    when(fastRequest.url()).thenReturn(application);
+    when(fastRequest.headerValue("referer")).thenReturn(URL);
+    when(fastRequest.headerValue("x-v-requestverificationtoken")).thenReturn("fast-token");
+    when(fastRequest.headerValue("x-v-appguid")).thenReturn("fast-guid");
+    when(context.cookies(application))
+        .thenReturn(List.of(syntheticCookie("FastCookie", "fast-value")));
+
+    // A fast request arrives immediately inside submitter.click()
+    doAnswer(
+            invocation -> {
+              when(page.url()).thenReturn(URL + "#schedule");
+              observer.get().accept(fastRequest);
+              return null;
+            })
+        .when(submitter)
+        .click();
+
+    try (var staticPlaywright = mockStatic(Playwright.class);
+        var request = new VulcanLoginRequest(URI.create(URL), USERNAME, PASSWORD.toCharArray())) {
+      staticPlaywright.when(Playwright::create).thenReturn(playwright);
+      var session = authenticator.authenticate(request);
+      assertThat(session.requestVerificationToken()).isEqualTo("fast-token");
+      assertThat(session.appGuid()).isEqualTo("fast-guid");
+      assertThat(cookiePairs(session)).isEqualTo("FastCookie=fast-value");
+      verify(diagnostics).pass(Stage.SESSION_CAPTURE);
+    }
+  }
+
+  @Test
+  void customSessionCaptureReadinessTimeoutIsRespected() {
+    Duration customTimeout = Duration.ofMillis(250);
+    PlaywrightVulcanBrowserAuthenticator customAuthenticator =
+        new PlaywrightVulcanBrowserAuthenticator(
+            new PortalUrlValidator(), true, diagnostics, customTimeout);
+
+    doAnswer(
+            invocation -> {
+              Page.WaitForConditionOptions options = invocation.getArgument(1);
+              if (options.timeout == 2_000.0) {
+                return null;
+              }
+              assertThat(options.timeout).isEqualTo(250.0);
+              throw new TimeoutError("Custom timeout expired");
+            })
+        .when(page)
+        .waitForCondition(any(), any(Page.WaitForConditionOptions.class));
+
+    try (var staticPlaywright = mockStatic(Playwright.class);
+        var request = new VulcanLoginRequest(URI.create(URL), USERNAME, PASSWORD.toCharArray())) {
+      staticPlaywright.when(Playwright::create).thenReturn(playwright);
+      assertThatThrownBy(() -> customAuthenticator.authenticate(request))
+          .isInstanceOfSatisfying(
+              VulcanAuthenticationException.class,
+              exception ->
+                  assertThat(exception.category())
+                      .isEqualTo(VulcanAuthFailureCategory.PROTOCOL_FAILURE));
+    }
+  }
+
+  @Test
+  void constructorRejectsNullZeroOrNegativeSessionCaptureReadinessTimeout() {
+    var validator = new PortalUrlValidator();
+    assertThatThrownBy(
+            () -> new PlaywrightVulcanBrowserAuthenticator(validator, true, diagnostics, null))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(
+            () ->
+                new PlaywrightVulcanBrowserAuthenticator(
+                    validator, true, diagnostics, Duration.ZERO))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(
+            () ->
+                new PlaywrightVulcanBrowserAuthenticator(
+                    validator, true, diagnostics, Duration.ofSeconds(-1)))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void delayedCaptchaDuringReadinessWaitExitsWithCaptchaRequiredWithoutSessionCapture() {
+    Locator captchaLocator = mock(Locator.class, RETURNS_DEEP_STUBS);
+    Locator captchaElement = mock(Locator.class, RETURNS_DEEP_STUBS);
+    when(page.locator(CAPTCHA_SELECTOR)).thenReturn(captchaLocator);
+    when(captchaLocator.count()).thenReturn(0);
+
+    doAnswer(
+            invocation -> {
+              when(page.url()).thenReturn(URL + "#schedule");
+              return null;
+            })
+        .when(submitter)
+        .click();
+
+    doAnswer(
+            invocation -> {
+              Page.WaitForConditionOptions options = invocation.getArgument(1);
+              if (options.timeout == 2_000.0) {
+                return null;
+              }
+              BooleanSupplier condition = invocation.getArgument(0);
+              assertThat(options.timeout).isEqualTo(15_000.0);
+              assertThat(condition.getAsBoolean()).isFalse();
+
+              when(captchaLocator.count()).thenReturn(1);
+              when(captchaLocator.nth(0)).thenReturn(captchaElement);
+              when(captchaElement.isVisible()).thenReturn(true);
+
+              assertThat(condition.getAsBoolean()).isTrue();
+              return null;
+            })
+        .when(page)
+        .waitForCondition(any(), any(Page.WaitForConditionOptions.class));
+
+    authenticateExpecting(VulcanAuthFailureCategory.CAPTCHA_REQUIRED);
+    verify(diagnostics, never()).begin(Stage.SESSION_CAPTURE);
+    verify(context, never()).cookies(anyString());
+    assertFailureLog(
+        BrowserAuthStage.POST_LOGIN_VALIDATION, VulcanAuthFailureCategory.CAPTCHA_REQUIRED);
+  }
+
+  @Test
+  void delayedMfaDuringReadinessWaitExitsWithMfaRequiredWithoutSessionCapture() {
+    Locator mfaLocator = mock(Locator.class, RETURNS_DEEP_STUBS);
+    Locator mfaElement = mock(Locator.class, RETURNS_DEEP_STUBS);
+    when(page.locator(MFA_SELECTOR)).thenReturn(mfaLocator);
+    when(mfaLocator.count()).thenReturn(0);
+
+    doAnswer(
+            invocation -> {
+              when(page.url()).thenReturn(URL + "#schedule");
+              return null;
+            })
+        .when(submitter)
+        .click();
+
+    doAnswer(
+            invocation -> {
+              Page.WaitForConditionOptions options = invocation.getArgument(1);
+              if (options.timeout == 2_000.0) {
+                return null;
+              }
+              BooleanSupplier condition = invocation.getArgument(0);
+              assertThat(options.timeout).isEqualTo(15_000.0);
+              assertThat(condition.getAsBoolean()).isFalse();
+
+              when(mfaLocator.count()).thenReturn(1);
+              when(mfaLocator.nth(0)).thenReturn(mfaElement);
+              when(mfaElement.isVisible()).thenReturn(true);
+
+              assertThat(condition.getAsBoolean()).isTrue();
+              return null;
+            })
+        .when(page)
+        .waitForCondition(any(), any(Page.WaitForConditionOptions.class));
+
+    authenticateExpecting(VulcanAuthFailureCategory.MFA_REQUIRED);
+    verify(diagnostics, never()).begin(Stage.SESSION_CAPTURE);
+    verify(context, never()).cookies(anyString());
+    assertFailureLog(
+        BrowserAuthStage.POST_LOGIN_VALIDATION, VulcanAuthFailureCategory.MFA_REQUIRED);
+  }
+
+  @Test
+  void delayedInvalidCredentialsUiWakesWaitAndExitsWithInvalidCredentials() {
+    Locator delayedPasswords = mock(Locator.class, RETURNS_DEEP_STUBS);
+    Locator delayedPasswordElement = mock(Locator.class, RETURNS_DEEP_STUBS);
+
+    doAnswer(
+            invocation -> {
+              when(page.url()).thenReturn(URL);
+              when(page.locator(PASSWORD_SELECTOR)).thenReturn(delayedPasswords);
+              when(delayedPasswords.count()).thenReturn(0);
+              return null;
+            })
+        .when(submitter)
+        .click();
+
+    doAnswer(
+            invocation -> {
+              Page.WaitForConditionOptions options = invocation.getArgument(1);
+              if (options.timeout == 2_000.0) {
+                return null;
+              }
+              BooleanSupplier condition = invocation.getArgument(0);
+              assertThat(options.timeout).isEqualTo(15_000.0);
+              assertThat(condition.getAsBoolean()).isFalse();
+
+              when(delayedPasswords.count()).thenReturn(1);
+              when(delayedPasswords.nth(0)).thenReturn(delayedPasswordElement);
+              when(delayedPasswordElement.isVisible()).thenReturn(true);
+
+              assertThat(condition.getAsBoolean()).isTrue();
+              return null;
+            })
+        .when(page)
+        .waitForCondition(any(), any(Page.WaitForConditionOptions.class));
+
+    authenticateExpecting(VulcanAuthFailureCategory.INVALID_CREDENTIALS);
+    verify(diagnostics).begin(Stage.SESSION_CAPTURE);
+    verify(diagnostics, never()).pass(Stage.SESSION_CAPTURE);
+    verify(context, never()).cookies(anyString());
+    assertCaptureLog(
+        new SessionCaptureObservation(
+            SessionCaptureFailureKind.NO_ALLOWED_REQUEST,
+            SessionCaptureObservation.AllowedRequestCount.ZERO,
+            SessionCaptureObservation.CompleteRequestCount.ZERO,
+            false,
+            false,
+            false,
+            false,
+            SessionCaptureObservation.CompleteRequestCount.ZERO,
+            SessionCaptureObservation.CompleteRequestCount.ZERO,
+            SessionCaptureObservation.CookieCount.UNAVAILABLE),
+        VulcanAuthFailureCategory.INVALID_CREDENTIALS);
+  }
+
+  @Test
+  void completeRequestPlusInteractiveChallengePrioritizesSecurityChallenge() {
+    String application = "https://school.vulcan.net.pl/synthetic/Dziennik.mvc/GetTree";
+    AtomicReference<Consumer<Request>> observer = new AtomicReference<>();
+    doAnswer(
+            invocation -> {
+              observer.set(invocation.getArgument(0));
+              return null;
+            })
+        .when(page)
+        .onRequest(any());
+
+    Request completeRequest = mock(Request.class);
+    when(completeRequest.url()).thenReturn(application);
+    when(completeRequest.headerValue("referer")).thenReturn(URL);
+    when(completeRequest.headerValue("x-v-requestverificationtoken")).thenReturn("synthetic-token");
+    when(completeRequest.headerValue("x-v-appguid")).thenReturn("synthetic-guid");
+
+    Locator captchaLocator = mock(Locator.class, RETURNS_DEEP_STUBS);
+    Locator captchaElement = mock(Locator.class, RETURNS_DEEP_STUBS);
+    when(page.locator(CAPTCHA_SELECTOR)).thenReturn(captchaLocator);
+    when(captchaLocator.count()).thenReturn(0);
+
+    doAnswer(
+            invocation -> {
+              when(page.url()).thenReturn(URL + "#schedule");
+              observer.get().accept(completeRequest);
+              return null;
+            })
+        .when(submitter)
+        .click();
+
+    doAnswer(
+            invocation -> {
+              Page.WaitForConditionOptions options = invocation.getArgument(1);
+              if (options.timeout == 2_000.0) {
+                return null;
+              }
+              when(captchaLocator.count()).thenReturn(1);
+              when(captchaLocator.nth(0)).thenReturn(captchaElement);
+              when(captchaElement.isVisible()).thenReturn(true);
+
+              BooleanSupplier condition = invocation.getArgument(0);
+              assertThat(condition.getAsBoolean()).isTrue();
+              return null;
+            })
+        .when(page)
+        .waitForCondition(any(), any(Page.WaitForConditionOptions.class));
+
+    authenticateExpecting(VulcanAuthFailureCategory.CAPTCHA_REQUIRED);
+    verify(diagnostics, never()).begin(Stage.SESSION_CAPTURE);
+    verify(context, never()).cookies(anyString());
+    assertFailureLog(
+        BrowserAuthStage.POST_LOGIN_VALIDATION, VulcanAuthFailureCategory.CAPTCHA_REQUIRED);
+  }
+
+  @Test
+  void disallowedPageDuringReadinessWaitFailsWithUnsupportedAuthFlow() {
+    doAnswer(
+            invocation -> {
+              when(page.url()).thenReturn(URL + "#schedule");
+              return null;
+            })
+        .when(submitter)
+        .click();
+
+    doAnswer(
+            invocation -> {
+              Page.WaitForConditionOptions options = invocation.getArgument(1);
+              if (options.timeout == 2_000.0) {
+                return null;
+              }
+              BooleanSupplier condition = invocation.getArgument(0);
+              assertThat(condition.getAsBoolean()).isFalse();
+
+              when(page.url()).thenReturn("https://disallowed.external.example.com/untrusted");
+
+              assertThat(condition.getAsBoolean()).isTrue();
+              return null;
+            })
+        .when(page)
+        .waitForCondition(any(), any(Page.WaitForConditionOptions.class));
+
+    authenticateExpecting(VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
+    verify(diagnostics, never()).begin(Stage.SESSION_CAPTURE);
+    verify(context, never()).cookies(anyString());
+    assertFailureLog(
+        BrowserAuthStage.POST_LOGIN_VALIDATION, VulcanAuthFailureCategory.UNSUPPORTED_AUTH_FLOW);
   }
 
   @Test

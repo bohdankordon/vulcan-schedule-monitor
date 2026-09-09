@@ -56,6 +56,38 @@ class SessionCaptureDiagnosticsTest {
         .isEqualTo(SessionCaptureObservation.CookieCount.UNAVAILABLE);
   }
 
+  @Test
+  void resetRestoresAllFieldsToInitialCleanState() {
+    diagnostics.allowedRequest();
+    diagnostics.referer(true);
+    diagnostics.verificationToken(true);
+    diagnostics.appGuid(true);
+    diagnostics.completeRequest();
+    diagnostics.candidate();
+    diagnostics.candidateWithCookies();
+    diagnostics.cookies(5);
+    diagnostics.rejected(SessionCaptureFailureKind.REFERER_REJECTED);
+    diagnostics.exhausted();
+
+    diagnostics.reset();
+
+    var snapshot = diagnostics.snapshot();
+    assertThat(snapshot.failure()).isEqualTo(SessionCaptureFailureKind.NO_ALLOWED_REQUEST);
+    assertThat(snapshot.allowedRequests())
+        .isEqualTo(SessionCaptureObservation.AllowedRequestCount.ZERO);
+    assertThat(snapshot.completeRequests())
+        .isEqualTo(SessionCaptureObservation.CompleteRequestCount.ZERO);
+    assertThat(snapshot.sawReferer()).isFalse();
+    assertThat(snapshot.sawVerificationToken()).isFalse();
+    assertThat(snapshot.sawAppGuid()).isFalse();
+    assertThat(snapshot.sawAllRequiredHeadersTogether()).isFalse();
+    assertThat(snapshot.candidates())
+        .isEqualTo(SessionCaptureObservation.CompleteRequestCount.ZERO);
+    assertThat(snapshot.candidatesWithCookies())
+        .isEqualTo(SessionCaptureObservation.CompleteRequestCount.ZERO);
+    assertThat(snapshot.cookieCount()).isEqualTo(SessionCaptureObservation.CookieCount.UNAVAILABLE);
+  }
+
   @ParameterizedTest
   @CsvSource({
     "false,false,false",
