@@ -102,7 +102,7 @@ After the connection/catalog flow has been validated, monitoring can be enabled 
 
 Replace the protected Telegram token with `.\scripts\dev.ps1 -ReconfigureTelegram`. To intentionally delete both the local database and protected secrets, run `.\scripts\dev.ps1 -ResetDevState` and type the requested `RESET` confirmation. Use `.\scripts\dev.ps1 -Help` for all runner options. The reset is coupled so a new encryption key is never silently used with ciphertext from the previous database.
 
-Production Compose includes a local [Caddy HTTPS edge](docs/https-reverse-proxy.md) with explicit CA trust, private Spring/PostgreSQL services, and [database recovery](docs/database-backup-restore.md). VPS and public DNS deployment remain deferred.
+Production Compose provides a standalone [Caddy HTTPS edge](docs/https-reverse-proxy.md), private Spring/PostgreSQL services, and [database recovery](docs/database-backup-restore.md). See [Acer-Server production deployment](docs/acer-server-deployment.md) for the standalone host deployment runbook. Multiple-application shared edge integration remains deliberately deferred.
 
 ## Build and test
 

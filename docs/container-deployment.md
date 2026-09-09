@@ -1,6 +1,6 @@
 # Container deployment foundation
 
-This is a single-host Caddy HTTPS edge + application + PostgreSQL foundation with [database backup and restore tooling](database-backup-restore.md). See the focused [HTTPS runbook](https-reverse-proxy.md) for TLS trust, ports and proxy security. Defaults are local loopback only; actual public deployment remains a later phase.
+This is a single-host Caddy HTTPS edge + application + PostgreSQL foundation with [database backup and restore tooling](database-backup-restore.md). See the focused [HTTPS runbook](https-reverse-proxy.md) for TLS trust, ports and proxy security, and the [Acer-Server production deployment runbook](acer-server-deployment.md) for standalone host rollout. Defaults in the example configuration are local loopback only for local verification.
 
 ## Build and start
 

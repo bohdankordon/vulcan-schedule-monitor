@@ -41,11 +41,12 @@ high host ports. The HTTP site matches the configured hostname explicitly, so
 its route precedes the automatic fallback redirect. Automatic HTTPS redirects and challenge handling stay enabled;
 the canonical HTTP route also avoids deriving redirect hosts from client input. HTTP/1.1 and HTTP/2 remain enabled; HTTP/3 is available but not a CI test.
 
-For the later public deployment, configuration can become
+For public deployment on `acer-server`, configuration uses
 `EDGE_BIND_ADDRESS=0.0.0.0`, `EDGE_HTTP_PORT=80`, `EDGE_HTTPS_PORT=443`,
-`CADDY_SITE_ADDRESS=<real-domain>` (no scheme or port). Container listeners remain
-8080/8443; redirects explicitly include the standard `:443` port. This is a future configuration contract,
-not an instruction to deploy or obtain certificates in this phase.
+and `CADDY_SITE_ADDRESS=vulcan-schedule-monitor.dns-dns.com` (no scheme or port). Container listeners remain
+8080/8443; redirects explicitly include the standard `:443` port. See the complete
+[Acer-Server production deployment runbook](acer-server-deployment.md). Note that multi-application
+shared edge integration is deliberately deferred; Vulcan uses its bundled Caddy reverse proxy directly.
 
 `PUBLIC_BASE_URL` is independent of Docker binding. When connection is enabled it
 must be the externally reachable HTTPS origin: `https://localhost:8443` locally

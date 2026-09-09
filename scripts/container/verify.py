@@ -246,7 +246,210 @@ def validate_config(config):
             and env["SPRING_DATASOURCE_USERNAME"] == "schedule_monitor"
             and env["SPRING_DATASOURCE_PASSWORD"] == MARKERS[1]
             and MARKERS[0] not in env.values(), "Separate admin/application credentials required")
+    require(int(app.get("mem_limit", 0)) == 2 * 1024 * 1024 * 1024, "App container memory limit must be 2g")
+    require(int(db.get("mem_limit", 0)) == 1 * 1024 * 1024 * 1024, "PostgreSQL container memory limit must be 1g")
+    require(int(caddy.get("mem_limit", 0)) == 512 * 1024 * 1024, "Caddy container memory limit must be 512m")
     print("Compose topology, safe defaults, persistence, security and stop budget: PASS", flush=True)
+
+
+def validate_production_ports(directory, quoted_app_password):
+    prod_env = directory / "acer-server-production.env"
+    prod_env.write_text(
+        f"COMPOSE_PROJECT_NAME=vulcan-schedule-monitor-prod\n"
+        f"POSTGRES_ADMIN_PASSWORD={MARKERS[0]}\n"
+        f"POSTGRES_APP_PASSWORD='{quoted_app_password}'\n"
+        f"VULCAN_MASTER_KEY={MARKERS[2]}\n"
+        "EDGE_BIND_ADDRESS=0.0.0.0\n"
+        "EDGE_HTTP_PORT=80\n"
+        "EDGE_HTTPS_PORT=443\n"
+        "CADDY_SITE_ADDRESS=vulcan-schedule-monitor.dns-dns.com\n"
+        "PUBLIC_BASE_URL=https://vulcan-schedule-monitor.dns-dns.com\n"
+        f"APP_IMAGE={IMAGE}\n",
+        encoding="utf-8",
+    )
+    prod_config = json.loads(
+        run(
+            "docker",
+            "compose",
+            "--env-file",
+            str(prod_env),
+            "-f",
+            str(ROOT / "compose.production.yml"),
+            "config",
+            "--format",
+            "json",
+        )
+    )
+    require(prod_config.get("name") == "vulcan-schedule-monitor-prod", "Canonical project name mismatch")
+    caddy = prod_config["services"]["caddy"]
+    app = prod_config["services"]["app"]
+    db = prod_config["services"]["postgres"]
+
+    require(not app.get("ports"), "Spring app must publish zero host ports in production")
+    require(not db.get("ports"), "PostgreSQL must publish zero host ports in production")
+    require(bool(caddy.get("ports")), "Caddy must publish host ports in production")
+    require(int(app.get("mem_limit", 0)) == 2 * 1024 * 1024 * 1024, "App mem_limit mismatch")
+    require(int(db.get("mem_limit", 0)) == 1 * 1024 * 1024 * 1024, "PostgreSQL mem_limit mismatch")
+    require(int(caddy.get("mem_limit", 0)) == 512 * 1024 * 1024, "Caddy mem_limit mismatch")
+
+    caddy_ports = {
+        (p.get("host_ip", "0.0.0.0"), str(p["published"]), p["target"], p["protocol"])
+        for p in caddy["ports"]
+    }
+    expected_ports = {
+        ("0.0.0.0", "80", 8080, "tcp"),
+        ("0.0.0.0", "443", 8443, "tcp"),
+        ("0.0.0.0", "443", 8443, "udp"),
+    }
+    require(caddy_ports == expected_ports, f"Production edge host ports mismatch: {caddy_ports}")
+    require(caddy["environment"]["CADDY_SITE_ADDRESS"] == "vulcan-schedule-monitor.dns-dns.com", "CADDY_SITE_ADDRESS not propagated")
+    require(caddy["environment"]["EDGE_HTTPS_PORT"] == "443", "EDGE_HTTPS_PORT not propagated")
+    require(app["environment"]["VULCAN_CONNECTION_PUBLICBASEURL"] == "https://vulcan-schedule-monitor.dns-dns.com", "PUBLIC_BASE_URL not propagated")
+    print("Production-port configuration render (host 80/443 -> Caddy, zero app/db host ports): PASS", flush=True)
+
+
+def validate_public_caddyfile():
+    caddyfile_path = (ROOT / "docker/caddy/Caddyfile").resolve()
+    caddy_cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "-e",
+        "CADDY_SITE_ADDRESS=vulcan-schedule-monitor.dns-dns.com",
+        "-e",
+        "EDGE_HTTPS_PORT=443",
+        "-v",
+        f"{caddyfile_path}:/etc/caddy/Caddyfile:ro",
+        CADDY_IMAGE,
+        "caddy",
+        "adapt",
+        "--config",
+        "/etc/caddy/Caddyfile",
+    ]
+    adapted_raw = run(*caddy_cmd)
+    adapted = json.loads(adapted_raw)
+    http_apps = adapted["apps"]["http"]
+    servers = http_apps["servers"]
+
+    require(any(":8080" in s.get("listen", []) for s in servers.values()), "Caddy HTTP listener :8080 missing")
+    require(any(":8443" in s.get("listen", []) for s in servers.values()), "Caddy HTTPS listener :8443 missing")
+
+    https_server = next(s for s in servers.values() if ":8443" in s.get("listen", []))
+    routes_json = json.dumps(https_server)
+
+    require('"delete":["Forwarded"]' in routes_json or '"delete": ["Forwarded"]' in routes_json, "Forwarded header deletion missing")
+    require('"delete":["X-Forwarded-*"]' in routes_json or '"delete": ["X-Forwarded-*"]' in routes_json, "X-Forwarded-* deletion missing")
+    require('"dial":"app:8080"' in routes_json or '"dial": "app:8080"' in routes_json, "reverse_proxy app:8080 upstream missing")
+    require("logs" not in https_server and "access_logger" not in routes_json, "Access logging must remain disabled")
+
+    http_server = next(s for s in servers.values() if ":8080" in s.get("listen", []))
+    http_routes_json = json.dumps(http_server)
+    require("308" in http_routes_json and "vulcan-schedule-monitor.dns-dns.com:443" in http_routes_json, "HTTP to HTTPS redirect missing")
+
+    print("Public hostname Caddy config adapt (Forwarded stripped, reverse_proxy app:8080, no access log): PASS", flush=True)
+
+
+def validate_acer_server_preflight():
+    script = ROOT / "scripts/deployment/acer-server-preflight.sh"
+    require(script.is_file(), "scripts/deployment/acer-server-preflight.sh not found")
+
+    bash = shutil.which("bash")
+    if os.name == "nt":
+        git = shutil.which("git")
+        candidate = Path(git).resolve().parents[1] / "bin/bash.exe" if git else Path("missing")
+        if candidate.is_file():
+            bash = str(candidate)
+    require(bash is not None, "Bash required for preflight verification")
+
+    script_path = (ROOT / "scripts/deployment/acer-server-preflight.sh").as_posix()
+
+    # Test 1: Wrong hostname failure
+    res_host = subprocess.run(
+        [bash, script_path, "--expected-hostname", "definitely-not-acer-server-98765"],
+        cwd=ROOT, env=ENV, capture_output=True, text=True, timeout=30
+    )
+    require(res_host.returncode != 0 and "Hostname mismatch" in res_host.stdout + res_host.stderr,
+            "Preflight must fail on mismatched hostname")
+
+    # Test 2: Unresolvable DDNS domain failure
+    current_host = socket.gethostname()
+    res_ddns = subprocess.run(
+        [bash, script_path, "--expected-hostname", current_host, "--expected-domain", "nonexistent-domain-xyz987654321.invalid"],
+        cwd=ROOT, env=ENV, capture_output=True, text=True, timeout=30
+    )
+    require(res_ddns.returncode != 0 and "Unable to resolve DDNS domain" in res_ddns.stdout + res_ddns.stderr,
+            "Preflight must fail on unresolvable DDNS domain")
+
+    # Test 3: Missing Docker failure
+    res_docker = subprocess.run(
+        [bash, script_path, "--docker-bin", "nonexistent-docker-binary-xyz98765"],
+        cwd=ROOT, env=ENV, capture_output=True, text=True, timeout=30
+    )
+    require(res_docker.returncode != 0 and "Docker" in res_docker.stdout + res_docker.stderr,
+            "Preflight must fail when Docker is absent")
+
+    print("Preflight script validation (wrong hostname, missing DDNS, missing Docker rejection): PASS", flush=True)
+
+
+def validate_deployment_contract():
+    # 1. Check systemd service unit defines canonical project
+    svc_unit = (ROOT / "deploy/acer-server/systemd/vulcan-schedule-monitor-backup.service").read_text(encoding="utf-8")
+    require("--project-name vulcan-schedule-monitor-prod" in svc_unit, "Backup service unit must specify canonical project name")
+    require("--output-dir /srv/vulcan-schedule-monitor/backups" in svc_unit, "Backup service unit must specify /srv backup directory")
+
+    # 2. Check example env has COMPOSE_PROJECT_NAME and memory policy
+    env_example = (ROOT / "deploy/acer-server/.env.production.example").read_text(encoding="utf-8")
+    require("COMPOSE_PROJECT_NAME=vulcan-schedule-monitor-prod" in env_example, ".env.production.example missing COMPOSE_PROJECT_NAME")
+    require("JAVA_TOOL_OPTIONS=-XX:InitialRAMPercentage=20.0 -XX:MaxRAMPercentage=50.0 -XX:+ExitOnOutOfMemoryError" in env_example,
+            ".env.production.example missing safe JVM memory containment")
+
+    # 3. Check memory limits in compose.production.yml
+    compose_prod = (ROOT / "compose.production.yml").read_text(encoding="utf-8")
+    require("mem_limit: 2g" in compose_prod, "compose.production.yml app mem_limit must be 2g")
+    require("mem_limit: 1g" in compose_prod, "compose.production.yml postgres mem_limit must be 1g")
+    require("mem_limit: 512m" in compose_prod, "compose.production.yml caddy mem_limit must be 512m")
+
+    # 4. Check docs/acer-server-deployment.md for exact restore contract, project identity, and volume naming
+    runbook = (ROOT / "docs/acer-server-deployment.md").read_text(encoding="utf-8")
+    require("COMPOSE_PROJECT_NAME=vulcan-schedule-monitor-prod" in runbook, "Runbook missing canonical project name")
+    require("sudo docker compose --project-name vulcan-schedule-monitor-prod" in runbook, "Runbook must use canonical project in compose commands")
+    require("vulcan-schedule-monitor-prod_postgres_data" in runbook, "Runbook must reference canonical volume name")
+    require("compose.yaml" in runbook and "compose.yml stop" not in runbook, "Runbook must reference temporary edge compose.yaml")
+
+    # 5. Check staged startup dependency ordering (Step 10)
+    require("up -d postgres app" in runbook, "Runbook Step 10 must use staged startup 'up -d postgres app'")
+    require("up -d --no-deps postgres app" not in runbook, "Runbook Step 10 must NOT bypass dependency ordering with --no-deps")
+
+    # 6. Check Level 2 recovery flow: distinguishes pre-baseline vs post-baseline, forbids down before restore
+    require("Case A: Failure Before a Baseline Backup Exists" in runbook, "Runbook must document failure before baseline backup exists")
+    require("Case B: Failure After a Valid Baseline" in runbook, "Runbook must document failure after baseline backup exists")
+    require("Do NOT run `docker compose down`" in runbook, "Runbook must warn against running docker compose down before restore")
+    case_b = runbook.split("Case B:")[1]
+    down_idx = case_b.find("compose.production.yml down")
+    restore_idx = case_b.find("scripts/database/restore.sh")
+    require(down_idx == -1 or down_idx > restore_idx, "Runbook must NOT instruct docker compose down before restore.sh in Case B")
+
+    # 7. Check provider disablement separation and app recreation in Case B
+    require("up -d --no-deps --force-recreate app" in case_b,
+            "Case B must document app container recreation with up -d --no-deps --force-recreate app")
+    operator_config = case_b.split("Operator Configuration")[1].split("Effective App Container Environment")[0]
+    require("VULCAN_CONNECTION_ENABLED=false" in operator_config
+            and "VULCAN_MONITORING_ENABLED=false" in operator_config
+            and "TELEGRAM_ENABLED=false" in operator_config,
+            "Case B operator config (.env.production) must specify TELEGRAM_ENABLED=false")
+    require("TELEGRAM_BOT_ENABLED=false" not in operator_config,
+            "Case B operator config must NOT instruct setting TELEGRAM_BOT_ENABLED in .env.production")
+
+    effective_env = case_b.split("Effective App Container Environment")[1].split("Before restore")[0]
+    require("VULCAN_CONNECTION_ENABLED=false" in effective_env
+            and "VULCAN_MONITORING_ENABLED=false" in effective_env
+            and "TELEGRAM_BOT_ENABLED=false" in effective_env,
+            "Case B effective container environment must specify TELEGRAM_BOT_ENABLED=false")
+
+    # 8. Check restore command shape and provider safety invariants
+    require("--archive" in runbook and "--confirm schedule_monitor" in runbook, "Runbook restore missing required arguments")
+    require("--project-name vulcan-schedule-monitor-prod" in runbook, "Runbook restore missing canonical project name")
+    print("Deployment contract, canonical project name, memory limits and restore CLI verification: PASS", flush=True)
 
 
 def verify_database_operations(directory, env_file, project, compose, app, db, port):
@@ -660,6 +863,10 @@ def main():
                                     cwd=ROOT, env=ENV, capture_output=True, text=True, timeout=30)
             require(failed.returncode != 0 and missing in failed.stderr, "Missing secret must fail clearly")
         print("Missing POSTGRES_ADMIN_PASSWORD / POSTGRES_APP_PASSWORD / VULCAN_MASTER_KEY rejection: PASS", flush=True)
+        validate_production_ports(directory, quoted_app_password)
+        validate_public_caddyfile()
+        validate_acer_server_preflight()
+        validate_deployment_contract()
         if not args.skip_build:
             print("Building production image (Maven and Chromium downloads allowed)...", flush=True)
             run("docker", "build", "--progress=plain", "-t", IMAGE, ".", timeout=1200)
@@ -736,8 +943,12 @@ def main():
             wait_for("DB outage readiness HTTPS 503", lambda: status(port, "/readiness") == 503)
             require(status(port, "/liveness") == 200, "DB outage changed liveness")
             wait_for("Docker liveness healthcheck continues during DB outage",
-                     lambda: inspect(app)["State"]["Health"]["Log"][-1]["Start"]
-                     > before["State"]["Health"]["Log"][-1]["Start"])
+                     lambda: bool(inspect(app).get("State", {}).get("Health", {}).get("Log"))
+                     and (
+                         not before.get("State", {}).get("Health", {}).get("Log")
+                         or inspect(app)["State"]["Health"]["Log"][-1]["Start"]
+                         > before["State"]["Health"]["Log"][-1]["Start"]
+                     ))
             after = inspect(app)
             require(after["State"]["Health"]["Status"] == "healthy"
                     and after["RestartCount"] == before["RestartCount"] == 0

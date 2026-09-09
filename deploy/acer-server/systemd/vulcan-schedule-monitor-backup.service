@@ -1,0 +1,13 @@
+[Unit]
+Description=Vulcan Schedule Monitor Database Backup
+Documentation=https://github.com/bohdankordon/vulcan-schedule-monitor
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/vulcan-schedule-monitor
+ExecStart=/bin/bash /opt/vulcan-schedule-monitor/scripts/database/backup.sh --env-file /opt/vulcan-schedule-monitor/.env.production --project-name vulcan-schedule-monitor-prod --output-dir /srv/vulcan-schedule-monitor/backups
+StandardOutput=journal
+StandardError=journal
