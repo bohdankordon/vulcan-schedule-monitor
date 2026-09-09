@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Backup of Vulcan Schedule Monitor Database
+Documentation=https://github.com/bohdankordon/vulcan-schedule-monitor
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 UTC
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

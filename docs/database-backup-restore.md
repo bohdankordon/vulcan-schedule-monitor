@@ -281,11 +281,12 @@ state manually. Do not share raw logs or dump contents publicly.
 `backups/` is ignored by Git and excluded from the Docker build context. Custom
 output directories must also stay outside tracked content and image layers.
 
-No cron/systemd timer, retention pruning, off-host upload, backup encryption
-tooling or VPS deployment is implemented. The [HTTPS edge](https-reverse-proxy.md)
-is available locally; real public deployment remains deferred. Old backups are never
-automatically deleted. Operators must account for disk space and establish these
-policies separately.
+For automated host backups, production template units are provided under
+`deploy/acer-server/systemd/` (`vulcan-schedule-monitor-backup.service` and
+`vulcan-schedule-monitor-backup.timer`), scheduling daily UTC backups to
+`/srv/vulcan-schedule-monitor/backups`. See [Acer-Server production deployment](acer-server-deployment.md)
+for installation instructions. No automatic backup deletion, off-host upload, or backup encryption
+tooling is imposed; old backups are never automatically deleted, and operators must account for disk space.
 
 ## Verification
 

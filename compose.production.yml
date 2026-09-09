@@ -1,6 +1,7 @@
 services:
   caddy:
     image: caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+    mem_limit: 512m
     restart: unless-stopped
     stop_grace_period: 30s
     read_only: true
@@ -41,6 +42,7 @@ services:
     build:
       context: .
       target: production
+    mem_limit: 2g
     init: true
     restart: unless-stopped
     stop_grace_period: 120s
@@ -79,6 +81,7 @@ services:
 
   postgres:
     image: postgres:18.6
+    mem_limit: 1g
     networks: [backend]
     restart: unless-stopped
     stop_grace_period: 60s
