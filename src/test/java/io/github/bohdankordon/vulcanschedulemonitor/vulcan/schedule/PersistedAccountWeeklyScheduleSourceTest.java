@@ -80,6 +80,24 @@ class PersistedAccountWeeklyScheduleSourceTest {
   }
 
   @Test
+  void rateLimitFailureDoesNotPersistSession() {
+    TrackingScope scope = scope(11, 101, 77);
+    VulcanSession current = session("rate-limited", "sid=initial");
+    when(sessions.loadCurrent(11)).thenReturn(current);
+
+    SessionWeeklyScheduleFetcher fetcher =
+        (session, journalId, weekStart) -> {
+          throw VulcanHttpException.responseFailure("weekly", 429);
+        };
+    var source = new PersistedAccountWeeklyScheduleSource(sessions, fetcher);
+
+    assertThatThrownBy(() -> source.fetchCompleteWeeklySnapshot(scope))
+        .isInstanceOf(VulcanHttpException.class);
+
+    verify(sessions, never()).replace(11, current);
+  }
+
+  @Test
   void failedRotationPersistenceOrSessionDecryptionCannotReachTracker() {
     TrackingScope scope = scope(11, 101, 77);
     VulcanSession current = session("current", "sid=current");

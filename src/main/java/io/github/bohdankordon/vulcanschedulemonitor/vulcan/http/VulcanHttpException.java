@@ -1,6 +1,7 @@
 package io.github.bohdankordon.vulcanschedulemonitor.vulcan.http;
 
 import java.time.Duration;
+import java.util.Objects;
 import java.util.Optional;
 
 /** A sanitized failure while calling a VULCAN endpoint. */
@@ -10,18 +11,21 @@ public final class VulcanHttpException extends RuntimeException {
   private final Integer statusCode;
   private final VulcanFailureCategory category;
   private final Duration retryAfter;
+  private final RateLimitResponseObservation rateLimitObservation;
 
   private VulcanHttpException(
       String message,
       String operation,
       Integer statusCode,
       VulcanFailureCategory category,
-      Duration retryAfter) {
+      Duration retryAfter,
+      RateLimitResponseObservation rateLimitObservation) {
     super(message);
     this.operation = operation;
     this.statusCode = statusCode;
     this.category = category;
     this.retryAfter = retryAfter;
+    this.rateLimitObservation = rateLimitObservation;
   }
 
   public static VulcanHttpException responseFailure(String operation, int statusCode) {
@@ -36,7 +40,20 @@ public final class VulcanHttpException extends RuntimeException {
         operation,
         statusCode,
         category,
-        retryAfter);
+        retryAfter,
+        null);
+  }
+
+  public static VulcanHttpException rateLimited(
+      String operation, RateLimitResponseObservation observation) {
+    Objects.requireNonNull(observation, "observation must not be null");
+    return new VulcanHttpException(
+        "VULCAN " + operation + " request failed with HTTP " + observation.statusCode(),
+        operation,
+        observation.statusCode(),
+        VulcanFailureCategory.RATE_LIMITED,
+        observation.retryAfterDuration().orElse(null),
+        observation);
   }
 
   public static VulcanHttpException transportFailure(String operation) {
@@ -45,6 +62,7 @@ public final class VulcanHttpException extends RuntimeException {
         operation,
         null,
         VulcanFailureCategory.TRANSPORT_ERROR,
+        null,
         null);
   }
 
@@ -54,6 +72,7 @@ public final class VulcanHttpException extends RuntimeException {
         operation,
         null,
         VulcanFailureCategory.UNEXPECTED_HTML,
+        null,
         null);
   }
 
@@ -71,5 +90,9 @@ public final class VulcanHttpException extends RuntimeException {
 
   public Optional<Duration> retryAfter() {
     return Optional.ofNullable(retryAfter);
+  }
+
+  public Optional<RateLimitResponseObservation> rateLimitObservation() {
+    return Optional.ofNullable(rateLimitObservation);
   }
 }
