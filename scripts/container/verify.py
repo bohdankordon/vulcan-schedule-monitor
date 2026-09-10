@@ -178,10 +178,15 @@ def status(port, path):
     try:
         code, _, body = request(f"https://localhost:{port}/actuator/health{path}", timeout=40)
         if code in (200, 503):
-            expected = {"status": "UP" if code == 200 else "DOWN"}
-            if not path:
-                expected["groups"] = ["liveness", "readiness"]
-            require(json.loads(body) == expected, "Health must disclose only status/public group names")
+            payload = json.loads(body)
+            if code == 200:
+                expected = {"status": "UP"}
+                if not path:
+                    expected["groups"] = ["liveness", "readiness"]
+                require(payload == expected, "Health must disclose only status/public group names")
+            else:
+                require(payload in ({"status": "DOWN"}, {"status": "OUT_OF_SERVICE"}),
+                        "Health must disclose only status/public group names")
         return code
     except (OSError, urllib.error.URLError):
         return 0
