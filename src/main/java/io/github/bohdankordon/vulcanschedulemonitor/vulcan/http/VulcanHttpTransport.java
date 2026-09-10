@@ -4,11 +4,14 @@ import io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics.VulcanDia
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics.VulcanDiagnostics.ContentFamily;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics.VulcanDiagnostics.Stage;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics.VulcanDiagnostics.StatusFamily;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.SessionCookieMutationObservation;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSession;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSessionMaterial;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.time.Clock;
 import java.time.Duration;
+import java.util.List;
 import java.util.Objects;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -77,8 +80,10 @@ public final class VulcanHttpTransport {
         parseStage);
   }
 
-  public JsonNode postForm(String operation, URI uri, MultiValueMap<String, String> form) {
-    return exchange(
+  public JsonNode postScheduleForm(
+      RateLimitedOperation operation, URI uri, MultiValueMap<String, String> form) {
+    Objects.requireNonNull(operation, "operation must not be null");
+    return exchangeSchedule(
         operation,
         restClient
             .post()
@@ -86,6 +91,10 @@ public final class VulcanHttpTransport {
             .header(HttpHeaders.ORIGIN, session.origin())
             .contentType(UTF_8_FORM)
             .body(form));
+  }
+
+  public JsonNode postForm(String operation, URI uri, MultiValueMap<String, String> form) {
+    return postScheduleForm(RateLimitedOperation.from(operation), uri, form);
   }
 
   private JsonNode exchange(String operation, RestClient.RequestHeadersSpec<?> request) {
@@ -103,20 +112,21 @@ public final class VulcanHttpTransport {
           (clientRequest, clientResponse) -> {
             int statusCode = clientResponse.getStatusCode().value();
             if (!clientResponse.getStatusCode().is2xxSuccessful()) {
-              if (requestStage != null)
-                diagnostics.response(
-                    requestStage,
-                    statusFamily(statusCode),
-                    safeContentFamily(clientResponse.getHeaders()));
-              Duration retryAfter =
-                  retryAfterParser.parse(
-                      clientResponse.getHeaders().getFirst(HttpHeaders.RETRY_AFTER));
-              throw VulcanHttpException.responseFailure(operation, statusCode, retryAfter);
+              HttpHeaders responseHeaders = clientResponse.getHeaders();
+              ContentFamily responseContentFamily = safeContentFamily(responseHeaders);
+              if (requestStage != null) {
+                diagnostics.response(requestStage, statusFamily(statusCode), responseContentFamily);
+              }
+              RetryAfterParseResult retryAfter =
+                  retryAfterParser.parse(responseHeaders.getFirst(HttpHeaders.RETRY_AFTER));
+              throw VulcanHttpException.responseFailure(
+                  operation, statusCode, retryAfter.duration());
             }
             MediaType contentType = clientResponse.getHeaders().getContentType();
-            if (requestStage != null)
+            if (requestStage != null) {
               diagnostics.response(
                   requestStage, statusFamily(statusCode), contentFamily(contentType));
+            }
             if (contentType != null && MediaType.TEXT_HTML.isCompatibleWith(contentType)) {
               throw VulcanHttpException.unexpectedHtml(operation);
             }
@@ -147,6 +157,68 @@ public final class VulcanHttpTransport {
     }
   }
 
+  private JsonNode exchangeSchedule(
+      RateLimitedOperation operation, RestClient.RequestHeadersSpec<?> request) {
+    VulcanSessionMaterial beforeMaterial = session.snapshotMaterial();
+    try {
+      return request.exchange(
+          (clientRequest, clientResponse) -> {
+            int statusCode = clientResponse.getStatusCode().value();
+            if (!clientResponse.getStatusCode().is2xxSuccessful()) {
+              HttpHeaders responseHeaders = clientResponse.getHeaders();
+              ContentFamily responseContentFamily = safeContentFamily(responseHeaders);
+              RetryAfterParseResult retryAfter =
+                  retryAfterParser.parse(responseHeaders.getFirst(HttpHeaders.RETRY_AFTER));
+              if (statusCode == 429) {
+                VulcanSessionMaterial afterMaterial = session.snapshotMaterial();
+                SessionCookieMutationObservation cookieMutation =
+                    SessionCookieMutationObservation.compare(beforeMaterial, afterMaterial);
+                List<String> setCookieHeaders = responseHeaders.get(HttpHeaders.SET_COOKIE);
+                int setCookieCount = setCookieHeaders != null ? setCookieHeaders.size() : 0;
+                RateLimitHeaderPresence rateLimitHeaders =
+                    RateLimitHeaderPresence.fromHeaders(responseHeaders);
+                RequestShapeObservation requestShape =
+                    RequestShapeObservation.fromClientRequest(clientRequest);
+                RateLimitResponseObservation observation =
+                    new RateLimitResponseObservation(
+                        operation,
+                        statusCode,
+                        responseContentFamily,
+                        retryAfter,
+                        SetCookieCount.fromCount(setCookieCount),
+                        rateLimitHeaders,
+                        requestShape,
+                        cookieMutation);
+                throw VulcanHttpException.rateLimited(operation.label(), observation);
+              }
+              throw VulcanHttpException.responseFailure(
+                  operation.label(), statusCode, retryAfter.duration());
+            }
+            MediaType contentType = clientResponse.getHeaders().getContentType();
+            if (contentType != null && MediaType.TEXT_HTML.isCompatibleWith(contentType)) {
+              throw VulcanHttpException.unexpectedHtml(operation.label());
+            }
+            try {
+              JsonNode response = objectMapper.readTree(clientResponse.getBody());
+              if (response == null) {
+                throw new VulcanProtocolException(operation.label());
+              }
+              return response;
+            } catch (VulcanProtocolException exception) {
+              throw exception;
+            } catch (Exception exception) {
+              throw new VulcanProtocolException(operation.label());
+            }
+          });
+    } catch (VulcanHttpException exception) {
+      throw exception;
+    } catch (VulcanProtocolException exception) {
+      throw exception;
+    } catch (RestClientException exception) {
+      throw VulcanHttpException.transportFailure(operation.label());
+    }
+  }
+
   private static StatusFamily statusFamily(int status) {
     return switch (status / 100) {
       case 1 -> StatusFamily.INFORMATIONAL;
@@ -159,10 +231,15 @@ public final class VulcanHttpTransport {
   }
 
   private static ContentFamily contentFamily(MediaType type) {
-    if (type == null) return ContentFamily.OTHER;
-    if (MediaType.TEXT_HTML.isCompatibleWith(type)) return ContentFamily.HTML;
-    if (MediaType.APPLICATION_JSON.isCompatibleWith(type) || type.getSubtype().endsWith("+json"))
+    if (type == null) {
+      return ContentFamily.OTHER;
+    }
+    if (MediaType.TEXT_HTML.isCompatibleWith(type)) {
+      return ContentFamily.HTML;
+    }
+    if (MediaType.APPLICATION_JSON.isCompatibleWith(type) || type.getSubtype().endsWith("+json")) {
       return ContentFamily.JSON;
+    }
     return ContentFamily.OTHER;
   }
 

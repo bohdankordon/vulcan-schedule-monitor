@@ -1,13 +1,20 @@
 package io.github.bohdankordon.vulcanschedulemonitor.vulcan.schedule;
 
+import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
+import static com.github.tomakehurst.wiremock.client.WireMock.post;
+import static com.github.tomakehurst.wiremock.client.WireMock.urlPathEqualTo;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.github.tomakehurst.wiremock.WireMockServer;
+import com.github.tomakehurst.wiremock.core.WireMockConfiguration;
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.ScheduleChangeTracker;
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.ScheduleRefreshCoordinator;
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.TrackingScope;
@@ -15,8 +22,10 @@ import io.github.bohdankordon.vulcanschedulemonitor.schedule.model.ScheduleSnaps
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanSessionManager;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.secret.SecretDecryptionException;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanHttpException;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanHttpTransport;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSession;
 import java.net.URI;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -77,6 +86,72 @@ class PersistedAccountWeeklyScheduleSourceTest {
     assertThat(calls).hasValue(1);
     verify(sessions, never()).recover(11);
     verify(sessions, never()).replace(11, expired);
+  }
+
+  @Test
+  void rateLimitFailureDoesNotPersistSession() {
+    TrackingScope scope = scope(11, 101, 77);
+    VulcanSession current = session("rate-limited", "sid=initial");
+    when(sessions.loadCurrent(11)).thenReturn(current);
+
+    SessionWeeklyScheduleFetcher fetcher =
+        (session, journalId, weekStart) -> {
+          throw VulcanHttpException.responseFailure("weekly", 429);
+        };
+    var source = new PersistedAccountWeeklyScheduleSource(sessions, fetcher);
+
+    assertThatThrownBy(() -> source.fetchCompleteWeeklySnapshot(scope))
+        .isInstanceOf(VulcanHttpException.class);
+
+    verify(sessions, never()).replace(11, current);
+  }
+
+  @Test
+  void realLoopback429WithSetCookieMutatesInMemorySessionWithoutPersisting() {
+    WireMockServer server = new WireMockServer(WireMockConfiguration.options().dynamicPort());
+    server.start();
+    try {
+      URI applicationUri = URI.create(server.baseUrl() + "/synthetic-app/");
+      VulcanSession current =
+          VulcanSession.fromBrowserSession(
+              applicationUri, "token", "guid", "initial_cookie=initial_val", applicationUri);
+
+      server.stubFor(
+          post(urlPathEqualTo("/synthetic-app/PlanLekcji.mvc/GetPlanLekcjiContext"))
+              .willReturn(
+                  aResponse()
+                      .withStatus(429)
+                      .withHeader("Content-Type", "application/json")
+                      .withHeader("Set-Cookie", "rotated_cookie=mutated_val; Path=/synthetic-app/")
+                      .withBody("{\"error\":\"rate_limited\"}")));
+
+      when(sessions.loadCurrent(11)).thenReturn(current);
+
+      VulcanHttpTransport transport =
+          new VulcanHttpTransport(current, Duration.ofSeconds(2), Duration.ofSeconds(2));
+      SessionWeeklyScheduleFetcher fetcher =
+          (session, journalId, weekStart) ->
+              new VulcanScheduleAdapter(session, transport).getWeekSchedule(journalId, weekStart);
+
+      var source = new PersistedAccountWeeklyScheduleSource(sessions, fetcher);
+      TrackingScope scope = scope(11, 101, 77);
+
+      assertThatThrownBy(() -> source.fetchCompleteWeeklySnapshot(scope))
+          .isInstanceOf(VulcanHttpException.class);
+
+      // 1. In-memory session cookie material is mutated by JDK HttpClient / CookieManager:
+      assertThat(
+              current.snapshotMaterial().cookies().stream()
+                  .anyMatch(c -> "rotated_cookie".equals(c.name())))
+          .isTrue();
+
+      // 2. But the mutated failed session is NEVER persisted:
+      verify(sessions, never()).replace(11, current);
+      verify(sessions, never()).replace(anyLong(), any());
+      verify(sessions, never()).recover(anyLong());
+    } finally {
+      server.stop();
+    }
   }
 
   @Test

@@ -14,6 +14,7 @@ import io.github.bohdankordon.vulcanschedulemonitor.schedule.change.ScheduleChan
 import io.github.bohdankordon.vulcanschedulemonitor.schedule.change.UnknownScheduleChange;
 import io.github.bohdankordon.vulcanschedulemonitor.schedule.model.LessonOccurrence;
 import io.github.bohdankordon.vulcanschedulemonitor.schedule.model.ScheduleSnapshot;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RateLimitedOperation;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanHttpTransport;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanProtocolException;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSession;
@@ -61,7 +62,10 @@ public final class VulcanScheduleAdapter {
     form.add("data", formatDate(dateWithinWeek));
 
     JsonNode response =
-        transport.postForm(OPERATION, session.resolve("PlanLekcji.mvc/GetPlanLekcjiContext"), form);
+        transport.postScheduleForm(
+            RateLimitedOperation.GET_PLAN_LEKCJI_CONTEXT,
+            session.resolve("PlanLekcji.mvc/GetPlanLekcjiContext"),
+            form);
     return mapResponse(journalId, weekStart, weekEnd, response);
   }
 

@@ -9,22 +9,24 @@ import java.time.format.DateTimeParseException;
 import java.util.Objects;
 
 /** Parses the two standard Retry-After representations without retaining the raw value. */
-final class RetryAfterParser {
+public final class RetryAfterParser {
 
   private final Clock clock;
 
-  RetryAfterParser(Clock clock) {
+  public RetryAfterParser(Clock clock) {
     this.clock = Objects.requireNonNull(clock, "clock must not be null");
   }
 
-  Duration parse(String value) {
+  public RetryAfterParseResult parse(String value) {
     if (value == null || value.isBlank()) {
-      return null;
+      return RetryAfterParseResult.absent();
     }
     String candidate = value.trim();
     try {
       long seconds = Long.parseLong(candidate);
-      return seconds < 0 ? null : Duration.ofSeconds(seconds);
+      return seconds < 0
+          ? RetryAfterParseResult.malformed()
+          : RetryAfterParseResult.deltaSeconds(Duration.ofSeconds(seconds));
     } catch (NumberFormatException ignored) {
       // Try the HTTP-date form next.
     }
@@ -32,9 +34,13 @@ final class RetryAfterParser {
       Instant retryAt =
           ZonedDateTime.parse(candidate, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant();
       Duration delay = Duration.between(clock.instant(), retryAt);
-      return delay.isNegative() ? Duration.ZERO : delay;
+      return RetryAfterParseResult.httpDate(delay.isNegative() ? Duration.ZERO : delay);
     } catch (DateTimeParseException | ArithmeticException ignored) {
-      return null;
+      return RetryAfterParseResult.malformed();
     }
+  }
+
+  public Duration parseDuration(String value) {
+    return parse(value).duration();
   }
 }

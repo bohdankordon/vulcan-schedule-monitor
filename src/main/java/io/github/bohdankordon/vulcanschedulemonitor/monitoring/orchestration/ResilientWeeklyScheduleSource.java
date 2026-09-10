@@ -9,9 +9,13 @@ import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanProtocolEx
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Objects;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Bounded retry and rate-limit policy around a weekly schedule source. */
 public final class ResilientWeeklyScheduleSource {
+
+  private static final Logger LOGGER = LoggerFactory.getLogger(ResilientWeeklyScheduleSource.class);
 
   private final WeeklyScheduleSource delegate;
   private final DelayStrategy delayStrategy;
@@ -70,6 +74,22 @@ public final class ResilientWeeklyScheduleSource {
         }
         if (category == VulcanFailureCategory.RATE_LIMITED) {
           Duration requiredDelay = exception.retryAfter().orElse(fallbackRateLimitDelay);
+          DelaySource delaySource =
+              exception.retryAfter().isPresent() ? DelaySource.HEADER : DelaySource.FALLBACK;
+          EffectiveDelayBucket delayBucket = EffectiveDelayBucket.fromDuration(requiredDelay);
+          ResilienceDecision decision =
+              (attempt == maxAttempts || requiredDelay.compareTo(maximumInlineRateLimitDelay) > 0)
+                  ? ResilienceDecision.DEFERRED_GATE
+                  : ResilienceDecision.INLINE_RETRY;
+          LOGGER.warn(
+              VulcanRateLimitLogFormatter.format(
+                  exception.rateLimitObservation().orElse(null),
+                  exception.operation(),
+                  delaySource,
+                  delayBucket,
+                  decision,
+                  attempt,
+                  maxAttempts));
           Instant deferredUntil = gate.extend(scope.vulcanAccountId(), requiredDelay);
           if (attempt == maxAttempts || requiredDelay.compareTo(maximumInlineRateLimitDelay) > 0) {
             throw ScheduleSourceException.deferred(deferredUntil);

@@ -272,3 +272,100 @@ only and does not repeat those operations.
 
 Historical 429 responses were not reproduced after fresh-session validation and the cookie identity
 fix; their original cause remains unproven.
+
+## 2026-09-10 production incident and sanitized diagnostics
+
+### Safe operational facts
+
+During production monitoring activation on `acer-server` (running commit `9dafbb345a74bc11a4a58ff80fd513be1fab9404`),
+two consecutive controlled monitoring attempts were performed:
+
+1. **Attempt #1**:
+   - Exactly one real VULCAN account connected (status `CONNECTED`, `remember_credentials=false`, 26 active catalog classes).
+   - Exactly one monitoring subscription configured.
+   - Initial scheduler cycle: `targets=1`, `scopes=2`.
+   - The first weekly schedule scope fetch returned HTTP 429 and was classified `DEFERRED_RATE_LIMIT`.
+   - Fail-closed safety stopped the cycle: `successes=0`, `failures=1`, `stoppedEarly=false`.
+   - Zero tracking rows and zero notification outbox rows were written; account status remained `CONNECTED`.
+   - Monitoring was immediately disabled.
+
+2. **Attempt #2** (after ~74 minutes of quiet provider cooldown):
+   - Prechecks verified zero provider traffic had occurred during the quiet cooldown window.
+   - Initial scheduler cycle: `targets=1`, `scopes=2`.
+   - The first weekly schedule scope fetch returned HTTP 429 and was again classified `DEFERRED_RATE_LIMIT`.
+   - Fail-closed safety stopped the cycle: `successes=0`, `failures=1`, `stoppedEarly=false`.
+   - Zero tracking rows and zero outbox rows were written; account status remained `CONNECTED`.
+   - Monitoring was immediately disabled.
+
+### Root cause remains unproven
+
+The root cause of these schedule HTTP 429 responses is **not yet known**. The following are active hypotheses,
+not proven conclusions:
+
+- **IP-level rate limiting**: provider rate gate applied to the server's egress IPv4.
+- **Tenant-level rate limiting**: provider throttling schedule endpoints for the specific school tenant.
+- **Request-shape differences**: subtle differences in request headers or body compared to active browser interaction.
+- **Response-cookie/challenge dynamics**: provider attempting to issue a challenge cookie via `Set-Cookie` on 429.
+- **Provider/WAF bot protection**: automated request classification by provider infrastructure.
+
+No speculative fix (such as retrying automatically on error, altering headers, or modifying persistence) is
+justified without empirical evidence.
+
+### Sanitized diagnostic model (PR #20)
+
+To resolve the observability gap without disclosing secrets or altering runtime behavior, PR #20 introduces
+finite, structured rate-limit diagnostics:
+
+1. **Finite operation classification**:
+   - `operation`: strictly finite `RateLimitedOperation` enum (`GetPlanLekcjiContext` or `OTHER`).
+   - Unrecognized or arbitrary operation strings are safely mapped to `OTHER` and never rendered,
+     preventing log injection or secret leakage.
+
+2. **`Retry-After` finite representation**:
+   - `ABSENT`: header missing or blank.
+   - `DELTA_SECONDS`: valid integer seconds (enforcing non-null, non-negative duration).
+   - `HTTP_DATE`: valid RFC-1123 date parsed against injected clock (enforcing non-null, non-negative duration).
+   - `MALFORMED`: negative delta, invalid date, or unparseable text.
+   - Raw header text is never retained or rendered in `toString()` or logs.
+
+3. **Response metadata**:
+   - `contentFamily`: `JSON`, `HTML`, `OTHER`.
+   - `setCookieCount`: bounded representation (`ZERO`, `ONE`, `TWO`, `THREE_PLUS`).
+   - Standard rate-limit header presence: all six individual booleans are retained and logged:
+     `rateLimitLimitPresent`, `rateLimitRemainingPresent`, `rateLimitResetPresent`,
+     `xRateLimitLimitPresent`, `xRateLimitRemainingPresent`, `xRateLimitResetPresent`.
+     Raw header values are never logged.
+
+4. **Request shape observation**:
+   - `method`: `POST`, `GET`, `OTHER`.
+   - `contentType`: `FORM_URLENCODED`, `JSON`, `OTHER`, `NONE`.
+   - Header presence booleans: `originPresent`, `refererPresent`, `verificationTokenPresent`, `appGuidPresent`,
+     `xRequestedWithPresent`.
+   - `cookiePresent` was removed after loopback verification confirmed that Spring's `HttpRequest.getHeaders()`
+     does not expose cookies attached by the JDK `HttpClient`'s `CookieHandler`; `sessionCookiesBefore` provides
+     the safe and accurate diagnostic instead.
+
+5. **In-memory session cookie mutation**:
+   - Snapshot taken immediately before and after request execution, strictly scoped to schedule requests
+     (`postScheduleForm`). Bootstrap (`GetCache`) and journal tree (`GetTree`) requests do not take session snapshots.
+   - `sessionCookiesBefore` / `sessionCookiesAfter`: finite bucket (`ZERO`, `ONE`, ..., `SEVEN`, `EIGHT_PLUS`).
+   - `cookieMaterialChanged`: boolean indicating whether in-memory cookie store was mutated by response headers.
+   - Bounded delta counts: `cookieIdentityAddedCount`, `cookieIdentityRemovedCount`, `cookieValueChangedCount`.
+   - Secret cookie names, paths, domains, and values remain strictly confined within memory and are never rendered.
+   - Even if in-memory session mutation occurs on 429, failed session material is **never persisted**
+     (`sessions.replace(...)` is never called on failure).
+
+6. **Resilience policy categorization**:
+   - `delaySource`: `HEADER` or `FALLBACK`.
+   - `delayBucket`: `ZERO`, `LE_10_SECONDS`, `LE_30_SECONDS`, `LE_60_SECONDS`, `LE_5_MINUTES`, `GT_5_MINUTES`,
+     classified using exact `Duration` comparisons without subsecond truncation so bucket and inline/deferred
+     decision never disagree.
+   - `decision`: `INLINE_RETRY` or `DEFERRED_GATE`.
+
+7. **Single structured log line per 429 attempt**:
+   - Exactly ONE sanitized line emitted at WARN level per individual HTTP 429 attempt.
+   - If inline retry occurs, each real 429 response generates exactly one line.
+   - Never logs URLs, tokens, cookie values, exception stack traces, or form bodies.
+   - Example line:
+     `VULCAN schedule rate limited: operation=GetPlanLekcjiContext status=429 content=JSON retryAfter=DELTA_SECONDS delaySource=HEADER delayBucket=LE_30_SECONDS decision=DEFERRED_GATE setCookie=ZERO sessionCookiesBefore=TWO sessionCookiesAfter=TWO cookieMaterialChanged=false cookieAdded=0 cookieRemoved=0 cookieValueChanged=0 method=POST contentType=FORM_URLENCODED originPresent=true refererPresent=true tokenPresent=true appGuidPresent=true xRequestedWithPresent=true rateLimitLimitPresent=false rateLimitRemainingPresent=false rateLimitResetPresent=false xRateLimitLimitPresent=false xRateLimitRemainingPresent=false xRateLimitResetPresent=false attempt=1/3`
+   - Orchestration layer remains decoupled from HTTP transport internals.
