@@ -7,6 +7,7 @@ import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.Tracking
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics.VulcanDiagnostics.ContentFamily;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RateLimitHeaderPresence;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RateLimitResponseObservation;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RateLimitedOperation;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RequestShapeObservation;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RetryAfterParseResult;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RetryAfterParser;
@@ -97,7 +98,6 @@ class RateLimitLogRedactionTest {
                 true,
                 true,
                 true,
-                true,
                 true),
             cookieMutation);
 
@@ -122,6 +122,12 @@ class RateLimitLogRedactionTest {
     assertThat(formatted).contains("content=JSON");
     assertThat(formatted).contains("retryAfter=MALFORMED");
     assertThat(formatted).contains("cookieMaterialChanged=true");
+    assertThat(formatted).contains("rateLimitLimitPresent=false");
+    assertThat(formatted).contains("rateLimitRemainingPresent=false");
+    assertThat(formatted).contains("rateLimitResetPresent=false");
+    assertThat(formatted).contains("xRateLimitLimitPresent=false");
+    assertThat(formatted).contains("xRateLimitRemainingPresent=false");
+    assertThat(formatted).contains("xRateLimitResetPresent=false");
   }
 
   @Test
@@ -151,8 +157,7 @@ class RateLimitLogRedactionTest {
                 true,
                 true,
                 true,
-                true,
-                false),
+                true),
             mutation);
     assertThat(observation.toString()).doesNotContain(SECRET_COOKIE_NAME);
     assertThat(observation.toString()).doesNotContain(SECRET_COOKIE_VALUE);
@@ -190,8 +195,7 @@ class RateLimitLogRedactionTest {
                 true,
                 true,
                 true,
-                true,
-                false),
+                true),
             mutation);
 
     VulcanHttpException rateLimitedException =
@@ -221,5 +225,117 @@ class RateLimitLogRedactionTest {
     for (String secret : ALL_SECRET_MARKERS) {
       assertThat(logged).doesNotContain(secret);
     }
+  }
+
+  @Test
+  void hostileOperationMarkerIsMappedToOtherAndNeverLeaked() {
+    String hostileOperation = "SECRET_OPERATION_MARKER\nFAKE_LOG_LINE";
+
+    // Test 1: Fallback path (observation == null)
+    String fallbackFormatted =
+        VulcanRateLimitLogFormatter.format(
+            null,
+            hostileOperation,
+            DelaySource.FALLBACK,
+            EffectiveDelayBucket.LE_30_SECONDS,
+            ResilienceDecision.DEFERRED_GATE,
+            1,
+            3);
+
+    assertThat(fallbackFormatted).contains("operation=OTHER");
+    assertThat(fallbackFormatted).doesNotContain("SECRET_OPERATION_MARKER");
+    assertThat(fallbackFormatted).doesNotContain("FAKE_LOG_LINE");
+    assertThat(fallbackFormatted).doesNotContain("\n");
+    assertThat(fallbackFormatted).doesNotContain("\r");
+
+    // Test 2: Normal observation path with hostile string mapped safely
+    RetryAfterParseResult parseResult = RetryAfterParseResult.absent();
+    SessionCookieMutationObservation mutation =
+        new SessionCookieMutationObservation(
+            SessionCookieCountBucket.ZERO, SessionCookieCountBucket.ZERO, false, 0, 0, 0);
+    RateLimitResponseObservation observation =
+        new RateLimitResponseObservation(
+            hostileOperation,
+            429,
+            ContentFamily.JSON,
+            parseResult,
+            SetCookieCount.ZERO,
+            new RateLimitHeaderPresence(false, false, false, false, false, false),
+            new RequestShapeObservation(
+                RequestShapeObservation.RequestMethodShape.POST,
+                RequestShapeObservation.RequestContentTypeShape.FORM_URLENCODED,
+                true,
+                true,
+                true,
+                true,
+                true),
+            mutation);
+
+    assertThat(observation.operation()).isEqualTo(RateLimitedOperation.OTHER);
+    assertThat(observation.toString()).contains("operation=OTHER");
+    assertThat(observation.toString()).doesNotContain("SECRET_OPERATION_MARKER");
+    assertThat(observation.toString()).doesNotContain("FAKE_LOG_LINE");
+    assertThat(observation.toString()).doesNotContain("\n");
+
+    String observationFormatted =
+        VulcanRateLimitLogFormatter.format(
+            observation,
+            hostileOperation,
+            DelaySource.FALLBACK,
+            EffectiveDelayBucket.LE_30_SECONDS,
+            ResilienceDecision.DEFERRED_GATE,
+            1,
+            3);
+
+    assertThat(observationFormatted).contains("operation=OTHER");
+    assertThat(observationFormatted).doesNotContain("SECRET_OPERATION_MARKER");
+    assertThat(observationFormatted).doesNotContain("FAKE_LOG_LINE");
+    assertThat(observationFormatted).doesNotContain("\n");
+    assertThat(observationFormatted).doesNotContain("\r");
+  }
+
+  @Test
+  void individualRateLimitHeaderFlagsSurviveWithoutValues() {
+    RateLimitHeaderPresence headers =
+        new RateLimitHeaderPresence(true, false, true, false, true, false);
+
+    RateLimitResponseObservation observation =
+        new RateLimitResponseObservation(
+            RateLimitedOperation.GET_PLAN_LEKCJI_CONTEXT,
+            429,
+            ContentFamily.JSON,
+            RetryAfterParseResult.absent(),
+            SetCookieCount.ZERO,
+            headers,
+            new RequestShapeObservation(
+                RequestShapeObservation.RequestMethodShape.POST,
+                RequestShapeObservation.RequestContentTypeShape.FORM_URLENCODED,
+                true,
+                true,
+                true,
+                true,
+                true),
+            new SessionCookieMutationObservation(
+                SessionCookieCountBucket.ZERO, SessionCookieCountBucket.ZERO, false, 0, 0, 0));
+
+    String formatted =
+        VulcanRateLimitLogFormatter.format(
+            observation,
+            "GetPlanLekcjiContext",
+            DelaySource.FALLBACK,
+            EffectiveDelayBucket.LE_30_SECONDS,
+            ResilienceDecision.DEFERRED_GATE,
+            1,
+            3);
+
+    assertThat(formatted).contains("rateLimitLimitPresent=true");
+    assertThat(formatted).contains("rateLimitRemainingPresent=false");
+    assertThat(formatted).contains("rateLimitResetPresent=true");
+    assertThat(formatted).contains("xRateLimitLimitPresent=false");
+    assertThat(formatted).contains("xRateLimitRemainingPresent=true");
+    assertThat(formatted).contains("xRateLimitResetPresent=false");
+    // Verify values are not present
+    assertThat(formatted).doesNotContain("100");
+    assertThat(formatted).doesNotContain("60");
   }
 }

@@ -11,7 +11,7 @@ import java.util.Optional;
  * Deliberately excludes raw headers, URLs, cookies, request bodies, and tokens.
  */
 public record RateLimitResponseObservation(
-    String operation,
+    RateLimitedOperation operation,
     int statusCode,
     ContentFamily contentFamily,
     RetryAfterParseResult retryAfterResult,
@@ -22,12 +22,35 @@ public record RateLimitResponseObservation(
 
   public RateLimitResponseObservation {
     Objects.requireNonNull(operation, "operation must not be null");
+    if (statusCode != 429) {
+      throw new IllegalArgumentException("statusCode must be 429, got: " + statusCode);
+    }
     Objects.requireNonNull(contentFamily, "contentFamily must not be null");
     Objects.requireNonNull(retryAfterResult, "retryAfterResult must not be null");
     Objects.requireNonNull(setCookieCount, "setCookieCount must not be null");
     Objects.requireNonNull(rateLimitHeaders, "rateLimitHeaders must not be null");
     Objects.requireNonNull(requestShape, "requestShape must not be null");
     Objects.requireNonNull(sessionMutation, "sessionMutation must not be null");
+  }
+
+  public RateLimitResponseObservation(
+      String operation,
+      int statusCode,
+      ContentFamily contentFamily,
+      RetryAfterParseResult retryAfterResult,
+      SetCookieCount setCookieCount,
+      RateLimitHeaderPresence rateLimitHeaders,
+      RequestShapeObservation requestShape,
+      SessionCookieMutationObservation sessionMutation) {
+    this(
+        RateLimitedOperation.from(operation),
+        statusCode,
+        contentFamily,
+        retryAfterResult,
+        setCookieCount,
+        rateLimitHeaders,
+        requestShape,
+        sessionMutation);
   }
 
   public RetryAfterRepresentation retryAfterRepresentation() {

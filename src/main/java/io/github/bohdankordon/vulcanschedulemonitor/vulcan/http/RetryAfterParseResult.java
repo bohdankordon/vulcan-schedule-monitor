@@ -11,6 +11,19 @@ public record RetryAfterParseResult(RetryAfterRepresentation representation, Dur
 
   public RetryAfterParseResult {
     Objects.requireNonNull(representation, "representation must not be null");
+    switch (representation) {
+      case ABSENT, MALFORMED -> {
+        if (duration != null) {
+          throw new IllegalArgumentException(representation + " must not have a duration");
+        }
+      }
+      case DELTA_SECONDS, HTTP_DATE -> {
+        Objects.requireNonNull(duration, representation + " requires non-null duration");
+        if (duration.isNegative()) {
+          throw new IllegalArgumentException(representation + " duration must not be negative");
+        }
+      }
+    }
   }
 
   public static RetryAfterParseResult absent() {

@@ -1,6 +1,7 @@
 package io.github.bohdankordon.vulcanschedulemonitor.monitoring.orchestration;
 
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RateLimitResponseObservation;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RateLimitedOperation;
 
 /**
  * Produces a strictly sanitized, single-line log message for rate-limited schedule requests.
@@ -18,9 +19,14 @@ final class VulcanRateLimitLogFormatter {
       ResilienceDecision decision,
       int attempt,
       int maxAttempts) {
+    RateLimitedOperation operation =
+        observation != null
+            ? observation.operation()
+            : RateLimitedOperation.from(fallbackOperation);
+
     if (observation == null) {
       return "VULCAN schedule rate limited: operation="
-          + (fallbackOperation != null ? fallbackOperation : "unknown")
+          + operation
           + " status=429"
           + " delaySource="
           + delaySource
@@ -35,7 +41,7 @@ final class VulcanRateLimitLogFormatter {
     }
 
     return "VULCAN schedule rate limited: operation="
-        + observation.operation()
+        + operation
         + " status="
         + observation.statusCode()
         + " content="
@@ -76,8 +82,18 @@ final class VulcanRateLimitLogFormatter {
         + observation.requestShape().appGuidPresent()
         + " xRequestedWithPresent="
         + observation.requestShape().xRequestedWithPresent()
-        + " rateLimitHeadersPresent="
-        + observation.rateLimitHeaders().anyPresent()
+        + " rateLimitLimitPresent="
+        + observation.rateLimitHeaders().rateLimitLimit()
+        + " rateLimitRemainingPresent="
+        + observation.rateLimitHeaders().rateLimitRemaining()
+        + " rateLimitResetPresent="
+        + observation.rateLimitHeaders().rateLimitReset()
+        + " xRateLimitLimitPresent="
+        + observation.rateLimitHeaders().xRateLimitLimit()
+        + " xRateLimitRemainingPresent="
+        + observation.rateLimitHeaders().xRateLimitRemaining()
+        + " xRateLimitResetPresent="
+        + observation.rateLimitHeaders().xRateLimitReset()
         + " attempt="
         + attempt
         + "/"

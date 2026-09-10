@@ -80,8 +80,10 @@ public final class VulcanHttpTransport {
         parseStage);
   }
 
-  public JsonNode postForm(String operation, URI uri, MultiValueMap<String, String> form) {
-    return exchange(
+  public JsonNode postScheduleForm(
+      RateLimitedOperation operation, URI uri, MultiValueMap<String, String> form) {
+    Objects.requireNonNull(operation, "operation must not be null");
+    return exchangeSchedule(
         operation,
         restClient
             .post()
@@ -89,6 +91,10 @@ public final class VulcanHttpTransport {
             .header(HttpHeaders.ORIGIN, session.origin())
             .contentType(UTF_8_FORM)
             .body(form));
+  }
+
+  public JsonNode postForm(String operation, URI uri, MultiValueMap<String, String> form) {
+    return postScheduleForm(RateLimitedOperation.from(operation), uri, form);
   }
 
   private JsonNode exchange(String operation, RestClient.RequestHeadersSpec<?> request) {
@@ -101,7 +107,6 @@ public final class VulcanHttpTransport {
       VulcanDiagnostics diagnostics,
       Stage requestStage,
       Stage parseStage) {
-    VulcanSessionMaterial beforeMaterial = session.snapshotMaterial();
     try {
       return request.exchange(
           (clientRequest, clientResponse) -> {
@@ -114,28 +119,6 @@ public final class VulcanHttpTransport {
               }
               RetryAfterParseResult retryAfter =
                   retryAfterParser.parse(responseHeaders.getFirst(HttpHeaders.RETRY_AFTER));
-              if (statusCode == 429) {
-                VulcanSessionMaterial afterMaterial = session.snapshotMaterial();
-                SessionCookieMutationObservation cookieMutation =
-                    SessionCookieMutationObservation.compare(beforeMaterial, afterMaterial);
-                List<String> setCookieHeaders = responseHeaders.get(HttpHeaders.SET_COOKIE);
-                int setCookieCount = setCookieHeaders != null ? setCookieHeaders.size() : 0;
-                RateLimitHeaderPresence rateLimitHeaders =
-                    RateLimitHeaderPresence.fromHeaders(responseHeaders);
-                RequestShapeObservation requestShape =
-                    RequestShapeObservation.fromClientRequest(clientRequest);
-                RateLimitResponseObservation observation =
-                    new RateLimitResponseObservation(
-                        operation,
-                        statusCode,
-                        responseContentFamily,
-                        retryAfter,
-                        SetCookieCount.fromCount(setCookieCount),
-                        rateLimitHeaders,
-                        requestShape,
-                        cookieMutation);
-                throw VulcanHttpException.rateLimited(operation, observation);
-              }
               throw VulcanHttpException.responseFailure(
                   operation, statusCode, retryAfter.duration());
             }
@@ -171,6 +154,68 @@ public final class VulcanHttpTransport {
     } catch (RestClientException exception) {
       diagnostics.httpFailure(VulcanFailureCategory.TRANSPORT_ERROR);
       throw VulcanHttpException.transportFailure(operation);
+    }
+  }
+
+  private JsonNode exchangeSchedule(
+      RateLimitedOperation operation, RestClient.RequestHeadersSpec<?> request) {
+    VulcanSessionMaterial beforeMaterial = session.snapshotMaterial();
+    try {
+      return request.exchange(
+          (clientRequest, clientResponse) -> {
+            int statusCode = clientResponse.getStatusCode().value();
+            if (!clientResponse.getStatusCode().is2xxSuccessful()) {
+              HttpHeaders responseHeaders = clientResponse.getHeaders();
+              ContentFamily responseContentFamily = safeContentFamily(responseHeaders);
+              RetryAfterParseResult retryAfter =
+                  retryAfterParser.parse(responseHeaders.getFirst(HttpHeaders.RETRY_AFTER));
+              if (statusCode == 429) {
+                VulcanSessionMaterial afterMaterial = session.snapshotMaterial();
+                SessionCookieMutationObservation cookieMutation =
+                    SessionCookieMutationObservation.compare(beforeMaterial, afterMaterial);
+                List<String> setCookieHeaders = responseHeaders.get(HttpHeaders.SET_COOKIE);
+                int setCookieCount = setCookieHeaders != null ? setCookieHeaders.size() : 0;
+                RateLimitHeaderPresence rateLimitHeaders =
+                    RateLimitHeaderPresence.fromHeaders(responseHeaders);
+                RequestShapeObservation requestShape =
+                    RequestShapeObservation.fromClientRequest(clientRequest);
+                RateLimitResponseObservation observation =
+                    new RateLimitResponseObservation(
+                        operation,
+                        statusCode,
+                        responseContentFamily,
+                        retryAfter,
+                        SetCookieCount.fromCount(setCookieCount),
+                        rateLimitHeaders,
+                        requestShape,
+                        cookieMutation);
+                throw VulcanHttpException.rateLimited(operation.label(), observation);
+              }
+              throw VulcanHttpException.responseFailure(
+                  operation.label(), statusCode, retryAfter.duration());
+            }
+            MediaType contentType = clientResponse.getHeaders().getContentType();
+            if (contentType != null && MediaType.TEXT_HTML.isCompatibleWith(contentType)) {
+              throw VulcanHttpException.unexpectedHtml(operation.label());
+            }
+            try {
+              JsonNode response = objectMapper.readTree(clientResponse.getBody());
+              if (response == null) {
+                throw new VulcanProtocolException(operation.label());
+              }
+              return response;
+            } catch (VulcanProtocolException exception) {
+              throw exception;
+            } catch (Exception exception) {
+              throw new VulcanProtocolException(operation.label());
+            }
+          });
+    } catch (VulcanHttpException exception) {
+      throw exception;
+    } catch (VulcanProtocolException exception) {
+      throw exception;
+    } catch (RestClientException exception) {
+      throw VulcanHttpException.transportFailure(operation.label());
     }
   }
 

@@ -11,20 +11,19 @@ public enum EffectiveDelayBucket {
   GT_5_MINUTES;
 
   public static EffectiveDelayBucket fromDuration(Duration duration) {
-    if (duration == null || duration.isZero() || duration.isNegative()) {
+    if (duration == null || duration.compareTo(Duration.ZERO) <= 0) {
       return ZERO;
     }
-    long seconds = duration.toSeconds();
-    if (seconds <= 10) {
+    if (duration.compareTo(Duration.ofSeconds(10)) <= 0) {
       return LE_10_SECONDS;
     }
-    if (seconds <= 30) {
+    if (duration.compareTo(Duration.ofSeconds(30)) <= 0) {
       return LE_30_SECONDS;
     }
-    if (seconds <= 60) {
+    if (duration.compareTo(Duration.ofSeconds(60)) <= 0) {
       return LE_60_SECONDS;
     }
-    if (seconds <= 300) {
+    if (duration.compareTo(Duration.ofMinutes(5)) <= 0) {
       return LE_5_MINUTES;
     }
     return GT_5_MINUTES;

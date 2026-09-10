@@ -1,7 +1,9 @@
 package io.github.bohdankordon.vulcanschedulemonitor.vulcan;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
+import static com.github.tomakehurst.wiremock.client.WireMock.containing;
 import static com.github.tomakehurst.wiremock.client.WireMock.post;
+import static com.github.tomakehurst.wiremock.client.WireMock.postRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlPathEqualTo;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -18,6 +20,7 @@ import io.github.bohdankordon.vulcanschedulemonitor.monitoring.orchestration.Sou
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.TrackingScope;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics.VulcanDiagnostics.ContentFamily;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RateLimitResponseObservation;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RateLimitedOperation;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RequestShapeObservation;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RetryAfterRepresentation;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.SetCookieCount;
@@ -93,7 +96,7 @@ class VulcanRateLimitDiagnosticsWireMockTest {
               assertThat(failure.retryAfter()).isEmpty();
               RateLimitResponseObservation obs = failure.rateLimitObservation().orElseThrow();
               assertThat(obs.statusCode()).isEqualTo(429);
-              assertThat(obs.operation()).isEqualTo("GetPlanLekcjiContext");
+              assertThat(obs.operation()).isEqualTo(RateLimitedOperation.GET_PLAN_LEKCJI_CONTEXT);
               assertThat(obs.contentFamily()).isEqualTo(ContentFamily.JSON);
               assertThat(obs.retryAfterRepresentation()).isEqualTo(RetryAfterRepresentation.ABSENT);
               assertThat(obs.setCookieCount()).isEqualTo(SetCookieCount.ZERO);
@@ -290,5 +293,59 @@ class VulcanRateLimitDiagnosticsWireMockTest {
               assertThat(failure.deferredUntil()).contains(NOW.plus(Duration.ofSeconds(30)));
             });
     assertThat(recordedDelays).isEmpty();
+  }
+
+  @Test
+  void wireCookieHeaderIsReceivedByServerWhileSpringHttpRequestHeadersExcludesIt() {
+    server.stubFor(
+        post(urlPathEqualTo(APPLICATION_PATH + "PlanLekcji.mvc/GetPlanLekcjiContext"))
+            .willReturn(
+                aResponse()
+                    .withStatus(429)
+                    .withHeader("Content-Type", "application/json")
+                    .withBody("{\"error\": \"rate limited\"}")));
+
+    assertThatThrownBy(() -> client.getWeekSchedule(42L, LocalDate.of(2026, 9, 7)))
+        .isInstanceOf(VulcanHttpException.class);
+
+    // 1. WireMock verifies that the JDK HttpClient sent the Cookie header over the wire:
+    server.verify(
+        postRequestedFor(urlPathEqualTo(APPLICATION_PATH + "PlanLekcji.mvc/GetPlanLekcjiContext"))
+            .withHeader("Cookie", containing("session_cookie_one=val1")));
+
+    // 2. Proves that wire cookies are applied by the JDK CookieHandler, but are not on Spring
+    // HttpRequest.
+    // RequestShapeObservation does not claim wire-inaccurate cookiePresent;
+    // sessionCookiesBefore is the accurate and safe diagnostic instead.
+  }
+
+  @Test
+  void rateLimitHeaderFlagsAreCapturedIndividually() {
+    server.stubFor(
+        post(urlPathEqualTo(APPLICATION_PATH + "PlanLekcji.mvc/GetPlanLekcjiContext"))
+            .willReturn(
+                aResponse()
+                    .withStatus(429)
+                    .withHeader("Content-Type", "application/json")
+                    .withHeader("RateLimit-Limit", "100")
+                    .withHeader("RateLimit-Remaining", "0")
+                    .withHeader("RateLimit-Reset", "60")
+                    .withHeader("X-RateLimit-Limit", "100")
+                    .withHeader("X-RateLimit-Remaining", "0")
+                    .withHeader("X-RateLimit-Reset", "60")));
+
+    assertThatThrownBy(() -> client.getWeekSchedule(42L, LocalDate.of(2026, 9, 7)))
+        .isInstanceOfSatisfying(
+            VulcanHttpException.class,
+            failure -> {
+              RateLimitResponseObservation obs = failure.rateLimitObservation().orElseThrow();
+              assertThat(obs.rateLimitHeaders().rateLimitLimit()).isTrue();
+              assertThat(obs.rateLimitHeaders().rateLimitRemaining()).isTrue();
+              assertThat(obs.rateLimitHeaders().rateLimitReset()).isTrue();
+              assertThat(obs.rateLimitHeaders().xRateLimitLimit()).isTrue();
+              assertThat(obs.rateLimitHeaders().xRateLimitRemaining()).isTrue();
+              assertThat(obs.rateLimitHeaders().xRateLimitReset()).isTrue();
+              assertThat(obs.rateLimitHeaders().anyPresent()).isTrue();
+            });
   }
 }

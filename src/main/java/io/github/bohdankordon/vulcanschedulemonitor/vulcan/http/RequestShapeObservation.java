@@ -13,8 +13,7 @@ public record RequestShapeObservation(
     boolean refererPresent,
     boolean verificationTokenPresent,
     boolean appGuidPresent,
-    boolean xRequestedWithPresent,
-    boolean cookiePresent) {
+    boolean xRequestedWithPresent) {
 
   public enum RequestMethodShape {
     POST,
@@ -65,7 +64,6 @@ public record RequestShapeObservation(
           false,
           false,
           false,
-          false,
           false);
     }
     HttpHeaders headers = request.getHeaders();
@@ -77,7 +75,6 @@ public record RequestShapeObservation(
         headers.containsHeader(HttpHeaders.REFERER),
         headers.containsHeader("X-V-RequestVerificationToken"),
         headers.containsHeader("X-V-AppGuid"),
-        headers.containsHeader("X-Requested-With"),
-        headers.containsHeader(HttpHeaders.COOKIE));
+        headers.containsHeader("X-Requested-With"));
   }
 }
