@@ -25,7 +25,7 @@ final class VulcanRateLimitLogFormatter {
             : RateLimitedOperation.from(fallbackOperation);
 
     if (observation == null) {
-      return "VULCAN schedule rate limited: operation="
+      return "VULCAN schedule HTTP 429: operation="
           + operation
           + " status=429"
           + " delaySource="
@@ -40,7 +40,7 @@ final class VulcanRateLimitLogFormatter {
           + maxAttempts;
     }
 
-    return "VULCAN schedule rate limited: operation="
+    return "VULCAN schedule HTTP 429: operation="
         + operation
         + " status="
         + observation.statusCode()

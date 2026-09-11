@@ -367,7 +367,7 @@ finite, structured rate-limit diagnostics:
    - If inline retry occurs, each real 429 response generates exactly one line.
    - Never logs URLs, tokens, cookie values, exception stack traces, or form bodies.
    - Example line:
-     `VULCAN schedule rate limited: operation=GetPlanLekcjiContext status=429 content=JSON retryAfter=DELTA_SECONDS delaySource=HEADER delayBucket=LE_30_SECONDS decision=DEFERRED_GATE setCookie=ZERO sessionCookiesBefore=TWO sessionCookiesAfter=TWO cookieMaterialChanged=false cookieAdded=0 cookieRemoved=0 cookieValueChanged=0 method=POST contentType=FORM_URLENCODED originPresent=true refererPresent=true tokenPresent=true appGuidPresent=true xRequestedWithPresent=true rateLimitLimitPresent=false rateLimitRemainingPresent=false rateLimitResetPresent=false xRateLimitLimitPresent=false xRateLimitRemainingPresent=false xRateLimitResetPresent=false attempt=1/3`
+     `VULCAN schedule HTTP 429: operation=GetPlanLekcjiContext status=429 content=JSON retryAfter=DELTA_SECONDS delaySource=HEADER delayBucket=LE_30_SECONDS decision=DEFERRED_GATE setCookie=ZERO sessionCookiesBefore=TWO sessionCookiesAfter=TWO cookieMaterialChanged=false cookieAdded=0 cookieRemoved=0 cookieValueChanged=0 method=POST contentType=FORM_URLENCODED originPresent=true refererPresent=true tokenPresent=true appGuidPresent=true xRequestedWithPresent=true rateLimitLimitPresent=false rateLimitRemainingPresent=false rateLimitResetPresent=false xRateLimitLimitPresent=false xRateLimitRemainingPresent=false xRateLimitResetPresent=false attempt=1/3`
    - Orchestration layer remains decoupled from HTTP transport internals.
 
 ## 2026-09-10 fresh session discrimination test and stale-session recovery (PR #21)
@@ -377,7 +377,7 @@ finite, structured rate-limit diagnostics:
 Following deployment of PR #20 sanitized diagnostics on `acer-server`, an instrumented monitoring cycle reproduced the exact schedule HTTP 429 response on the first weekly scope:
 
 ```
-VULCAN schedule rate limited: operation=GetPlanLekcjiContext status=429 content=HTML retryAfter=ABSENT delaySource=FALLBACK delayBucket=LE_5_MINUTES decision=DEFERRED_GATE setCookie=ONE sessionCookiesBefore=SIX sessionCookiesAfter=SIX cookieMaterialChanged=false cookieAdded=0 cookieRemoved=0 cookieValueChanged=0 method=POST contentType=FORM_URLENCODED originPresent=true refererPresent=true tokenPresent=true appGuidPresent=true xRequestedWithPresent=true rateLimitLimitPresent=false rateLimitRemainingPresent=false rateLimitResetPresent=false xRateLimitLimitPresent=false xRateLimitRemainingPresent=false xRateLimitResetPresent=false attempt=1/3
+VULCAN schedule rate limited: operation=GetPlanLekcjiContext status=429 content=HTML retryAfter=ABSENT delaySource=FALLBACK delayBucket=LE_30_SECONDS decision=DEFERRED_GATE setCookie=ONE sessionCookiesBefore=SIX sessionCookiesAfter=SIX cookieMaterialChanged=false cookieAdded=0 cookieRemoved=0 cookieValueChanged=0 method=POST contentType=FORM_URLENCODED originPresent=true refererPresent=true tokenPresent=true appGuidPresent=true xRequestedWithPresent=true rateLimitLimitPresent=false rateLimitRemainingPresent=false rateLimitResetPresent=false xRateLimitLimitPresent=false xRateLimitRemainingPresent=false xRateLimitResetPresent=false attempt=1/3
 ```
 
 Key observations from this production test:
@@ -392,7 +392,7 @@ Immediately following this failure, a controlled fresh session discrimination te
 2. Scheduler cycle #1 immediately succeeded on both weekly scopes (CURRENT and NEXT): `successes=2, failures=0, stoppedEarly=false`. Baseline notifications were dispatched cleanly to Telegram.
 3. Scheduler cycle #2 five minutes later again completed with 2/2 successes: `successes=2, failures=0, stoppedEarly=false`.
 
-This empirical evidence definitively isolates session age/staleness at the provider as the differentiator: the identical server, egress IP, tenant, and request format succeeded immediately with a fresh session, whereas a multi-day persisted session was rejected with an HTTP 429 HTML page.
+The fresh-session discrimination test strongly indicates that the previously persisted session was stale or otherwise no longer accepted by VULCAN: the identical server, egress IP, tenant, and request format succeeded immediately with a fresh session, whereas an older persisted session was rejected with an HTTP 429 HTML page.
 
 ### Stale session classification and bounded recovery
 

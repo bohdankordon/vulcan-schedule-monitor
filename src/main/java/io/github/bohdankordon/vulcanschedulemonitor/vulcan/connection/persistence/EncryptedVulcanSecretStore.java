@@ -75,6 +75,14 @@ class EncryptedVulcanSecretStore implements VulcanSecretStore {
       VulcanAccountSecretEntity entity =
           secrets.findById(accountId).orElseThrow(SecretDecryptionException::new);
       verifyExistingSecretCanBeDecrypted(accountId, entity);
+      if (entity.keyVersion() != encryptedSession.keyVersion()
+          && entity.credentialCiphertext() != null) {
+        throw new IllegalStateException(
+            "Cannot update session key_version to "
+                + encryptedSession.keyVersion()
+                + " while credentials exist with key_version "
+                + entity.keyVersion());
+      }
       entity.replaceSession(
           encryptedSession.keyVersion(),
           encryptedSession.nonce(),
