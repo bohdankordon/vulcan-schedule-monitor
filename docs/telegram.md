@@ -88,7 +88,7 @@ Callbacks are partitioned into distinct, strictly validated versioned namespaces
 
 `/classes` lists at most eight active catalog classes per page. `✅` marks monitored classes and `⬜` marks available ones (the obsolete ballot box glyph is not used). Navigation controls (`⬅️ Previous` / `Next ➡️`) and callback acknowledgments are fully localized into the user's language.
 
-A callback can mutate state only after the exact private Telegram identity is registered and `MonitoringSubscriptionService` verifies that the catalog row is active, connected, and owned by that application user. Cross-user, stale catalog IDs, or malformed callbacks are rejected and answered with safe, localized feedback without logging raw payloads or internal IDs. Group, supergroup, channel, or bot callbacks cannot mutate state.
+A callback can mutate state only after the exact private Telegram identity is registered and `MonitoringSubscriptionService` verifies that the catalog row is active, connected, and owned by that application user. Valid callbacks use the user's persisted language for acknowledgements. Malformed or unsupported callback payloads are rejected before identity registration or state mutation and use a safe English fallback response. Cross-user or stale class controls are rejected after authorization with safe localized feedback without logging raw payloads or internal IDs. Group, supergroup, channel, or bot callbacks cannot mutate state.
 
 Command replies are direct best-effort plain-text sends and are not durable. A reply failure is sanitized and isolated from long polling.
 
