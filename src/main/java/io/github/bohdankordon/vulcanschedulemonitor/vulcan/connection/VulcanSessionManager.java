@@ -41,12 +41,7 @@ public final class VulcanSessionManager {
   }
 
   public void replace(long accountId, VulcanSession session) {
-    Optional<RememberedCredentials> credentials = secrets.loadCredentials(accountId);
-    try {
-      persistence.replaceRecovered(accountId, session.snapshotMaterial(), credentials.orElse(null));
-    } finally {
-      credentials.ifPresent(RememberedCredentials::close);
-    }
+    persistence.rotateSession(accountId, session.snapshotMaterial());
   }
 
   public RecoveryResult recover(long accountId) {

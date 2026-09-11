@@ -16,9 +16,20 @@ import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.Tracking
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.TrackingScope;
 import io.github.bohdankordon.vulcanschedulemonitor.schedule.model.ScheduleSnapshot;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanSessionManager;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics.VulcanDiagnostics.ContentFamily;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RateLimitHeaderPresence;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RateLimitResponseObservation;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RateLimitedOperation;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RequestShapeObservation;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RequestShapeObservation.RequestContentTypeShape;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RequestShapeObservation.RequestMethodShape;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RetryAfterParseResult;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.SetCookieCount;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanHttpException;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.schedule.PersistedAccountWeeklyScheduleSource;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.schedule.SessionWeeklyScheduleFetcher;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.SessionCookieCountBucket;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.SessionCookieMutationObservation;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSession;
 import java.net.URI;
 import java.time.Clock;
@@ -268,6 +279,109 @@ class RecoveringAccountWeeklyScheduleSourceTest {
     assertThat(weeklyCalls).hasValue(3);
     verify(sessions).recover(1);
     verify(sessions, never()).recover(2);
+  }
+
+  @Test
+  void staleSession429WithoutRememberedCredentialsMarksReconnectRequiredWithNoRetries() {
+    VulcanSessionManager sessions = mock(VulcanSessionManager.class);
+    VulcanSession expired = session("expired", "sid=old");
+    AtomicInteger weeklyCalls = new AtomicInteger();
+    when(sessions.loadCurrent(1)).thenReturn(expired);
+    when(sessions.recover(1)).thenReturn(VulcanSessionManager.RecoveryResult.RECONNECT_REQUIRED);
+
+    RateLimitResponseObservation staleObservation =
+        new RateLimitResponseObservation(
+            RateLimitedOperation.GET_PLAN_LEKCJI_CONTEXT,
+            429,
+            ContentFamily.HTML,
+            RetryAfterParseResult.absent(),
+            SetCookieCount.ONE,
+            new RateLimitHeaderPresence(false, false, false, false, false, false),
+            new RequestShapeObservation(
+                RequestMethodShape.POST,
+                RequestContentTypeShape.FORM_URLENCODED,
+                true,
+                true,
+                true,
+                true,
+                true),
+            new SessionCookieMutationObservation(
+                SessionCookieCountBucket.SIX, SessionCookieCountBucket.SIX, false, 0, 0, 0));
+
+    RecoveringAccountWeeklyScheduleSource source =
+        composition(
+            sessions,
+            (ignored, journalId, weekStart) -> {
+              weeklyCalls.incrementAndGet();
+              throw VulcanHttpException.rateLimited("GetPlanLekcjiContext", staleObservation);
+            },
+            ignored -> {});
+    ScheduleChangeTracker tracker = mock(ScheduleChangeTracker.class);
+
+    MonitoringCycleSummary summary =
+        runner(source, tracker, List.of(target(1, 101, 77))).runCycle();
+
+    assertThat(summary.stoppedEarly()).isFalse();
+    assertThat(summary.outcomes())
+        .extracting(ScopeMonitoringOutcome::category)
+        .containsExactly(MonitoringOutcomeCategory.AUTHENTICATION_REQUIRED);
+    assertThat(weeklyCalls).hasValue(1);
+    verify(sessions).recover(1);
+    verify(sessions, never()).replace(anyLong(), any());
+    verify(tracker, never()).reconcileSuccessfulSnapshot(any(), any());
+  }
+
+  @Test
+  void staleSession429WithRememberedCredentialsRecoversSessionAndRetriesSchedule() {
+    VulcanSessionManager sessions = mock(VulcanSessionManager.class);
+    VulcanSession expired = session("expired", "sid=old");
+    VulcanSession recovered = session("recovered", "sid=new");
+    TrackingScope scope = scope(1, 101, 77);
+    when(sessions.loadCurrent(1)).thenReturn(expired, recovered);
+    when(sessions.recover(1)).thenReturn(VulcanSessionManager.RecoveryResult.RECOVERED);
+    AtomicInteger weeklyCalls = new AtomicInteger();
+
+    RateLimitResponseObservation staleObservation =
+        new RateLimitResponseObservation(
+            RateLimitedOperation.GET_PLAN_LEKCJI_CONTEXT,
+            429,
+            ContentFamily.HTML,
+            RetryAfterParseResult.absent(),
+            SetCookieCount.ONE,
+            new RateLimitHeaderPresence(false, false, false, false, false, false),
+            new RequestShapeObservation(
+                RequestMethodShape.POST,
+                RequestContentTypeShape.FORM_URLENCODED,
+                true,
+                true,
+                true,
+                true,
+                true),
+            new SessionCookieMutationObservation(
+                SessionCookieCountBucket.SIX, SessionCookieCountBucket.SIX, false, 0, 0, 0));
+
+    RecoveringAccountWeeklyScheduleSource source =
+        composition(
+            sessions,
+            (activeSession, journalId, weekStart) -> {
+              if (weeklyCalls.getAndIncrement() == 0) {
+                assertThat(activeSession).isSameAs(expired);
+                throw VulcanHttpException.rateLimited("GetPlanLekcjiContext", staleObservation);
+              }
+              assertThat(activeSession).isSameAs(recovered);
+              return snapshot(journalId, weekStart);
+            },
+            ignored -> {});
+    ScheduleChangeTracker tracker = successfulTracker();
+    var coordinator = new ScheduleRefreshCoordinator(source::fetchCompleteWeeklySnapshot, tracker);
+
+    coordinator.refreshSuccessfulWeek(scope);
+
+    assertThat(weeklyCalls).hasValue(2);
+    verify(sessions).recover(1);
+    verify(sessions).replace(1, recovered);
+    verify(sessions, never()).replace(1, expired);
+    verify(tracker).reconcileSuccessfulSnapshot(scope, snapshot(scope));
   }
 
   private static RecoveringAccountWeeklyScheduleSource composition(

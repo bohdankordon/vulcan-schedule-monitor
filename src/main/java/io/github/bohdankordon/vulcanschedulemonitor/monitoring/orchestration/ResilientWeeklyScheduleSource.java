@@ -3,6 +3,7 @@ package io.github.bohdankordon.vulcanschedulemonitor.monitoring.orchestration;
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.TrackingScope;
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.WeeklyScheduleSource;
 import io.github.bohdankordon.vulcanschedulemonitor.schedule.model.ScheduleSnapshot;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RateLimitResponseObservation;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanFailureCategory;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanHttpException;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanProtocolException;
@@ -73,6 +74,19 @@ public final class ResilientWeeklyScheduleSource {
           throw ScheduleSourceException.of(SourceFailureKind.PERMANENT_FAILURE);
         }
         if (category == VulcanFailureCategory.RATE_LIMITED) {
+          RateLimitResponseObservation observation = exception.rateLimitObservation().orElse(null);
+          if (Schedule429Classifier.classify(observation) == Schedule429Disposition.STALE_SESSION) {
+            LOGGER.warn(
+                VulcanRateLimitLogFormatter.format(
+                    observation,
+                    exception.operation(),
+                    DelaySource.NONE,
+                    EffectiveDelayBucket.ZERO,
+                    ResilienceDecision.AUTHENTICATION_REQUIRED,
+                    attempt,
+                    maxAttempts));
+            throw ScheduleSourceException.of(SourceFailureKind.AUTHENTICATION_REQUIRED);
+          }
           Duration requiredDelay = exception.retryAfter().orElse(fallbackRateLimitDelay);
           DelaySource delaySource =
               exception.retryAfter().isPresent() ? DelaySource.HEADER : DelaySource.FALLBACK;
@@ -83,7 +97,7 @@ public final class ResilientWeeklyScheduleSource {
                   : ResilienceDecision.INLINE_RETRY;
           LOGGER.warn(
               VulcanRateLimitLogFormatter.format(
-                  exception.rateLimitObservation().orElse(null),
+                  observation,
                   exception.operation(),
                   delaySource,
                   delayBucket,

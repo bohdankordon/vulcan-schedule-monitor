@@ -53,6 +53,13 @@ class VulcanAccountSecretEntity {
     this.updatedAt = now;
   }
 
+  void replaceSession(int keyVersion, byte[] sessionNonce, byte[] sessionCiphertext, Instant now) {
+    this.keyVersion = keyVersion;
+    this.sessionNonce = sessionNonce.clone();
+    this.sessionCiphertext = sessionCiphertext.clone();
+    this.updatedAt = now;
+  }
+
   int keyVersion() {
     return keyVersion;
   }

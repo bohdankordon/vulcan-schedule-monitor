@@ -2,6 +2,7 @@ package io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -9,6 +10,7 @@ import static org.mockito.Mockito.when;
 
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.persistence.VulcanRecoveryPersistence;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.secret.VulcanSecretStore;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSession;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.VulcanSessionMaterial;
 import java.net.URI;
 import java.util.List;
@@ -85,6 +87,19 @@ class VulcanSessionManagerTest {
             org.mockito.ArgumentMatchers.same(verifiedMaterial),
             any());
     verify(persistence, never()).markReconnectRequired(41);
+  }
+
+  @Test
+  void replaceDelegatesToRotateSessionWithoutLoadingCredentials() {
+    VulcanSessionMaterial material = material("routine", "sid=routine");
+    VulcanSession session = mock(VulcanSession.class);
+    when(session.snapshotMaterial()).thenReturn(material);
+
+    manager.replace(41, session);
+
+    verify(persistence).rotateSession(41, material);
+    verify(persistence, never()).replaceRecovered(anyLong(), any(), any());
+    verify(secrets, never()).loadCredentials(anyLong());
   }
 
   private static Stream<VulcanAuthFailureCategory> terminalAuthenticationFailures() {

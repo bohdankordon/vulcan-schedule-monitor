@@ -67,6 +67,26 @@ class EncryptedVulcanSecretStore implements VulcanSecretStore {
   }
 
   @Override
+  @Transactional
+  public void replaceSession(long accountId, VulcanSessionMaterial session, Instant now) {
+    byte[] sessionBytes = codec.encodeSession(session);
+    try {
+      EncryptedPayload encryptedSession = cipher.encrypt(sessionBytes, aad(accountId, "session"));
+      VulcanAccountSecretEntity entity =
+          secrets.findById(accountId).orElseThrow(SecretDecryptionException::new);
+      verifyExistingSecretCanBeDecrypted(accountId, entity);
+      entity.replaceSession(
+          encryptedSession.keyVersion(),
+          encryptedSession.nonce(),
+          encryptedSession.ciphertext(),
+          now);
+      secrets.save(entity);
+    } finally {
+      Arrays.fill(sessionBytes, (byte) 0);
+    }
+  }
+
+  @Override
   @Transactional(readOnly = true)
   public VulcanSessionMaterial loadSession(long accountId) {
     VulcanAccountSecretEntity entity =

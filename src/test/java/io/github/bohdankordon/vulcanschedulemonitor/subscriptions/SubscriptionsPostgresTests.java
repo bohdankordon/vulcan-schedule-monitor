@@ -212,6 +212,35 @@ class SubscriptionsPostgresTests extends PostgresIntegrationTestSupport {
   }
 
   @Test
+  void
+      reconnectRequiredAccountSuppressesActiveTargetsWhilePreservingSubscriptionsAndRestoresOnReconnect() {
+    long user = register(60);
+    long catalogId = connectAndAddClass(user, 700L, "Synthetic 7A");
+    MonitoringSubscription sub = subscriptions.enable(user, catalogId);
+    assertThat(sub.enabled()).isTrue();
+
+    assertThat(targetProvider.activeTargets())
+        .extracting(MonitoringTarget::catalogClassId)
+        .containsExactly(catalogId);
+
+    jdbc.update(
+        "UPDATE vulcan_account SET status = 'RECONNECT_REQUIRED' WHERE app_user_id = ?", user);
+    assertThat(subscriptions.isSubscribed(user, catalogId)).isTrue();
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT enabled FROM monitoring_subscription WHERE id = ?",
+                Boolean.class,
+                sub.id()))
+        .isTrue();
+    assertThat(targetProvider.activeTargets()).isEmpty();
+
+    jdbc.update("UPDATE vulcan_account SET status = 'CONNECTED' WHERE app_user_id = ?", user);
+    assertThat(targetProvider.activeTargets())
+        .extracting(MonitoringTarget::catalogClassId)
+        .containsExactly(catalogId);
+  }
+
+  @Test
   void recipientProviderRoutesByOwnedCatalogClassNotSharedJournal() {
     long firstUser = register(40);
     long secondUser = register(41);
