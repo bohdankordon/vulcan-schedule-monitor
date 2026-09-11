@@ -2,9 +2,10 @@ package io.github.bohdankordon.vulcanschedulemonitor.telegram.command;
 
 public enum TelegramCommand {
   START,
-  HELP,
-  STATUS,
+  CONNECT,
   CLASSES,
   SUBSCRIPTIONS,
-  CONNECT
+  STATUS,
+  LANGUAGE,
+  HELP
 }

@@ -128,7 +128,12 @@ class SubscriptionsPostgresTests extends PostgresIntegrationTestSupport {
 
     assertThat(columns)
         .containsExactly(
-            "app_user_id", "telegram_user_id", "private_chat_id", "created_at", "updated_at")
+            "app_user_id",
+            "telegram_user_id",
+            "private_chat_id",
+            "created_at",
+            "updated_at",
+            "language_code")
         .doesNotContain("username", "first_name", "last_name", "message_text", "locale");
   }
 

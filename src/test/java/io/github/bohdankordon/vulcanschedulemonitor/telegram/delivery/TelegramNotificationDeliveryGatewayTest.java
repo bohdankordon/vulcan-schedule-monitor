@@ -41,6 +41,25 @@ class TelegramNotificationDeliveryGatewayTest {
   }
 
   @Test
+  void deliversInRecipientConfiguredLanguage() throws Exception {
+    var text = new AtomicReference<String>();
+    TelegramMessageTransport transport = (chat, message) -> text.set(message);
+    var gateway =
+        gateway(
+            Optional.of(
+                new TelegramRecipientReference(
+                    4001,
+                    5001,
+                    io.github.bohdankordon.vulcanschedulemonitor.telegram.TelegramLanguage.POLISH)),
+            transport);
+
+    gateway.deliver(message());
+
+    assertThat(text.get())
+        .contains("✅ Monitorowanie jest gotowe", "Klasa: Synthetic 2A", "31.08.2026 — 06.09.2026");
+  }
+
+  @Test
   void missingIdentityIsPermanent() {
     assertFailure(
         gateway(Optional.empty(), (chat, text) -> {}),

@@ -6,6 +6,8 @@ import static org.mockito.Mockito.when;
 
 import io.github.bohdankordon.vulcanschedulemonitor.subscriptions.MonitoringClassSelection;
 import io.github.bohdankordon.vulcanschedulemonitor.subscriptions.MonitoringSubscriptionService;
+import io.github.bohdankordon.vulcanschedulemonitor.telegram.TelegramLanguage;
+import io.github.bohdankordon.vulcanschedulemonitor.telegram.i18n.TelegramTextCatalog;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.transport.TelegramMessageTransport;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanConnectionStatus;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanConnectionStatusService;
@@ -25,8 +27,10 @@ class ClassSelectionControllerTest {
   private final RecordingTransport interactive = new RecordingTransport();
   private final List<String> plain = new ArrayList<>();
   private final TelegramMessageTransport plainTransport = (chat, text) -> plain.add(text);
+  private final TelegramTextCatalog textCatalog = new TelegramTextCatalog();
   private final ClassSelectionController controller =
-      new ClassSelectionController(subscriptions, connections, plainTransport, interactive);
+      new ClassSelectionController(
+          subscriptions, connections, textCatalog, plainTransport, interactive);
 
   @Test
   void guidesUsersThroughMissingAndReconnectRequiredStatesWithoutAKeyboard() throws Exception {
@@ -35,11 +39,13 @@ class ClassSelectionControllerTest {
             new VulcanConnectionStatus(VulcanConnectionStatus.State.NOT_CONNECTED, 0),
             new VulcanConnectionStatus(VulcanConnectionStatus.State.RECONNECT_REQUIRED, 0));
 
-    controller.send(USER, CHAT, 0);
-    controller.send(USER, CHAT, 0);
+    controller.send(USER, CHAT, 0, TelegramLanguage.ENGLISH);
+    controller.send(USER, CHAT, 0, TelegramLanguage.ENGLISH);
 
-    assertThat(plain).hasSize(2).first().asString().contains("/connect", "No VULCAN account");
-    assertThat(plain.get(1)).contains("/connect", "reconnect");
+    assertThat(plain).hasSize(2);
+    assertThat(plain.get(0)).isEqualTo("⚪ VULCAN is not connected.\nUse /connect first.");
+    assertThat(plain.get(1))
+        .isEqualTo("🟠 Your VULCAN connection needs to be renewed.\nUse /connect to reconnect.");
     assertThat(interactive.sent).isEmpty();
   }
 
@@ -48,9 +54,12 @@ class ClassSelectionControllerTest {
     connected();
     when(subscriptions.availableClasses(USER)).thenReturn(List.of());
 
-    controller.send(USER, CHAT, 0);
+    controller.send(USER, CHAT, 0, TelegramLanguage.ENGLISH);
 
-    assertThat(plain).singleElement().asString().contains("No available classes");
+    assertThat(plain)
+        .singleElement()
+        .asString()
+        .isEqualTo("🎓 No classes were found for this VULCAN account.");
   }
 
   @Test
@@ -62,16 +71,18 @@ class ClassSelectionControllerTest {
                 new MonitoringClassSelection(
                     9_001, "Synthetic class A", "Synthetic school", 2026, false)));
 
-    controller.send(USER, CHAT, 0);
+    controller.send(USER, CHAT, 0, TelegramLanguage.ENGLISH);
 
     assertThat(interactive.sent)
         .singleElement()
         .satisfies(
             message -> {
-              assertThat(message.text()).isEqualTo("Choose classes to monitor (page 1 of 1).");
+              assertThat(message.text())
+                  .isEqualTo(
+                      "🎓 Classes to monitor\nTap a class to turn notifications on or off.\nPage 1/1");
               assertThat(message.keyboard())
                   .containsExactly(
-                      List.of(new TelegramInlineButton("☐ Synthetic class A", "c1:t:9001:0")));
+                      List.of(new TelegramInlineButton("⬜ Synthetic class A", "c1:t:9001:0")));
               assertThat(message.text()).doesNotContain("9001", "journal", "catalog");
               assertThat(message.keyboard().getFirst().getFirst().text())
                   .doesNotContain("9001", "journal", "catalog");
@@ -94,16 +105,17 @@ class ClassSelectionControllerTest {
     }
     when(subscriptions.availableClasses(USER)).thenReturn(List.copyOf(selections));
 
-    controller.send(USER, CHAT, 0);
-    controller.edit(USER, CHAT, 33, 1);
+    controller.send(USER, CHAT, 0, TelegramLanguage.ENGLISH);
+    controller.edit(USER, CHAT, 33, 1, TelegramLanguage.ENGLISH);
 
     TelegramInteractiveMessage first = interactive.sent.getFirst();
-    assertThat(first.text()).isEqualTo("Choose classes to monitor (page 1 of 2).");
+    assertThat(first.text())
+        .isEqualTo("🎓 Classes to monitor\nTap a class to turn notifications on or off.\nPage 1/2");
     assertThat(first.keyboard()).hasSize(9);
-    assertThat(first.keyboard().get(0).getFirst().text()).isEqualTo("☐ Synthetic class A");
+    assertThat(first.keyboard().get(0).getFirst().text()).isEqualTo("⬜ Synthetic class A");
     assertThat(first.keyboard().get(1).getFirst().text()).isEqualTo("✅ Synthetic class B");
     assertThat(first.keyboard().get(8).getFirst())
-        .isEqualTo(new TelegramInlineButton("Next", "c1:p:1"));
+        .isEqualTo(new TelegramInlineButton("Next ➡️", "c1:p:1"));
     assertThat(first.text()).doesNotContain("9000", "77", "journal", "catalog");
     assertThat(first.keyboard())
         .flatExtracting(row -> row)
@@ -111,11 +123,49 @@ class ClassSelectionControllerTest {
         .allSatisfy(text -> assertThat(text).doesNotContain("9000", "journal", "catalog"));
 
     TelegramInteractiveMessage second = interactive.edited.getFirst();
-    assertThat(second.text()).isEqualTo("Choose classes to monitor (page 2 of 2).");
+    assertThat(second.text())
+        .isEqualTo("🎓 Classes to monitor\nTap a class to turn notifications on or off.\nPage 2/2");
     assertThat(second.keyboard()).hasSize(3);
     assertThat(second.keyboard().get(0).getFirst().text()).contains("Synthetic class I");
     assertThat(second.keyboard().get(2).getFirst())
-        .isEqualTo(new TelegramInlineButton("Previous", "c1:p:0"));
+        .isEqualTo(new TelegramInlineButton("⬅️ Previous", "c1:p:0"));
+  }
+
+  @Test
+  void rendersAcrossAllSupportedLanguagesPreservingProviderClassNames() throws Exception {
+    connected();
+    when(subscriptions.availableClasses(USER))
+        .thenReturn(
+            List.of(
+                new MonitoringClassSelection(101L, "7c", "School", 2026, true),
+                new MonitoringClassSelection(102L, "8a", "School", 2026, false)));
+
+    // Russian
+    controller.send(USER, CHAT, 0, TelegramLanguage.RUSSIAN);
+    var ru = interactive.sent.removeLast();
+    assertThat(ru.text())
+        .isEqualTo(
+            "🎓 Классы для отслеживания\nНажмите на класс, чтобы включить или выключить уведомления.\nСтраница 1/1");
+    assertThat(ru.keyboard().get(0).getFirst().text()).isEqualTo("✅ 7c");
+    assertThat(ru.keyboard().get(1).getFirst().text()).isEqualTo("⬜ 8a");
+
+    // Ukrainian
+    controller.send(USER, CHAT, 0, TelegramLanguage.UKRAINIAN);
+    var uk = interactive.sent.removeLast();
+    assertThat(uk.text())
+        .isEqualTo(
+            "🎓 Класи для відстеження\nНатисніть на клас, щоб увімкнути або вимкнути сповіщення.\nСторінка 1/1");
+    assertThat(uk.keyboard().get(0).getFirst().text()).isEqualTo("✅ 7c");
+    assertThat(uk.keyboard().get(1).getFirst().text()).isEqualTo("⬜ 8a");
+
+    // Polish
+    controller.send(USER, CHAT, 0, TelegramLanguage.POLISH);
+    var pl = interactive.sent.removeLast();
+    assertThat(pl.text())
+        .isEqualTo(
+            "🎓 Klasy do monitorowania\nWybierz klasę, aby włączyć lub wyłączyć powiadomienia.\nStrona 1/1");
+    assertThat(pl.keyboard().get(0).getFirst().text()).isEqualTo("✅ 7c");
+    assertThat(pl.keyboard().get(1).getFirst().text()).isEqualTo("⬜ 8a");
   }
 
   private void connected() {

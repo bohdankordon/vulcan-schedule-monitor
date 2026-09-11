@@ -80,10 +80,45 @@ class TelegramDeliveryPostgresTests extends PostgresIntegrationTestSupport {
         .containsExactly(
             new Send(
                 PRIVATE_CHAT_ID,
-                "Monitoring baseline established.\n"
-                    + "Class: Synthetic 2A\n"
-                    + "Week: 2026-08-31 to 2026-09-06\n"
-                    + "Active changes: 0"));
+                """
+                ✅ Monitoring is ready
+
+                🎓 Class: Synthetic 2A
+                📅 Week: 31.08.2026 — 06.09.2026
+                🔎 Active schedule changes: 0
+
+                I'll notify you when something changes."""));
+    assertThat(jdbc.queryForObject("SELECT status FROM notification_outbox", String.class))
+        .isEqualTo("DELIVERED");
+  }
+
+  @Test
+  void notificationLanguageIsResolvedAtDeliveryTime() {
+    createBaselineIntent();
+
+    jdbc.update(
+        "UPDATE telegram_identity SET language_code = 'pl' WHERE telegram_user_id = ?",
+        TELEGRAM_USER_ID);
+
+    var sends = new ArrayList<Send>();
+    TelegramMessageTransport transport = (chat, text) -> sends.add(new Send(chat, text));
+    var dispatcher = dispatcher(transport);
+
+    var summary = dispatcher.dispatchOnce();
+
+    assertThat(summary.delivered()).isOne();
+    assertThat(sends)
+        .containsExactly(
+            new Send(
+                PRIVATE_CHAT_ID,
+                """
+                ✅ Monitorowanie jest gotowe
+
+                🎓 Klasa: Synthetic 2A
+                📅 Tydzień: 31.08.2026 — 06.09.2026
+                🔎 Aktywne zmiany w planie: 0
+
+                Powiadomię Cię, gdy coś się zmieni."""));
     assertThat(jdbc.queryForObject("SELECT status FROM notification_outbox", String.class))
         .isEqualTo("DELIVERED");
   }
