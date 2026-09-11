@@ -13,6 +13,7 @@ import io.github.bohdankordon.vulcanschedulemonitor.telegram.command.Subscriptio
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.command.TelegramCommandHandler;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.command.TelegramCommandParser;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.command.menu.TelegramCommandMenuService;
+import io.github.bohdankordon.vulcanschedulemonitor.telegram.command.menu.TelegramCommandMenuTransport;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.delivery.TelegramNotificationDeliveryGateway;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.delivery.TelegramNotificationDispatchScheduler;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.delivery.TelegramNotificationFormatter;
@@ -89,7 +90,7 @@ public class TelegramConfiguration {
 
   @Bean
   TelegramCommandMenuService telegramCommandMenuService(
-      TelegramBotsMessageTransport transport, TelegramTextCatalog textCatalog) {
+      TelegramCommandMenuTransport transport, TelegramTextCatalog textCatalog) {
     return new TelegramCommandMenuService(transport, textCatalog);
   }
 

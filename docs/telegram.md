@@ -64,12 +64,13 @@ Bot-name suffixes such as `/start@somebot`, surrounding whitespace, and case nor
 ## Native Telegram command menu
 
 On bot startup during long polling initialization, the adapter registers default English command descriptions for all private chats (`BotCommandScopeAllPrivateChats`) via `SetMyCommands`:
-- `connect` — securely connect VULCAN
-- `classes` — choose classes to monitor
-- `subscriptions` — view monitored classes
-- `status` — check status
-- `language` — change language
-- `help` — show all commands
+- `start` — Start / choose language
+- `connect` — Connect your VULCAN account
+- `classes` — Choose classes to monitor
+- `subscriptions` — View monitored classes
+- `status` — Check connection and monitoring status
+- `language` — Change language
+- `help` — Show all commands
 
 When a user selects or updates their language preference via `/start` or `/language`, the adapter issues chat-scoped commands (`BotCommandScopeChat(chatId)`) in the selected language (`en`, `ru`, `uk`, or `pl`) and ensures the chat menu button is configured via `SetChatMenuButton` (`MenuButtonCommands`).
 
