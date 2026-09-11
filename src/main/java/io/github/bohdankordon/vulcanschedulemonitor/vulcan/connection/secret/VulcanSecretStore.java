@@ -13,6 +13,8 @@ public interface VulcanSecretStore {
       RememberedCredentials credentials,
       Instant now);
 
+  void replaceSession(long accountId, VulcanSessionMaterial session, Instant now);
+
   VulcanSessionMaterial loadSession(long accountId);
 
   Optional<RememberedCredentials> loadCredentials(long accountId);

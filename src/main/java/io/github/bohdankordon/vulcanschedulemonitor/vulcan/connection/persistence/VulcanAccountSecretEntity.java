@@ -53,6 +53,20 @@ class VulcanAccountSecretEntity {
     this.updatedAt = now;
   }
 
+  void replaceSession(int keyVersion, byte[] sessionNonce, byte[] sessionCiphertext, Instant now) {
+    if (this.credentialCiphertext != null && this.keyVersion != keyVersion) {
+      throw new IllegalStateException(
+          "Cannot update session key_version to "
+              + keyVersion
+              + " while credentials exist with key_version "
+              + this.keyVersion);
+    }
+    this.keyVersion = keyVersion;
+    this.sessionNonce = sessionNonce.clone();
+    this.sessionCiphertext = sessionCiphertext.clone();
+    this.updatedAt = now;
+  }
+
   int keyVersion() {
     return keyVersion;
   }

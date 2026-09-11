@@ -42,4 +42,9 @@ public class VulcanRecoveryPersistence {
     secrets.replace(accountId, material, credentials, now);
     account.connected(credentials != null, now);
   }
+
+  @Transactional
+  public void rotateSession(long accountId, VulcanSessionMaterial material) {
+    secrets.replaceSession(accountId, material, clock.instant());
+  }
 }

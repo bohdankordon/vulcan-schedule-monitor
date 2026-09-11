@@ -7,6 +7,7 @@ import com.sun.net.httpserver.HttpServer;
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.TrackingScope;
 import io.github.bohdankordon.vulcanschedulemonitor.testsupport.PostgresIntegrationTestSupport;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.VulcanClient;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.RememberedCredentials;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanSessionManager;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.secret.VulcanSecretStore;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.schedule.PersistedAccountWeeklyScheduleSource;
@@ -221,5 +222,61 @@ class SessionPersistencePostgresTests extends PostgresIntegrationTestSupport {
     assertThat(SessionMaterialTestSupport.compare(expected, reconstructed).allSame())
         .isEqualTo(!duplicate);
     assertThat(calls.get()).isZero();
+  }
+
+  @Test
+  void routineSessionRotationPreservesAuthenticatedAtAndExistingCredentials() {
+    var store = context.getBean(VulcanSecretStore.class);
+    var manager = context.getBean(VulcanSessionManager.class);
+    Instant originalAuthenticatedAt = Instant.parse("2026-09-01T10:00:00Z");
+
+    jdbc.update(
+        "UPDATE vulcan_account SET authenticated_at = ?, remember_credentials = TRUE WHERE id = 1",
+        java.sql.Timestamp.from(originalAuthenticatedAt));
+
+    try (RememberedCredentials creds =
+        new RememberedCredentials(base, "synthetic-login", "synthetic-pass".toCharArray())) {
+      store.replace(1, material("original=SUPER_SECRET_COOKIE_A"), creds, CLOCK.instant());
+    }
+
+    var rotatedExpected = material("original=ROTATED_COOKIE_VAL");
+    var liveWithRotated =
+        VulcanSession.fromBrowserSession(
+            rotatedExpected.applicationBaseUri(),
+            rotatedExpected.requestVerificationToken(),
+            rotatedExpected.appGuid(),
+            "original=ROTATED_COOKIE_VAL");
+
+    var tx =
+        new org.springframework.transaction.support.TransactionTemplate(
+            context.getBean(org.springframework.transaction.PlatformTransactionManager.class));
+    tx.executeWithoutResult(
+        status -> {
+          manager.replace(1, liveWithRotated);
+          var em = context.getBean(jakarta.persistence.EntityManager.class);
+          em.flush();
+          em.clear();
+        });
+
+    var reloadedSession = store.loadSession(1);
+    assertThat(reloadedSession.cookieCount()).isEqualTo(1);
+
+    java.sql.Timestamp actualAuthAt =
+        jdbc.queryForObject(
+            "SELECT authenticated_at FROM vulcan_account WHERE id = 1", java.sql.Timestamp.class);
+    assertThat(actualAuthAt).isEqualTo(java.sql.Timestamp.from(originalAuthenticatedAt));
+
+    String status =
+        jdbc.queryForObject("SELECT status FROM vulcan_account WHERE id = 1", String.class);
+    assertThat(status).isEqualTo("CONNECTED");
+    Boolean remember =
+        jdbc.queryForObject(
+            "SELECT remember_credentials FROM vulcan_account WHERE id = 1", Boolean.class);
+    assertThat(remember).isTrue();
+
+    try (RememberedCredentials reloadedCreds = store.loadCredentials(1).orElseThrow()) {
+      assertThat(reloadedCreds.login()).isEqualTo("synthetic-login");
+      assertThat(reloadedCreds.password()).isEqualTo("synthetic-pass".toCharArray());
+    }
   }
 }

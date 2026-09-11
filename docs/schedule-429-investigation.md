@@ -367,5 +367,71 @@ finite, structured rate-limit diagnostics:
    - If inline retry occurs, each real 429 response generates exactly one line.
    - Never logs URLs, tokens, cookie values, exception stack traces, or form bodies.
    - Example line:
-     `VULCAN schedule rate limited: operation=GetPlanLekcjiContext status=429 content=JSON retryAfter=DELTA_SECONDS delaySource=HEADER delayBucket=LE_30_SECONDS decision=DEFERRED_GATE setCookie=ZERO sessionCookiesBefore=TWO sessionCookiesAfter=TWO cookieMaterialChanged=false cookieAdded=0 cookieRemoved=0 cookieValueChanged=0 method=POST contentType=FORM_URLENCODED originPresent=true refererPresent=true tokenPresent=true appGuidPresent=true xRequestedWithPresent=true rateLimitLimitPresent=false rateLimitRemainingPresent=false rateLimitResetPresent=false xRateLimitLimitPresent=false xRateLimitRemainingPresent=false xRateLimitResetPresent=false attempt=1/3`
+     `VULCAN schedule HTTP 429: operation=GetPlanLekcjiContext status=429 content=JSON retryAfter=DELTA_SECONDS delaySource=HEADER delayBucket=LE_30_SECONDS decision=DEFERRED_GATE setCookie=ZERO sessionCookiesBefore=TWO sessionCookiesAfter=TWO cookieMaterialChanged=false cookieAdded=0 cookieRemoved=0 cookieValueChanged=0 method=POST contentType=FORM_URLENCODED originPresent=true refererPresent=true tokenPresent=true appGuidPresent=true xRequestedWithPresent=true rateLimitLimitPresent=false rateLimitRemainingPresent=false rateLimitResetPresent=false xRateLimitLimitPresent=false xRateLimitRemainingPresent=false xRateLimitResetPresent=false attempt=1/3`
    - Orchestration layer remains decoupled from HTTP transport internals.
+
+## 2026-09-10 fresh session discrimination test and stale-session recovery (PR #21)
+
+### Empirical discrimination evidence
+
+Following deployment of PR #20 sanitized diagnostics on `acer-server`, an instrumented monitoring cycle reproduced the exact schedule HTTP 429 response on the first weekly scope:
+
+```
+VULCAN schedule rate limited: operation=GetPlanLekcjiContext status=429 content=HTML retryAfter=ABSENT delaySource=FALLBACK delayBucket=LE_30_SECONDS decision=DEFERRED_GATE setCookie=ONE sessionCookiesBefore=SIX sessionCookiesAfter=SIX cookieMaterialChanged=false cookieAdded=0 cookieRemoved=0 cookieValueChanged=0 method=POST contentType=FORM_URLENCODED originPresent=true refererPresent=true tokenPresent=true appGuidPresent=true xRequestedWithPresent=true rateLimitLimitPresent=false rateLimitRemainingPresent=false rateLimitResetPresent=false xRateLimitLimitPresent=false xRateLimitRemainingPresent=false xRateLimitResetPresent=false attempt=1/3
+```
+
+Key observations from this production test:
+- The request method was `POST`, content type was `application/x-www-form-urlencoded`, and all five required headers (`Origin`, `Referer`, `X-V-RequestVerificationToken`, `X-V-AppGuid`, `X-Requested-With`) were present.
+- The response was HTTP 429 with `content=HTML`.
+- `Retry-After` was completely `ABSENT` (no seconds delta, no HTTP date).
+- All standard `RateLimit-*` and `X-RateLimit-*` headers were absent.
+- Exactly one `Set-Cookie` header was returned, but in-memory cookie material was unchanged (`cookieMaterialChanged=false`).
+
+Immediately following this failure, a controlled fresh session discrimination test was performed:
+1. Re-authentication via human `/connect` flow established a brand-new session for the account.
+2. Scheduler cycle #1 immediately succeeded on both weekly scopes (CURRENT and NEXT): `successes=2, failures=0, stoppedEarly=false`. Baseline notifications were dispatched cleanly to Telegram.
+3. Scheduler cycle #2 five minutes later again completed with 2/2 successes: `successes=2, failures=0, stoppedEarly=false`.
+
+The fresh-session discrimination test strongly indicates that the previously persisted session was stale or otherwise no longer accepted by VULCAN: the identical server, egress IP, tenant, and request format succeeded immediately with a fresh session, whereas an older persisted session was rejected with an HTTP 429 HTML page.
+
+### Stale session classification and bounded recovery
+
+PR #21 introduces a strict, finite classifier (`Schedule429Classifier`) for schedule HTTP 429 responses:
+
+1. **Strict Stale Signature**:
+   An observation is classified as `STALE_SESSION` if and only if ALL of the following hold:
+   - Observation is present
+   - `operation == RateLimitedOperation.GET_PLAN_LEKCJI_CONTEXT`
+   - `statusCode == 429`
+   - `contentFamily == ContentFamily.HTML`
+   - `retryAfterRepresentation == RetryAfterRepresentation.ABSENT`
+   - No rate-limit headers present (`!rateLimitHeaders.anyPresent()`)
+   - Request shape: `POST`, `FORM_URLENCODED`, and `originPresent`, `refererPresent`, `verificationTokenPresent`, `appGuidPresent`, `xRequestedWithPresent` all true.
+
+2. **Conservative Defaults**:
+   All non-matching 429 responses (JSON responses, HTML with `Retry-After`, HTML with rate-limit headers, non-schedule operations, or incomplete request shapes) remain `RATE_LIMITED` and proceed through ordinary backoff/deferral.
+   Cookie counts, mutations, and challenge cookies are deliberately excluded from classifier inputs.
+
+3. **Routing to Authentication Recovery**:
+   When `STALE_SESSION` is classified in `ResilientWeeklyScheduleSource`:
+   - Single sanitized log line is emitted: `delaySource=NONE delayBucket=ZERO decision=AUTHENTICATION_REQUIRED`.
+   - `RateLimitBackoffGate` is NOT extended.
+   - Zero inline delay or retry occurs.
+   - Throws `ScheduleSourceException.of(SourceFailureKind.AUTHENTICATION_REQUIRED)`.
+   - `RecoveringAccountWeeklyScheduleSource` catches this and delegates to `VulcanSessionManager.recover(accountId)`:
+     - **Without remembered credentials**: Immediately marks account `RECONNECT_REQUIRED` in database; zero retries, zero browser auth attempts.
+     - **With remembered credentials**: Uses bounded recovery budget (at most 1 recovery per cycle). If recovery succeeds, retries schedule fetch once; if recovery or subsequent fetch fails, transitions to `RECONNECT_REQUIRED`.
+
+4. **Target Suppression on `RECONNECT_REQUIRED`**:
+   `MonitoringSubscriptionRepository.findDistinctActiveTargets()` filters on `account.status = 'CONNECTED'`. When an account transitions to `RECONNECT_REQUIRED`, its targets are automatically suppressed from future scheduler cycles while user subscriptions remain enabled (`enabled=TRUE`). Upon subsequent successful re-authentication, targets are restored without data loss.
+
+### Corrected `authenticated_at` timestamp semantics
+
+Previously, routine session rotation after each successful schedule request called `persistence.replaceRecovered(...)`, which invoked `account.connected(...)` and incorrectly advanced `vulcan_account.authenticated_at` on routine schedule fetches. Additionally, it unnecessarily loaded and decrypted remembered credentials during routine rotations.
+
+PR #21 corrects this architectural seam:
+- `VulcanAccountSecretEntity` adds `replaceSession(...)`, updating session ciphertext/nonce and `updated_at` while preserving `credential_nonce` and `credential_ciphertext`.
+- `VulcanSecretStore` and `EncryptedVulcanSecretStore` add `replaceSession(...)`, encrypting only session material and never loading credentials.
+- `VulcanRecoveryPersistence` adds `rotateSession(...)`, persisting rotated session material without touching `VulcanAccountEntity`.
+- `VulcanSessionManager.replace(...)` calls `rotateSession(...)` directly without loading or decrypting credentials.
+- `authenticated_at` now strictly reflects genuine authentication events: human `/connect` completion (`VulcanConnectionCompletion.complete`) and automatic remembered-credential recovery (`VulcanRecoveryPersistence.replaceRecovered`).

@@ -116,8 +116,7 @@ class RateLimitLogRedactionTest {
     }
     assertThat(formatted).doesNotContain("NEW_SECRET_VAL");
 
-    assertThat(formatted)
-        .startsWith("VULCAN schedule rate limited: operation=GetPlanLekcjiContext");
+    assertThat(formatted).startsWith("VULCAN schedule HTTP 429: operation=GetPlanLekcjiContext");
     assertThat(formatted).contains("status=429");
     assertThat(formatted).contains("content=JSON");
     assertThat(formatted).contains("retryAfter=MALFORMED");
@@ -221,7 +220,7 @@ class RateLimitLogRedactionTest {
         .isInstanceOf(ScheduleSourceException.class);
 
     String logged = output.getAll();
-    assertThat(logged).contains("VULCAN schedule rate limited: operation=GetPlanLekcjiContext");
+    assertThat(logged).contains("VULCAN schedule HTTP 429: operation=GetPlanLekcjiContext");
     for (String secret : ALL_SECRET_MARKERS) {
       assertThat(logged).doesNotContain(secret);
     }

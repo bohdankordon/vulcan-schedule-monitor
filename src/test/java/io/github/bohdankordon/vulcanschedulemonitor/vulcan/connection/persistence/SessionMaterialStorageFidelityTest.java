@@ -112,6 +112,55 @@ class SessionMaterialStorageFidelityTest {
     verify(repository, times(2)).save(any());
   }
 
+  @org.junit.jupiter.api.Test
+  void replaceSessionDoesNotDecryptRememberedCredentials() {
+    URI base = URI.create("https://secret-domain.invalid/SECRET_TENANT_PATH/");
+    var initialSession =
+        new VulcanSessionMaterial(
+            base,
+            base.resolve("SUPER_SECRET_REFERER"),
+            "SUPER_SECRET_TOKEN",
+            "SUPER_SECRET_APPGUID",
+            "SECRET_NAME=SUPER_SECRET_COOKIE_A");
+    var rotatedSession =
+        new VulcanSessionMaterial(
+            base,
+            base.resolve("SUPER_SECRET_REFERER"),
+            "SUPER_SECRET_TOKEN",
+            "SUPER_SECRET_APPGUID",
+            "SECRET_NAME=ROTATED_COOKIE");
+    var codec = new SecretPayloadCodec();
+    var repository = mock(VulcanAccountSecretRepository.class);
+    var row = new AtomicReference<VulcanAccountSecretEntity>();
+    when(repository.findById(1L)).thenAnswer(i -> Optional.ofNullable(row.get()));
+    when(repository.save(any()))
+        .thenAnswer(
+            i -> {
+              row.set(i.getArgument(0));
+              return row.get();
+            });
+
+    var cipher =
+        spy(
+            new AesGcmCipher(
+                VulcanMasterKey.fromBase64(Base64.getEncoder().encodeToString(new byte[32]))));
+    var store = new EncryptedVulcanSecretStore(repository, cipher, codec);
+
+    try (var creds =
+        new io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.RememberedCredentials(
+            base, "test-user", "test-pass".toCharArray())) {
+      store.replace(1, initialSession, creds, Instant.EPOCH);
+    }
+
+    clearInvocations(cipher);
+
+    store.replaceSession(1, rotatedSession, Instant.EPOCH.plusSeconds(1));
+
+    verify(cipher, times(1)).decrypt(any(), eq("vulcan-account:1:session:v1"));
+    verify(cipher, never()).decrypt(any(), eq("vulcan-account:1:credentials:v1"));
+    assertExact(rotatedSession, store.loadSession(1));
+  }
+
   private static void assertExact(VulcanSessionMaterial expected, VulcanSessionMaterial actual) {
     // Boolean assertions deliberately avoid rendering secret-bearing payloads on failure.
     assertThat(SessionMaterialTestSupport.compare(expected, actual).allSame()).isTrue();

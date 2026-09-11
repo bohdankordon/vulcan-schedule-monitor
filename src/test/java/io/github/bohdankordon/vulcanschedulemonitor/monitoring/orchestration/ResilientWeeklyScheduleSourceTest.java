@@ -6,8 +6,19 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.TrackingScope;
 import io.github.bohdankordon.vulcanschedulemonitor.monitoring.tracking.WeeklyScheduleSource;
 import io.github.bohdankordon.vulcanschedulemonitor.schedule.model.ScheduleSnapshot;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.diagnostics.VulcanDiagnostics.ContentFamily;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RateLimitHeaderPresence;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RateLimitResponseObservation;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RateLimitedOperation;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RequestShapeObservation;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RequestShapeObservation.RequestContentTypeShape;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RequestShapeObservation.RequestMethodShape;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.RetryAfterParseResult;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.SetCookieCount;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanHttpException;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.http.VulcanProtocolException;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.SessionCookieCountBucket;
+import io.github.bohdankordon.vulcanschedulemonitor.vulcan.session.SessionCookieMutationObservation;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -247,6 +258,57 @@ class ResilientWeeklyScheduleSourceTest {
     resilient(delegate, delays, new MutableClock(NOW)).fetchCompleteWeeklySnapshot(SCOPE);
 
     assertThat(delays.values).containsExactly(Duration.ofSeconds(3));
+  }
+
+  @Test
+  void staleSession429ThrowsAuthenticationRequiredWithoutDelayOrGateExtension() {
+    AtomicInteger calls = new AtomicInteger();
+    RecordingDelay delays = new RecordingDelay();
+    RateLimitBackoffGate gate = new RateLimitBackoffGate(new MutableClock(NOW));
+    RateLimitResponseObservation staleObservation =
+        new RateLimitResponseObservation(
+            RateLimitedOperation.GET_PLAN_LEKCJI_CONTEXT,
+            429,
+            ContentFamily.HTML,
+            RetryAfterParseResult.absent(),
+            SetCookieCount.ONE,
+            new RateLimitHeaderPresence(false, false, false, false, false, false),
+            new RequestShapeObservation(
+                RequestMethodShape.POST,
+                RequestContentTypeShape.FORM_URLENCODED,
+                true,
+                true,
+                true,
+                true,
+                true),
+            new SessionCookieMutationObservation(
+                SessionCookieCountBucket.SIX, SessionCookieCountBucket.SIX, false, 0, 0, 0));
+
+    WeeklyScheduleSource delegate =
+        ignored -> {
+          calls.incrementAndGet();
+          throw VulcanHttpException.rateLimited("GetPlanLekcjiContext", staleObservation);
+        };
+
+    ResilientWeeklyScheduleSource source =
+        new ResilientWeeklyScheduleSource(
+            delegate,
+            delays,
+            gate,
+            3,
+            Duration.ofSeconds(1),
+            Duration.ofSeconds(5),
+            Duration.ofSeconds(10));
+
+    assertThatThrownBy(() -> source.fetchCompleteWeeklySnapshot(SCOPE))
+        .isInstanceOfSatisfying(
+            ScheduleSourceException.class,
+            failure ->
+                assertThat(failure.kind()).isEqualTo(SourceFailureKind.AUTHENTICATION_REQUIRED));
+
+    assertThat(calls).hasValue(1);
+    assertThat(delays.values).isEmpty();
+    assertThat(gate.activeUntil(SCOPE.vulcanAccountId())).isEmpty();
   }
 
   private static void assertSingleAttemptFailure(
