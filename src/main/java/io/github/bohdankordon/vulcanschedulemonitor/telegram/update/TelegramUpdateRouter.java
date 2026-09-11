@@ -1,14 +1,17 @@
 package io.github.bohdankordon.vulcanschedulemonitor.telegram.update;
 
+import io.github.bohdankordon.vulcanschedulemonitor.telegram.TelegramLanguage;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.command.TelegramCommand;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.command.TelegramCommandContext;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.command.TelegramCommandHandler;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.command.TelegramCommandParser;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.interactive.ClassSelectionController;
+import io.github.bohdankordon.vulcanschedulemonitor.telegram.interactive.LanguageSelectionController;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.interactive.TelegramCallbackRouter;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.transport.TelegramMessageTransport;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.transport.TelegramTransportException;
 import io.github.bohdankordon.vulcanschedulemonitor.users.TelegramIdentityRegistration;
+import io.github.bohdankordon.vulcanschedulemonitor.users.TelegramLanguagePreferences;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -23,17 +26,27 @@ public final class TelegramUpdateRouter {
 
   private final TelegramCommandParser parser;
   private final TelegramIdentityRegistration identities;
+  private final TelegramLanguagePreferences preferences;
   private final TelegramMessageTransport transport;
   private final Map<TelegramCommand, TelegramCommandHandler> handlers;
   private final TelegramCallbackRouter callbackRouter;
   private final ClassSelectionController classes;
+  private final LanguageSelectionController languageController;
 
   public TelegramUpdateRouter(
       TelegramCommandParser parser,
       TelegramIdentityRegistration identities,
       TelegramMessageTransport transport,
       List<TelegramCommandHandler> handlers) {
-    this(parser, identities, transport, handlers, null, null);
+    this(
+        parser,
+        identities,
+        new DefaultTelegramLanguagePreferences(),
+        transport,
+        handlers,
+        null,
+        null,
+        null);
   }
 
   public TelegramUpdateRouter(
@@ -43,11 +56,44 @@ public final class TelegramUpdateRouter {
       List<TelegramCommandHandler> handlers,
       TelegramCallbackRouter callbackRouter,
       ClassSelectionController classes) {
+    this(
+        parser,
+        identities,
+        new DefaultTelegramLanguagePreferences(),
+        transport,
+        handlers,
+        callbackRouter,
+        classes,
+        null);
+  }
+
+  private static final class DefaultTelegramLanguagePreferences
+      implements TelegramLanguagePreferences {
+    @Override
+    public TelegramLanguage getLanguage(long appUserId) {
+      return TelegramLanguage.ENGLISH;
+    }
+
+    @Override
+    public void setLanguage(long appUserId, TelegramLanguage language) {}
+  }
+
+  public TelegramUpdateRouter(
+      TelegramCommandParser parser,
+      TelegramIdentityRegistration identities,
+      TelegramLanguagePreferences preferences,
+      TelegramMessageTransport transport,
+      List<TelegramCommandHandler> handlers,
+      TelegramCallbackRouter callbackRouter,
+      ClassSelectionController classes,
+      LanguageSelectionController languageController) {
     this.parser = Objects.requireNonNull(parser, "parser must not be null");
     this.identities = Objects.requireNonNull(identities, "identities must not be null");
+    this.preferences = Objects.requireNonNull(preferences, "preferences must not be null");
     this.transport = Objects.requireNonNull(transport, "transport must not be null");
     this.callbackRouter = callbackRouter;
     this.classes = classes;
+    this.languageController = languageController;
     this.handlers = new EnumMap<>(TelegramCommand.class);
     for (TelegramCommandHandler handler : handlers) {
       if (this.handlers.put(handler.supportedCommand(), handler) != null) {
@@ -86,10 +132,38 @@ public final class TelegramUpdateRouter {
       return;
     }
     var user = identities.registerOrUpdate(sender.getId(), chat.getId());
-    var context = new TelegramCommandContext(user.id(), chat.getId());
-    if (command.orElseThrow() == TelegramCommand.CLASSES && classes != null) {
+    TelegramLanguage language = preferences.getLanguage(user.id());
+    var context = new TelegramCommandContext(user.id(), chat.getId(), language);
+
+    TelegramCommand resolvedCommand = command.orElseThrow();
+    if (resolvedCommand == TelegramCommand.START && languageController != null) {
       try {
-        classes.send(context.appUserId(), context.privateChatId(), 0);
+        languageController.sendStartChooser(context.privateChatId());
+        LOGGER.debug("Telegram update processed: updateId={}, command=START", update.getUpdateId());
+      } catch (TelegramTransportException failure) {
+        LOGGER.warn(
+            "Telegram start chooser reply failed: updateId={}, category={}",
+            update.getUpdateId(),
+            failure.category());
+      }
+      return;
+    }
+    if (resolvedCommand == TelegramCommand.LANGUAGE && languageController != null) {
+      try {
+        languageController.sendLanguageChooser(context.privateChatId(), context.language());
+        LOGGER.debug(
+            "Telegram update processed: updateId={}, command=LANGUAGE", update.getUpdateId());
+      } catch (TelegramTransportException failure) {
+        LOGGER.warn(
+            "Telegram language chooser reply failed: updateId={}, category={}",
+            update.getUpdateId(),
+            failure.category());
+      }
+      return;
+    }
+    if (resolvedCommand == TelegramCommand.CLASSES && classes != null) {
+      try {
+        classes.send(context.appUserId(), context.privateChatId(), 0, context.language());
         LOGGER.debug(
             "Telegram update processed: updateId={}, command=CLASSES", update.getUpdateId());
       } catch (TelegramTransportException failure) {
@@ -100,21 +174,21 @@ public final class TelegramUpdateRouter {
       }
       return;
     }
-    if (!handlers.containsKey(command.orElseThrow())) {
+    if (!handlers.containsKey(resolvedCommand)) {
       return;
     }
-    String reply = handlers.get(command.orElseThrow()).handle(context);
+    String reply = handlers.get(resolvedCommand).handle(context);
     try {
       transport.sendPlainText(chat.getId(), reply);
       LOGGER.debug(
           "Telegram update processed: updateId={}, command={}",
           update.getUpdateId(),
-          command.orElseThrow());
+          resolvedCommand);
     } catch (TelegramTransportException failure) {
       LOGGER.warn(
           "Telegram command reply failed: updateId={}, command={}, category={}",
           update.getUpdateId(),
-          command.orElseThrow(),
+          resolvedCommand,
           failure.category());
     }
   }

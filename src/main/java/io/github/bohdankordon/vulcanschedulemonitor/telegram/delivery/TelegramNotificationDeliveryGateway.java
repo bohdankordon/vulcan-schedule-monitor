@@ -44,7 +44,8 @@ public final class TelegramNotificationDeliveryGateway implements NotificationDe
     try {
       transport.sendPlainText(
           recipient.orElseThrow().privateChatId(),
-          formatter.format(message, catalogClass.orElseThrow().name()));
+          formatter.format(
+              message, catalogClass.orElseThrow().name(), recipient.orElseThrow().language()));
     } catch (TelegramTransportException failure) {
       if (failure.category() == TelegramFailureCategory.PERMANENT) {
         throw NotificationDeliveryException.permanent();

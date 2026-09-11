@@ -11,9 +11,11 @@ import io.github.bohdankordon.vulcanschedulemonitor.telegram.command.StartComman
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.command.StatusCommandHandler;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.command.SubscriptionsCommandHandler;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.command.TelegramCommandParser;
+import io.github.bohdankordon.vulcanschedulemonitor.telegram.interactive.LanguageSelectionController;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.transport.TelegramMessageTransport;
 import io.github.bohdankordon.vulcanschedulemonitor.users.ApplicationUser;
 import io.github.bohdankordon.vulcanschedulemonitor.users.TelegramIdentityRegistration;
+import io.github.bohdankordon.vulcanschedulemonitor.users.TelegramLanguagePreferences;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -48,11 +50,116 @@ class TelegramUpdateRouterTest {
     assertThat(privateChat).hasValue(5001);
     assertThat(replies)
         .hasSize(5)
-        .anySatisfy(text -> assertThat(text).contains("Never send VULCAN credentials"))
-        .anySatisfy(text -> assertThat(text).contains("Supported commands"))
+        .anySatisfy(text -> assertThat(text).contains("Never send them in Telegram"))
+        .anySatisfy(text -> assertThat(text).contains("Commands"))
         .anySatisfy(text -> assertThat(text).contains("Monitored classes: 2"))
         .anySatisfy(text -> assertThat(text).contains("Synthetic 2A", "Synthetic 3B"))
-        .anySatisfy(text -> assertThat(text).contains("HTTPS web page"));
+        .anySatisfy(text -> assertThat(text).contains("HTTPS page"));
+  }
+
+  @Test
+  void startAndLanguageCommandsRouteToLanguageControllerWhenConfigured() {
+    var identities = (TelegramIdentityRegistration) (userId, chatId) -> appUser();
+    var startSent = new AtomicInteger();
+    var languageSent = new AtomicInteger();
+    var languageController =
+        new LanguageSelectionController(
+            new TelegramLanguagePreferences() {
+              @Override
+              public io.github.bohdankordon.vulcanschedulemonitor.telegram.TelegramLanguage
+                  getLanguage(long appUserId) {
+                return io.github.bohdankordon.vulcanschedulemonitor.telegram.TelegramLanguage
+                    .ENGLISH;
+              }
+
+              @Override
+              public void setLanguage(
+                  long appUserId,
+                  io.github.bohdankordon.vulcanschedulemonitor.telegram.TelegramLanguage
+                      language) {}
+            },
+            new io.github.bohdankordon.vulcanschedulemonitor.telegram.i18n.TelegramTextCatalog(),
+            new io.github.bohdankordon.vulcanschedulemonitor.telegram.interactive
+                .TelegramInteractiveTransport() {
+              @Override
+              public void send(
+                  long chatId,
+                  io.github.bohdankordon.vulcanschedulemonitor.telegram.interactive
+                          .TelegramInteractiveMessage
+                      message) {
+                if (message.keyboard().getFirst().getFirst().callbackData().startsWith("l1:s:")) {
+                  startSent.incrementAndGet();
+                } else if (message
+                    .keyboard()
+                    .getFirst()
+                    .getFirst()
+                    .callbackData()
+                    .startsWith("l1:c:")) {
+                  languageSent.incrementAndGet();
+                }
+              }
+
+              @Override
+              public void edit(
+                  long chatId,
+                  int messageId,
+                  io.github.bohdankordon.vulcanschedulemonitor.telegram.interactive
+                          .TelegramInteractiveMessage
+                      message) {}
+
+              @Override
+              public void answerCallback(String callbackQueryId, String text) {}
+            },
+            new io.github.bohdankordon.vulcanschedulemonitor.telegram.command.menu
+                .TelegramCommandMenuService(
+                new io.github.bohdankordon.vulcanschedulemonitor.telegram.command.menu
+                    .TelegramCommandMenuTransport() {
+                  @Override
+                  public void configureDefaultPrivateCommands(
+                      List<org.telegram.telegrambots.meta.api.objects.commands.BotCommand>
+                          commands) {}
+
+                  @Override
+                  public void configureChatCommands(
+                      long chatId,
+                      List<org.telegram.telegrambots.meta.api.objects.commands.BotCommand>
+                          commands) {}
+
+                  @Override
+                  public void configureChatMenuButton(long chatId) {}
+                },
+                new io.github.bohdankordon.vulcanschedulemonitor.telegram.i18n
+                    .TelegramTextCatalog()));
+
+    var router =
+        new TelegramUpdateRouter(
+            new TelegramCommandParser(),
+            identities,
+            new TelegramLanguagePreferences() {
+              @Override
+              public io.github.bohdankordon.vulcanschedulemonitor.telegram.TelegramLanguage
+                  getLanguage(long appUserId) {
+                return io.github.bohdankordon.vulcanschedulemonitor.telegram.TelegramLanguage
+                    .ENGLISH;
+              }
+
+              @Override
+              public void setLanguage(
+                  long appUserId,
+                  io.github.bohdankordon.vulcanschedulemonitor.telegram.TelegramLanguage
+                      language) {}
+            },
+            (chat, text) -> {},
+            List.of(),
+            null,
+            null,
+            languageController);
+
+    router.route(update(1, 4001, 5001, "private", false, "/start"));
+    router.route(update(2, 4001, 5001, "private", false, "/language"));
+
+    assertThat(startSent).hasValue(1);
+    assertThat(languageSent).hasValue(1);
   }
 
   @Test

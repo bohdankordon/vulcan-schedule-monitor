@@ -12,11 +12,16 @@ import io.github.bohdankordon.vulcanschedulemonitor.telegram.command.StatusComma
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.command.SubscriptionsCommandHandler;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.command.TelegramCommandHandler;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.command.TelegramCommandParser;
+import io.github.bohdankordon.vulcanschedulemonitor.telegram.command.menu.TelegramCommandMenuService;
+import io.github.bohdankordon.vulcanschedulemonitor.telegram.command.menu.TelegramCommandMenuTransport;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.delivery.TelegramNotificationDeliveryGateway;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.delivery.TelegramNotificationDispatchScheduler;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.delivery.TelegramNotificationFormatter;
+import io.github.bohdankordon.vulcanschedulemonitor.telegram.i18n.TelegramTextCatalog;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.interactive.ClassSelectionCallbackParser;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.interactive.ClassSelectionController;
+import io.github.bohdankordon.vulcanschedulemonitor.telegram.interactive.LanguageCallbackParser;
+import io.github.bohdankordon.vulcanschedulemonitor.telegram.interactive.LanguageSelectionController;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.interactive.TelegramCallbackRouter;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.interactive.TelegramInteractiveTransport;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.runtime.TelegramBotsLongPollingEngineFactory;
@@ -28,6 +33,7 @@ import io.github.bohdankordon.vulcanschedulemonitor.telegram.transport.TelegramM
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.update.TelegramUpdateConsumer;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.update.TelegramUpdateRouter;
 import io.github.bohdankordon.vulcanschedulemonitor.users.TelegramIdentityRegistration;
+import io.github.bohdankordon.vulcanschedulemonitor.users.TelegramLanguagePreferences;
 import io.github.bohdankordon.vulcanschedulemonitor.users.TelegramRecipientDirectory;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.VulcanConnectionStatusService;
 import io.github.bohdankordon.vulcanschedulemonitor.vulcan.connection.catalog.VulcanClassCatalog;
@@ -78,6 +84,17 @@ public class TelegramConfiguration {
   }
 
   @Bean
+  TelegramTextCatalog telegramTextCatalog() {
+    return new TelegramTextCatalog();
+  }
+
+  @Bean
+  TelegramCommandMenuService telegramCommandMenuService(
+      TelegramCommandMenuTransport transport, TelegramTextCatalog textCatalog) {
+    return new TelegramCommandMenuService(transport, textCatalog);
+  }
+
+  @Bean
   TelegramCommandParser telegramCommandParser() {
     return new TelegramCommandParser();
   }
@@ -88,61 +105,102 @@ public class TelegramConfiguration {
   }
 
   @Bean
+  LanguageCallbackParser languageCallbackParser() {
+    return new LanguageCallbackParser();
+  }
+
+  @Bean
+  LanguageSelectionController languageSelectionController(
+      TelegramLanguagePreferences preferences,
+      TelegramTextCatalog textCatalog,
+      TelegramInteractiveTransport transport,
+      TelegramCommandMenuService menuService) {
+    return new LanguageSelectionController(preferences, textCatalog, transport, menuService);
+  }
+
+  @Bean
   ClassSelectionController classSelectionController(
       MonitoringSubscriptionService subscriptions,
       VulcanConnectionStatusService connections,
+      TelegramTextCatalog textCatalog,
       TelegramMessageTransport transport,
       TelegramInteractiveTransport interactiveTransport) {
     return new ClassSelectionController(
-        subscriptions, connections, transport, interactiveTransport);
+        subscriptions, connections, textCatalog, transport, interactiveTransport);
   }
 
   @Bean
   TelegramCallbackRouter telegramCallbackRouter(
-      ClassSelectionCallbackParser parser,
+      ClassSelectionCallbackParser classParser,
+      LanguageCallbackParser languageParser,
       TelegramIdentityRegistration identities,
+      TelegramLanguagePreferences preferences,
+      TelegramTextCatalog textCatalog,
       MonitoringSubscriptionService subscriptions,
       ClassSelectionController classes,
+      LanguageSelectionController languageController,
       TelegramInteractiveTransport transport) {
-    return new TelegramCallbackRouter(parser, identities, subscriptions, classes, transport);
+    return new TelegramCallbackRouter(
+        classParser,
+        languageParser,
+        identities,
+        preferences,
+        textCatalog,
+        subscriptions,
+        classes,
+        languageController,
+        transport);
   }
 
   @Bean
-  TelegramCommandHandler startCommandHandler() {
-    return new StartCommandHandler();
+  TelegramCommandHandler startCommandHandler(TelegramTextCatalog textCatalog) {
+    return new StartCommandHandler(textCatalog);
   }
 
   @Bean
-  TelegramCommandHandler helpCommandHandler() {
-    return new HelpCommandHandler();
+  TelegramCommandHandler helpCommandHandler(TelegramTextCatalog textCatalog) {
+    return new HelpCommandHandler(textCatalog);
   }
 
   @Bean
-  TelegramCommandHandler connectCommandHandler(VulcanConnectLinkService links) {
-    return new ConnectCommandHandler(links);
+  TelegramCommandHandler connectCommandHandler(
+      VulcanConnectLinkService links, TelegramTextCatalog textCatalog) {
+    return new ConnectCommandHandler(links, textCatalog);
   }
 
   @Bean
   TelegramCommandHandler statusCommandHandler(
-      MonitoringSubscriptionService subscriptions, VulcanConnectionStatusService connections) {
-    return new StatusCommandHandler(subscriptions, connections);
+      MonitoringSubscriptionService subscriptions,
+      VulcanConnectionStatusService connections,
+      TelegramTextCatalog textCatalog) {
+    return new StatusCommandHandler(subscriptions, connections, textCatalog);
   }
 
   @Bean
-  TelegramCommandHandler subscriptionsCommandHandler(MonitoringSubscriptionService subscriptions) {
-    return new SubscriptionsCommandHandler(subscriptions);
+  TelegramCommandHandler subscriptionsCommandHandler(
+      MonitoringSubscriptionService subscriptions, TelegramTextCatalog textCatalog) {
+    return new SubscriptionsCommandHandler(subscriptions, textCatalog);
   }
 
   @Bean
   TelegramUpdateRouter telegramUpdateRouter(
       TelegramCommandParser parser,
       TelegramIdentityRegistration identities,
+      TelegramLanguagePreferences preferences,
       TelegramMessageTransport transport,
       List<TelegramCommandHandler> handlers,
       TelegramCallbackRouter callbackRouter,
-      ClassSelectionController classes) {
+      ClassSelectionController classes,
+      LanguageSelectionController languageController) {
     return new TelegramUpdateRouter(
-        parser, identities, transport, handlers, callbackRouter, classes);
+        parser,
+        identities,
+        preferences,
+        transport,
+        handlers,
+        callbackRouter,
+        classes,
+        languageController);
   }
 
   @Bean
@@ -155,9 +213,10 @@ public class TelegramConfiguration {
       TelegramLongPollingEngineFactory engineFactory,
       TelegramUpdateConsumer consumer,
       TelegramProviderAvailabilityGate gate,
-      Clock clock) {
+      Clock clock,
+      TelegramCommandMenuService menuService) {
     return new TelegramLongPollingRuntime(
-        botProperties.getToken(), engineFactory, consumer, gate, clock);
+        botProperties.getToken(), engineFactory, consumer, gate, clock, menuService);
   }
 
   @Bean
@@ -166,8 +225,8 @@ public class TelegramConfiguration {
   }
 
   @Bean
-  TelegramNotificationFormatter telegramNotificationFormatter() {
-    return new TelegramNotificationFormatter();
+  TelegramNotificationFormatter telegramNotificationFormatter(TelegramTextCatalog textCatalog) {
+    return new TelegramNotificationFormatter(textCatalog);
   }
 
   @Bean

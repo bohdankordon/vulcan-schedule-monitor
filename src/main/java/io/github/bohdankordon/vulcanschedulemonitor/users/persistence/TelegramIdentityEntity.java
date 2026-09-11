@@ -1,11 +1,13 @@
 package io.github.bohdankordon.vulcanschedulemonitor.users.persistence;
 
+import io.github.bohdankordon.vulcanschedulemonitor.telegram.TelegramLanguage;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
 import java.time.Instant;
+import java.util.Objects;
 
 @Entity
 @Table(
@@ -28,6 +30,9 @@ class TelegramIdentityEntity {
   @Column(name = "private_chat_id", nullable = false, unique = true)
   private long privateChatId;
 
+  @Column(name = "language_code", nullable = false)
+  private String languageCode;
+
   @Column(name = "created_at", nullable = false)
   private Instant createdAt;
 
@@ -37,17 +42,35 @@ class TelegramIdentityEntity {
   protected TelegramIdentityEntity() {}
 
   TelegramIdentityEntity(long appUserId, long telegramUserId, long privateChatId, Instant now) {
+    this(appUserId, telegramUserId, privateChatId, TelegramLanguage.ENGLISH, now);
+  }
+
+  TelegramIdentityEntity(
+      long appUserId,
+      long telegramUserId,
+      long privateChatId,
+      TelegramLanguage language,
+      Instant now) {
     this.appUserId = appUserId;
     this.telegramUserId = telegramUserId;
     this.privateChatId = privateChatId;
-    createdAt = now;
-    updatedAt = now;
+    this.languageCode = Objects.requireNonNull(language, "language must not be null").code();
+    this.createdAt = now;
+    this.updatedAt = now;
   }
 
   void updatePrivateChatId(long privateChatId, Instant now) {
     if (this.privateChatId != privateChatId) {
       this.privateChatId = privateChatId;
       updatedAt = now;
+    }
+  }
+
+  void updateLanguage(TelegramLanguage language, Instant now) {
+    Objects.requireNonNull(language, "language must not be null");
+    if (language() != language) {
+      this.languageCode = language.code();
+      this.updatedAt = now;
     }
   }
 
@@ -61,5 +84,9 @@ class TelegramIdentityEntity {
 
   long privateChatId() {
     return privateChatId;
+  }
+
+  TelegramLanguage language() {
+    return TelegramLanguage.fromCode(languageCode);
   }
 }

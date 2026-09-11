@@ -12,6 +12,8 @@ class TelegramCommandParserTest {
   void parsesSupportedCommandsAndBotSuffixesWithoutRetainingArguments() {
     assertThat(parser.parse("/start")).contains(TelegramCommand.START);
     assertThat(parser.parse("/start@somebot")).contains(TelegramCommand.START);
+    assertThat(parser.parse("/language")).contains(TelegramCommand.LANGUAGE);
+    assertThat(parser.parse("/language@somebot")).contains(TelegramCommand.LANGUAGE);
     assertThat(parser.parse("  /StAtUs  ")).contains(TelegramCommand.STATUS);
     assertThat(parser.parse("/connect private-looking-argument")).contains(TelegramCommand.CONNECT);
   }

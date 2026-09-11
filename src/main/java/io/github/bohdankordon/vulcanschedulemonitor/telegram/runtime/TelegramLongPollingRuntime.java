@@ -27,6 +27,9 @@ public final class TelegramLongPollingRuntime implements AutoCloseable {
   private final LongPollingUpdateConsumer consumer;
   private final TelegramProviderAvailabilityGate gate;
   private final Clock clock;
+  private final io.github.bohdankordon.vulcanschedulemonitor.telegram.command.menu
+          .TelegramCommandMenuService
+      menuService;
   private TelegramLongPollingEngine runningEngine;
   private Instant nextAttemptAt = Instant.MIN;
   private int failures;
@@ -37,11 +40,23 @@ public final class TelegramLongPollingRuntime implements AutoCloseable {
       LongPollingUpdateConsumer consumer,
       TelegramProviderAvailabilityGate gate,
       Clock clock) {
+    this(token, engineFactory, consumer, gate, clock, null);
+  }
+
+  public TelegramLongPollingRuntime(
+      String token,
+      TelegramLongPollingEngineFactory engineFactory,
+      LongPollingUpdateConsumer consumer,
+      TelegramProviderAvailabilityGate gate,
+      Clock clock,
+      io.github.bohdankordon.vulcanschedulemonitor.telegram.command.menu.TelegramCommandMenuService
+          menuService) {
     this.token = Objects.requireNonNull(token, "token must not be null");
     this.engineFactory = Objects.requireNonNull(engineFactory, "engineFactory must not be null");
     this.consumer = Objects.requireNonNull(consumer, "consumer must not be null");
     this.gate = Objects.requireNonNull(gate, "gate must not be null");
     this.clock = Objects.requireNonNull(clock, "clock must not be null");
+    this.menuService = menuService;
   }
 
   public synchronized void tryStartIfDue() {
@@ -55,6 +70,9 @@ public final class TelegramLongPollingRuntime implements AutoCloseable {
       runningEngine = candidate;
       failures = 0;
       LOGGER.info("Telegram long-polling runtime connected");
+      if (menuService != null) {
+        menuService.configureDefaultMenu();
+      }
     } catch (TelegramTransportException failure) {
       close(candidate);
       if (failure.category() == TelegramFailureCategory.AUTHENTICATION) {

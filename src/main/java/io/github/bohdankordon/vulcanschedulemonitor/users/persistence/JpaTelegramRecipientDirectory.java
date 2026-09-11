@@ -21,6 +21,6 @@ class JpaTelegramRecipientDirectory implements TelegramRecipientDirectory {
         .map(
             identity ->
                 new TelegramRecipientReference(
-                    identity.telegramUserId(), identity.privateChatId()));
+                    identity.telegramUserId(), identity.privateChatId(), identity.language()));
   }
 }

@@ -24,7 +24,7 @@ The first successful reconciliation creates a no-spam baseline intent per curren
 
 ## Telegram class selection
 
-`/classes` renders active authorized catalog classes as an inline keyboard using human-readable class names. `✅` marks monitored classes and `☐` marks available ones. Pages contain at most eight classes with deterministic previous/next navigation. No journal, catalog, recipient, or lesson-period ID is shown in user-facing text.
+`/classes` renders active authorized catalog classes as an inline keyboard using human-readable class names. `✅` marks monitored classes and `⬜` marks available ones. Pages contain at most eight classes with deterministic previous/next navigation. No journal, catalog, recipient, or lesson-period ID is shown in user-facing text.
 
 Callback data is a compact versioned internal protocol: `c1:t:<catalogClassId>:<page>` for toggles and `c1:p:<page>` for navigation. It is strictly length-, shape-, action-, and numeric-range-validated. Only a private human callback with a message is accepted. The exact Telegram identity is registered, then the application service re-authorizes the catalog ID against that user before mutation. Group, supergroup, channel, bot, missing-message, cross-user, and inactive-class callbacks cannot mutate state. Valid callbacks are answered and the keyboard is refreshed from committed subscription state.
 

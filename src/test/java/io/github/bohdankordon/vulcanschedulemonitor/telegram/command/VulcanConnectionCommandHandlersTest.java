@@ -24,7 +24,7 @@ class VulcanConnectionCommandHandlersTest {
 
     assertThat(handler.handle(new TelegramCommandContext(41L, 51L)))
         .contains("https://connect.example/connect/synthetic-capability")
-        .contains("Never send VULCAN credentials");
+        .contains("Never send them in Telegram");
   }
 
   @Test
@@ -35,8 +35,199 @@ class VulcanConnectionCommandHandlersTest {
             userId -> new VulcanConnectionStatus(VulcanConnectionStatus.State.CONNECTED, 3));
 
     assertThat(handler.handle(new TelegramCommandContext(41L, 51L)))
-        .contains("VULCAN: connected", "Available classes: 3", "Monitored classes: 2")
+        .contains("VULCAN: Connected", "Available classes: 3", "Monitored classes: 2")
         .doesNotContain("portal", "login", "Telegram ID", "account ID");
+  }
+
+  @Test
+  void helpSupportsAllLanguages() {
+    HelpCommandHandler handler = new HelpCommandHandler();
+
+    assertThat(
+            handler.handle(
+                new TelegramCommandContext(
+                    41L,
+                    51L,
+                    io.github.bohdankordon.vulcanschedulemonitor.telegram.TelegramLanguage
+                        .ENGLISH)))
+        .contains(
+            "❓ Commands",
+            "/connect",
+            "/classes",
+            "/subscriptions",
+            "/status",
+            "/language",
+            "/start",
+            "/help");
+    assertThat(
+            handler.handle(
+                new TelegramCommandContext(
+                    41L,
+                    51L,
+                    io.github.bohdankordon.vulcanschedulemonitor.telegram.TelegramLanguage
+                        .RUSSIAN)))
+        .contains(
+            "❓ Команды",
+            "/connect",
+            "/classes",
+            "/subscriptions",
+            "/status",
+            "/language",
+            "/start",
+            "/help");
+    assertThat(
+            handler.handle(
+                new TelegramCommandContext(
+                    41L,
+                    51L,
+                    io.github.bohdankordon.vulcanschedulemonitor.telegram.TelegramLanguage
+                        .UKRAINIAN)))
+        .contains(
+            "❓ Команди",
+            "/connect",
+            "/classes",
+            "/subscriptions",
+            "/status",
+            "/language",
+            "/start",
+            "/help");
+    assertThat(
+            handler.handle(
+                new TelegramCommandContext(
+                    41L,
+                    51L,
+                    io.github.bohdankordon.vulcanschedulemonitor.telegram.TelegramLanguage.POLISH)))
+        .contains(
+            "❓ Polecenia",
+            "/connect",
+            "/classes",
+            "/subscriptions",
+            "/status",
+            "/language",
+            "/start",
+            "/help");
+  }
+
+  @Test
+  void statusSupportsAllLanguages() {
+    StatusCommandHandler handler =
+        new StatusCommandHandler(
+            subscriptions(),
+            userId -> new VulcanConnectionStatus(VulcanConnectionStatus.State.CONNECTED, 3));
+
+    assertThat(
+            handler.handle(
+                new TelegramCommandContext(
+                    41L,
+                    51L,
+                    io.github.bohdankordon.vulcanschedulemonitor.telegram.TelegramLanguage
+                        .ENGLISH)))
+        .contains(
+            "📊 Status", "🟢 VULCAN: Connected", "Available classes: 3", "Monitored classes: 2");
+    assertThat(
+            handler.handle(
+                new TelegramCommandContext(
+                    41L,
+                    51L,
+                    io.github.bohdankordon.vulcanschedulemonitor.telegram.TelegramLanguage
+                        .RUSSIAN)))
+        .contains(
+            "📊 Состояние",
+            "🟢 VULCAN: подключён",
+            "Доступных классов: 3",
+            "Отслеживаемых классов: 2");
+    assertThat(
+            handler.handle(
+                new TelegramCommandContext(
+                    41L,
+                    51L,
+                    io.github.bohdankordon.vulcanschedulemonitor.telegram.TelegramLanguage
+                        .UKRAINIAN)))
+        .contains(
+            "📊 Стан", "🟢 VULCAN: підключено", "Доступних класів: 3", "Відстежуваних класів: 2");
+    assertThat(
+            handler.handle(
+                new TelegramCommandContext(
+                    41L,
+                    51L,
+                    io.github.bohdankordon.vulcanschedulemonitor.telegram.TelegramLanguage.POLISH)))
+        .contains("📊 Stan", "🟢 VULCAN: połączony", "Dostępne klasy: 3", "Monitorowane klasy: 2");
+  }
+
+  @Test
+  void subscriptionsSupportsAllLanguages() {
+    SubscriptionsCommandHandler handler = new SubscriptionsCommandHandler(subscriptions());
+
+    assertThat(
+            handler.handle(
+                new TelegramCommandContext(
+                    41L,
+                    51L,
+                    io.github.bohdankordon.vulcanschedulemonitor.telegram.TelegramLanguage
+                        .ENGLISH)))
+        .contains("🔔 Monitored classes", "• Synthetic 2A", "• Synthetic 3B");
+    assertThat(
+            handler.handle(
+                new TelegramCommandContext(
+                    41L,
+                    51L,
+                    io.github.bohdankordon.vulcanschedulemonitor.telegram.TelegramLanguage
+                        .RUSSIAN)))
+        .contains("🔔 Отслеживаемые классы", "• Synthetic 2A", "• Synthetic 3B");
+    assertThat(
+            handler.handle(
+                new TelegramCommandContext(
+                    41L,
+                    51L,
+                    io.github.bohdankordon.vulcanschedulemonitor.telegram.TelegramLanguage
+                        .UKRAINIAN)))
+        .contains("🔔 Відстежувані класи", "• Synthetic 2A", "• Synthetic 3B");
+    assertThat(
+            handler.handle(
+                new TelegramCommandContext(
+                    41L,
+                    51L,
+                    io.github.bohdankordon.vulcanschedulemonitor.telegram.TelegramLanguage.POLISH)))
+        .contains("🔔 Monitorowane klasy", "• Synthetic 2A", "• Synthetic 3B");
+  }
+
+  @Test
+  void connectSupportsAllLanguages() {
+    ConnectCommandHandler handler =
+        new ConnectCommandHandler(
+            userId -> ConnectLink.enabled("https://connect.example/synthetic"));
+
+    assertThat(
+            handler.handle(
+                new TelegramCommandContext(
+                    41L,
+                    51L,
+                    io.github.bohdankordon.vulcanschedulemonitor.telegram.TelegramLanguage
+                        .ENGLISH)))
+        .contains("🔐 Secure VULCAN connection", "https://connect.example/synthetic");
+    assertThat(
+            handler.handle(
+                new TelegramCommandContext(
+                    41L,
+                    51L,
+                    io.github.bohdankordon.vulcanschedulemonitor.telegram.TelegramLanguage
+                        .RUSSIAN)))
+        .contains("🔐 Безопасное подключение VULCAN", "https://connect.example/synthetic");
+    assertThat(
+            handler.handle(
+                new TelegramCommandContext(
+                    41L,
+                    51L,
+                    io.github.bohdankordon.vulcanschedulemonitor.telegram.TelegramLanguage
+                        .UKRAINIAN)))
+        .contains("🔐 Безпечне підключення VULCAN", "https://connect.example/synthetic");
+    assertThat(
+            handler.handle(
+                new TelegramCommandContext(
+                    41L,
+                    51L,
+                    io.github.bohdankordon.vulcanschedulemonitor.telegram.TelegramLanguage.POLISH)))
+        .contains("🔐 Bezpieczne połączenie z VULCAN", "https://connect.example/synthetic");
   }
 
   private static MonitoringSubscriptionService subscriptions() {

@@ -1,14 +1,22 @@
 package io.github.bohdankordon.vulcanschedulemonitor.telegram.transport;
 
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.availability.TelegramProviderAvailabilityGate;
+import io.github.bohdankordon.vulcanschedulemonitor.telegram.command.menu.TelegramCommandMenuTransport;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.interactive.TelegramInteractiveMessage;
 import io.github.bohdankordon.vulcanschedulemonitor.telegram.interactive.TelegramInteractiveTransport;
+import java.util.List;
 import java.util.Objects;
 import okhttp3.OkHttpClient;
 import org.telegram.telegrambots.client.okhttp.OkHttpTelegramClient;
 import org.telegram.telegrambots.meta.api.methods.AnswerCallbackQuery;
+import org.telegram.telegrambots.meta.api.methods.commands.SetMyCommands;
+import org.telegram.telegrambots.meta.api.methods.menubutton.SetChatMenuButton;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText;
+import org.telegram.telegrambots.meta.api.objects.commands.BotCommand;
+import org.telegram.telegrambots.meta.api.objects.commands.scope.BotCommandScopeAllPrivateChats;
+import org.telegram.telegrambots.meta.api.objects.commands.scope.BotCommandScopeChat;
+import org.telegram.telegrambots.meta.api.objects.menubutton.MenuButtonCommands;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardRow;
@@ -16,7 +24,10 @@ import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import org.telegram.telegrambots.meta.generics.TelegramClient;
 
 public final class TelegramBotsMessageTransport
-    implements TelegramMessageTransport, TelegramInteractiveTransport, AutoCloseable {
+    implements TelegramMessageTransport,
+        TelegramInteractiveTransport,
+        TelegramCommandMenuTransport,
+        AutoCloseable {
 
   private final OkHttpClient httpClient;
   private final TelegramClient telegramClient;
@@ -70,6 +81,35 @@ public final class TelegramBotsMessageTransport
   public void answerCallback(String callbackQueryId, String text)
       throws TelegramTransportException {
     execute(AnswerCallbackQuery.builder().callbackQueryId(callbackQueryId).text(text).build());
+  }
+
+  @Override
+  public void configureDefaultPrivateCommands(List<BotCommand> commands)
+      throws TelegramTransportException {
+    execute(
+        SetMyCommands.builder()
+            .scope(new BotCommandScopeAllPrivateChats())
+            .commands(commands)
+            .build());
+  }
+
+  @Override
+  public void configureChatCommands(long privateChatId, List<BotCommand> commands)
+      throws TelegramTransportException {
+    execute(
+        SetMyCommands.builder()
+            .scope(new BotCommandScopeChat(String.valueOf(privateChatId)))
+            .commands(commands)
+            .build());
+  }
+
+  @Override
+  public void configureChatMenuButton(long privateChatId) throws TelegramTransportException {
+    execute(
+        SetChatMenuButton.builder()
+            .chatId(String.valueOf(privateChatId))
+            .menuButton(new MenuButtonCommands())
+            .build());
   }
 
   private void execute(
