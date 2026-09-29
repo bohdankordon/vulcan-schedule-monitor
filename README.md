@@ -4,133 +4,119 @@
 [![Java 21](https://img.shields.io/badge/Java-21-007396?logo=openjdk&logoColor=white)](https://adoptium.net/temurin/releases/?version=21)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-An unofficial Java service for monitoring school schedule changes available through the VULCAN system and delivering timely notifications.
+An unofficial Java 21 / Spring Boot service that monitors school schedule changes available through Poland's VULCAN system and delivers Telegram notifications. It keeps per-class, per-week state so it can distinguish new, updated, and resolved changes across successful checks.
 
 > **Disclaimer:** This is an unofficial project and is not affiliated with or endorsed by VULCAN sp. z o.o.
 
 ## Status
 
-The project is in early development. A disabled-by-default secure HTTPS flow connects one authorized VULCAN account per application user, encrypts its session and optional remembered credentials, and maintains an account-scoped class catalog. Catalog-based subscriptions feed account-aware current/next-week monitoring; successful snapshots establish PostgreSQL baselines and reconcile `NEW`, `UPDATED`, or `RESOLVED` changes into a recipient-specific durable outbox. Encrypted session payloads preserve cookie identity (including path and domain) and remain compatible with legacy sessions. Normal fetches persist cookie rotation, authentication failures can recover once with remembered credentials, and failures/rate limits are isolated per account. The Telegram adapter provides private `/classes` selection and human-readable class-labelled delivery without exposing protocol IDs.
+Actively developed, privately deployed, and production-tested on an intentionally small, single-host setup. This is not a public SaaS or an official VULCAN integration. The connection, monitoring, reconciliation, Telegram delivery, and container operations described below are implemented; provider-facing features are disabled by default.
 
-## Purpose and planned capabilities
+Current boundaries: one VULCAN account per application user; the supported login is a direct VULCAN-hosted username/password flow, with no MFA, CAPTCHA, or external identity-provider support. Scheduling and rate-limit gates are process-local, so the deployment is not designed for multiple application instances. See [Secure VULCAN connection](docs/vulcan-connection.md) and [Monitoring orchestration](docs/monitoring.md) for these limits.
 
-The project aims to provide a privacy-conscious service that can:
+## Highlights
 
-- establish and maintain an authorized VULCAN session;
-- retrieve schedules while minimizing traffic to VULCAN systems;
-- identify meaningful schedule changes;
-- manage monitoring subscriptions;
-- persist state reliably; and
-- deliver timely notifications through adapters such as Telegram.
+- **Secure account connection:** A short-lived HTTPS `/connect` link starts Playwright-assisted login; the server verifies the resulting session and stores it encrypted, with optional separately encrypted remembered credentials.
+- **Stateful monitoring:** Authorized class subscriptions drive current- and next-week checks. Deterministic PostgreSQL reconciliation establishes a baseline, then emits `NEW`, `UPDATED`, and `RESOLVED` transitions.
+- **Reliable notifications:** Tracking changes and recipient-specific outbox intents commit together. Leased PostgreSQL claims, retries, and recovery support at-least-once Telegram delivery.
+- **Failure isolation:** Bounded fetch retries, account-scoped rate-limit handling, cookie rotation, and one automatic session recovery attempt where remembered credentials are available.
+- **Private Telegram interface:** Class selection, connection/status commands, and notifications; bot text and menus support English, Polish, Russian, and Ukrainian.
+- **Verified operations:** PostgreSQL/Testcontainers and WireMock tests, a Docker image with Chromium, a Caddy HTTPS edge, health probes, and backup/restore tooling.
+
+## Demo / screenshots
+
+Public screenshots are pending safe demo captures. The useful views are a Telegram `/classes` selection, a notification with `/status`, and the HTTPS `/connect` form. Any published captures must use synthetic class/account data and omit credentials, tokens, personal data, and deployment URLs.
 
 ## Architecture
 
-Vulcan Schedule Monitor is a modular monolith with feature-oriented packages. Its VULCAN adapter translates browser-observed payloads into small internal schedule and change models. Tracking and notification logic use protocol-independent ports; JPA entities remain internal to PostgreSQL adapters.
+The application is a modular monolith: VULCAN, Telegram, browser automation, and PostgreSQL sit behind adapters; monitoring and change tracking use internal models and ports.
 
-See [Architecture](docs/architecture.md), [Account-aware monitoring](docs/account-aware-monitoring.md), [Secure VULCAN connection](docs/vulcan-connection.md), [Telegram adapter](docs/telegram.md), [Subscriptions](docs/subscriptions.md), [Monitoring orchestration](docs/monitoring.md), [Persistent change tracking](docs/change-tracking.md), [Notification outbox](docs/notification-outbox.md), [Unofficial VULCAN protocol notes](docs/vulcan-protocol.md), and [Manual session setup](docs/manual-session.md).
+```text
+Private Telegram chat --> Telegram adapter --> subscriptions / connect link
+                                                   |
+Browser -- HTTPS/Caddy --> Spring Boot connect flow -- Playwright --> VULCAN
+                                                   |
+                                           encrypted session + class catalog
+                                                   |
+Spring Boot monitoring --> VULCAN weekly fetch --> reconciliation
+                                                   |
+                                      PostgreSQL: active state + outbox
+                                                   |
+                                        outbox dispatcher --> Telegram delivery
+```
+
+Caddy is the HTTPS edge in the container deployment. Monitoring fetches schedules through the unofficial VULCAN adapter; only successfully fetched snapshots enter reconciliation. See [Architecture](docs/architecture.md) and [Account-aware monitoring](docs/account-aware-monitoring.md).
+
+## What it does
+
+An authorized user connects one VULCAN account through `/connect`, then selects classes in a private Telegram chat. The scheduler checks each subscribed class for the current and next Monday-to-Sunday week. A successful first snapshot establishes a no-spam baseline; later successful snapshots produce semantic `NEW`, `UPDATED`, and `RESOLVED` transitions. A failed or rate-limited provider request never means “empty schedule” and never resolves existing changes. [Tracking design](docs/change-tracking.md) · [Monitoring design](docs/monitoring.md)
+
+Each successful state transition and its per-recipient delivery intent are committed in one PostgreSQL transaction. The outbox dispatcher claims due rows with leases, acknowledges delivery, and retries eligible failures. Delivery is **at least once**: a send accepted by Telegram before acknowledgement can be repeated after a crash. Direct bot command replies are best effort and do not use the outbox. [Outbox design](docs/notification-outbox.md)
+
+The connection link is a short-lived, single-use capability. Playwright captures an authenticated session in an isolated browser context; server-side VULCAN checks verify it before persistence. Session material and opt-in remembered credentials are encrypted with AES-256-GCM. Normal cookie rotation is persisted, while supported authentication failures can trigger one recovery attempt when remembered credentials exist. VULCAN credentials are entered only in the HTTPS form, never in Telegram. [Connection and security details](docs/vulcan-connection.md)
+
+Deferred work includes multiple VULCAN accounts per user, periodic catalog refresh outside connection/recovery, a durable reconnect-required alert, multi-instance coordination, and delivered-outbox retention cleanup. These are not current capabilities.
 
 ## Technology
 
-- Java 21
-- Spring Boot 4.1.1
-- Spring MVC, Thymeleaf, and Spring Security
-- Playwright Java 1.62.0
-- TelegramBots 10.2.1 core long-polling and client modules
-- Spring RestClient backed by Java 21 HttpClient
-- PostgreSQL with Spring Data JPA / Hibernate
-- Flyway-owned database migrations
-- Testcontainers PostgreSQL integration tests
-- Maven 3.9.16 through Maven Wrapper
-- JUnit 6
-- WireMock 3.13.2 for protocol integration tests
-- Spotless formatting checks
-- GitHub Actions
+Java 21, Spring Boot 4.1.1 (MVC, Security, Actuator, Thymeleaf), PostgreSQL 18 with Spring Data JPA and Flyway, Playwright Java, TelegramBots long polling, and Caddy/Docker Compose. Verification uses JUnit 6, PostgreSQL Testcontainers, WireMock, a local Playwright browser regression, and GitHub Actions. The Maven Wrapper pins Maven 3.9.16; Spotless checks Java formatting.
 
-## Requirements
+## Requirements and configuration
 
-See [Operational health](docs/operations.md) for public probes, health privacy, and shutdown behavior.
+- Java 21 JDK and a reachable PostgreSQL database. The Maven Wrapper supplies Maven.
+- Docker for PostgreSQL integration tests; Docker Desktop plus PowerShell for the Windows local runner.
+- Chromium matching the Playwright dependency when secure connection runs outside the container; the production image includes it.
 
-See [Container deployment](docs/container-deployment.md) for the production image, private Compose topology, and isolated container verification.
+For a direct application run, configure the datasource through standard Spring properties (for example `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, and `SPRING_DATASOURCE_PASSWORD`). Enable only the integrations you need:
 
-See [Database backup and restore](docs/database-backup-restore.md) for online backups, guarded recovery, and the separately preserved encryption key.
+| Feature | Default | Required when enabled |
+| --- | --- | --- |
+| Telegram | `telegram.bot.enabled=false` | `TELEGRAM_BOT_TOKEN` |
+| Secure connection | `vulcan.connection.enabled=false` | HTTPS `vulcan.connection.public-base-url`, `VULCAN_MASTER_KEY` (Base64 of exactly 32 random bytes), and Chromium |
+| Monitoring | `vulcan.monitoring.enabled=false` | Secure connection enabled and authorized subscriptions |
 
-- A Java 21 JDK
-- PostgreSQL configured through standard Spring datasource properties
-- No system Maven installation is required
-
-Set these environment variables when running the application:
-
-```text
-SPRING_DATASOURCE_URL=jdbc:postgresql://<host>:<port>/<database>
-SPRING_DATASOURCE_USERNAME=<username>
-SPRING_DATASOURCE_PASSWORD=<password>
-TELEGRAM_BOT_TOKEN=<bot-token>
-VULCAN_MASTER_KEY=<Base64-of-exactly-32-random-bytes>
-```
-
-No database credentials, bot tokens, encryption keys, or environment-specific URLs are stored in the repository. `TELEGRAM_BOT_TOKEN` is required only when `telegram.bot.enabled=true`. `VULCAN_MASTER_KEY` is required only when `vulcan.connection.enabled=true`. Docker is required only to run the PostgreSQL integration tests locally.
-
-Monitoring is off unless `vulcan.monitoring.enabled=true` is set and secure connection is enabled. The production source loads each target's encrypted account session automatically; an empty subscription set makes no VULCAN request. The default polling interval is `PT5M`.
-
-Telegram is off unless `telegram.bot.enabled=true` is set. Disabled startup creates no Telegram runtime, client, delivery gateway, or dispatch scheduler and requires no token. When enabled, the adapter uses long polling and dispatches at most one durable intent per two-second scheduler tick. Supported private-chat commands are `/start`, `/help`, `/status`, `/subscriptions`, `/classes`, and `/connect`. `/classes` uses strictly authorized catalog callbacks; `/connect` issues a fresh short-lived link to the configured public HTTPS origin. Never send VULCAN credentials through Telegram.
-
-Secure connection is off unless `vulcan.connection.enabled=true`. Enabling it also requires `vulcan.connection.public-base-url` and a valid `VULCAN_MASTER_KEY`. For a non-container runtime, install Chromium manually on the host (the container image bundles it):
-
-```powershell
-.\mvnw.cmd -Dexec.mainClass=com.microsoft.playwright.CLI -Dexec.args="install chromium" exec:java
-```
+Monitoring polls every five minutes by default; no subscriptions means no VULCAN schedule requests. In production Compose, the corresponding switches are `TELEGRAM_ENABLED`, `VULCAN_CONNECTION_ENABLED`, and `VULCAN_MONITORING_ENABLED`; its private environment file also requires database passwords and the stable master key. Keep secrets outside Git. See [Connection configuration](docs/vulcan-connection.md), [Telegram configuration](docs/telegram.md), and [Container deployment](docs/container-deployment.md).
 
 ## Local development
 
-Windows developers with Docker Desktop and a Java 21 JDK can start the complete local stack from the repository root:
+On Windows, with Java 21 and Docker Desktop, run from the repository root:
 
 ```powershell
 .\scripts\dev.ps1
 ```
 
-The script resolves every project path from its own location, so it does not depend on the caller's current working directory when invoked through another relative or absolute path.
-
-On first use, the runner creates a stable VULCAN encryption key, asks once for the Telegram bot token without echoing it, protects both secrets with Windows DPAPI for the current user, starts a persistent PostgreSQL 18.6 container bound only to `127.0.0.1:54329`, installs the compatible Playwright Chromium build, and starts Spring Boot in the foreground. Telegram and the secure `/connect` flow are enabled, while automatic monitoring remains off for the initial authorized connection and `/classes` catalog smoke test. VULCAN credentials and the portal URL are entered only through `/connect`, never through the script.
-
-Later runs reuse the named PostgreSQL volume and the protected files under the ignored `.dev/` directory. DPAPI data is bound to the same Windows machine/user profile and is a local development convenience, not production secret storage. PostgreSQL remains running when the application stops.
-
-After the connection/catalog flow has been validated, monitoring can be enabled explicitly:
+The runner starts local PostgreSQL, installs the matching Chromium build, and starts Spring Boot. It prompts for the Telegram bot token without echoing it and protects that token and the local VULCAN key with Windows DPAPI under ignored `.dev/`. Secure connection and Telegram are enabled; monitoring stays off until the account and class catalog have been checked. To enable monitoring after that check:
 
 ```powershell
 .\scripts\dev.ps1 -EnableMonitoring
 ```
 
-Replace the protected Telegram token with `.\scripts\dev.ps1 -ReconfigureTelegram`. To intentionally delete both the local database and protected secrets, run `.\scripts\dev.ps1 -ResetDevState` and type the requested `RESET` confirmation. Use `.\scripts\dev.ps1 -Help` for all runner options. The reset is coupled so a new encryption key is never silently used with ciphertext from the previous database.
-
-Production Compose provides a standalone [Caddy HTTPS edge](docs/https-reverse-proxy.md), private Spring/PostgreSQL services, and [database recovery](docs/database-backup-restore.md). See [Acer-Server production deployment](docs/acer-server-deployment.md) for the standalone host deployment runbook. Multiple-application shared edge integration remains deliberately deferred.
+Use `.\scripts\dev.ps1 -Help` for other options. `-ResetDevState` deletes the local database and protected secrets after an explicit `RESET` confirmation. DPAPI storage is a local development convenience, not production secret storage. For manual startup on another OS, provide PostgreSQL and the required feature configuration above; see [Manual session setup](docs/manual-session.md).
 
 ## Build and test
-
-On Linux or macOS:
 
 ```shell
 ./mvnw -B -ntp verify
 ```
 
-On Windows:
+On Windows use `.\mvnw.cmd -B -ntp verify`. This runs the Java test suite and Spotless check; PostgreSQL integration tests need Docker. Apply Java formatting with `./mvnw spotless:apply` (Windows: `.\mvnw.cmd spotless:apply`). CI also runs an isolated container/HTTPS/database-recovery smoke and a local Playwright browser regression; neither requires a live VULCAN account. [.github/workflows/ci.yml](.github/workflows/ci.yml)
 
-```powershell
-.\mvnw.cmd -B -ntp verify
-```
+## Production and operations
 
-Apply Java formatting before committing:
+The single-host Compose stack runs Spring Boot and PostgreSQL behind a Caddy HTTPS edge. Only Caddy publishes host ports; PostgreSQL data and Caddy TLS state use persistent volumes. Health endpoints distinguish liveness from database-backed readiness. Backup and guarded restore scripts cover the PostgreSQL database; the encryption key must be preserved separately. Provider integrations start disabled and are enabled deliberately after setup.
 
-```shell
-./mvnw spotless:apply
-```
-
-On Windows, use `.\mvnw.cmd spotless:apply`.
+Start with [Container deployment](docs/container-deployment.md), then use [HTTPS edge](docs/https-reverse-proxy.md), [Operational health](docs/operations.md), [Database backup and restore](docs/database-backup-restore.md), and the [single-host deployment runbook](docs/acer-server-deployment.md). Restoring a backup rolls the database back in time and can cause a previously sent notification to be delivered again.
 
 ## Security and privacy
 
-The project follows data-minimization and least-privilege principles. Telegram user and private-chat identifiers are necessary routing data and exist only in `telegram_identity`; the outbox stores only an internal application-user ID. No Telegram usernames, names, message bodies, profile data, or locale are persisted. VULCAN connection tokens are stored only as SHA-256 hashes. Session material and opt-in remembered credentials are stored only as versioned AES-256-GCM ciphertext with account- and purpose-bound AAD. Raw VULCAN responses, students, teachers, staff directories, browser artifacts, HAR captures, plaintext credentials, cookies, verification tokens, AppGuid values, tenant URLs, and encryption keys are not persisted in plaintext or committed.
+The application stores only the identifiers needed for account ownership, subscriptions, and delivery. Telegram routing identifiers live in a separate identity table; outbox rows use internal recipient IDs. Connection capabilities are stored as hashes, and session material plus opt-in credentials are encrypted with a runtime key. Raw VULCAN responses, browser captures, plaintext credentials, student/teacher data, and Telegram message bodies are not persisted as application state. Keep real provider data and production identifiers out of issues, screenshots, and commits. Read [SECURITY.md](SECURITY.md) before reporting a vulnerability.
 
-Review [SECURITY.md](SECURITY.md) before reporting a vulnerability and [CONTRIBUTING.md](CONTRIBUTING.md) before contributing.
+## Documentation
+
+- **Product flow:** [Secure connection](docs/vulcan-connection.md), [Subscriptions](docs/subscriptions.md), [Telegram adapter](docs/telegram.md).
+- **Backend design:** [Architecture](docs/architecture.md), [Account-aware monitoring](docs/account-aware-monitoring.md), [Monitoring](docs/monitoring.md), [Change tracking](docs/change-tracking.md), [Notification outbox](docs/notification-outbox.md).
+- **Integration and operations:** [Unofficial VULCAN protocol notes](docs/vulcan-protocol.md), [Container deployment](docs/container-deployment.md), [HTTPS edge](docs/https-reverse-proxy.md), [Health](docs/operations.md), [Backup/restore](docs/database-backup-restore.md), [Single-host runbook](docs/acer-server-deployment.md).
+- **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
